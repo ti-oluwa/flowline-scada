@@ -7,7 +7,12 @@ from pint.facets.plain import PlainQuantity
 from src.units import ureg, Quantity
 
 
-WATER_DENSITY = Quantity(1000, "kg/m^3")  # Density of water at standard conditions
+WATER_DENSITY = Quantity(
+    999.1, "kg/m^3"
+)  # Density of water at standard conditions - 1atm and 15°C
+AIR_DENSITY = Quantity(
+    1.225, "kg/m^3"
+)  # Density of air at standard conditions - 1atm and 15°C
 
 
 @attrs.define
@@ -80,21 +85,57 @@ class PipeProperties:
 class Fluid:
     """Model representing a fluid with its properties."""
 
+    phase: typing.Literal["liquid", "gas"] = attrs.field()
+    """Phase of the fluid: 'liquid' or 'gas'"""
     density: PlainQuantity[float] = attrs.field()
     """Density of the fluid"""
     viscosity: PlainQuantity[float] = attrs.field()
     """Dynamic viscosity of the fluid"""
     temperature: PlainQuantity[float] = attrs.field()
     """Temperature of the fluid"""
+    molecular_weight: PlainQuantity[float] = attrs.field()
+    """Molecular weight of the fluid"""
     compressibility_factor: float = attrs.field(default=0.0)
     """Compressibility factor of the fluid (if applicable) e.g., for gases"""
+
+    def __attrs_post_init__(self):
+        if self.phase == "gas" and self.compressibility_factor <= 0.0:
+            raise ValueError("Compressibility factor must be provided for gas phase.")
 
     @property
     def specific_gravity(self) -> float:
         """
         The specific gravity of the fluid.
         """
+        if self.phase == "gas":
+            return self.density.to("kg/m^3").magnitude / AIR_DENSITY.magnitude
         return self.density.to("kg/m^3").magnitude / WATER_DENSITY.magnitude
+
+
+def compute_fluid_density(
+    pressure: PlainQuantity[float],
+    temperature: PlainQuantity[float],
+    molecular_weight: PlainQuantity[float],
+    compressibility_factor: float = 1.0,
+) -> PlainQuantity[float]:
+    """
+    Compute the density of a fluid using the real gas law.
+
+    :param pressure: Pressure of the fluid (e.g., Pa).
+    :param temperature: Temperature of the fluid (e.g., K).
+    :param molecular_weight: Molecular weight of the fluid (e.g., kg/mol).
+    :param compressibility_factor: Compressibility factor (dimensionless), default is 1.0 for ideal gas.
+    :return: Density of the fluid (e.g., kg/m^3).
+    """
+    R = 8.314  # Universal gas constant in J/(mol·K)
+    pressure_pa = pressure.to("Pa").magnitude
+    temperature_k = temperature.to("K").magnitude
+    molecular_weight_kg_per_mol = molecular_weight.to("kg/mol").magnitude
+
+    density_kg_per_m3 = (pressure_pa * molecular_weight_kg_per_mol) / (
+        compressibility_factor * R * temperature_k
+    )
+    return Quantity(density_kg_per_m3, "kg/m^3")
 
 
 def compute_reynolds_number(
@@ -611,7 +652,7 @@ def compute_darcy_weisbach_pressure_drop(
     :return: Pressure drop as a Quantity (psi).
     """
     flow_rate_bbl_per_day = flow_rate.to("bbl/day").magnitude
-    length_feet = length.to("feet").magnitude
+    length_feet = length.to("ft").magnitude
     internal_diameter_inches = internal_diameter.to("inches").magnitude
 
     pressure_drop_psi = (
@@ -688,8 +729,7 @@ def compute_weymouth_pressure_drop(
     pressure_squared_difference = (
         flow_rate_scf_per_day / denominator_flow
     ) ** 2 * numerator_pressure
-
-    return Quantity(math.sqrt(pressure_squared_difference) * ureg.psi, "psi")
+    return Quantity(math.sqrt(pressure_squared_difference), "psi")
 
 
 def compute_modified_panhandle_A_pressure_drop(
@@ -834,35 +874,49 @@ class FlowEquation(str, enum.Enum):
 
 
 def determine_pipe_flow_equation(
-    properties: PipeProperties, fluid: Fluid
+    pressure_drop: PlainQuantity[float],
+    upstream_pressure: PlainQuantity[float],
+    internal_diameter: PlainQuantity[float],
+    length: PlainQuantity[float],
+    fluid_phase: typing.Literal["liquid", "gas"],
+    fluid_specific_gravity: float,
 ) -> FlowEquation:
     """
     Select an appropriate flow equation based on fluid type, flow regime, pipe size, and pressure conditions.
+
+    Rules adapted from PNG 515/516 Natural Gas Engineering II (2020/2021) table.
+
+    :param pressure_drop: Pressure drop across the pipe (psi).
+    :param upstream_pressure: Upstream absolute pressure (psi).
+    :param internal_diameter: Internal diameter of the pipe (inches).
+    :param length: Length of the pipe (miles).
+    :param fluid_phase: Phase of the fluid, either "liquid" or "gas".
+    :param fluid_specific_gravity: Specific gravity of the fluid relative to water.
+    :return: Selected flow equation from `FlowEquation` enum.
     """
     pressure_drop_ratio = (
-        properties.pressure_drop.to("psi").magnitude
-        / properties.upstream_pressure.to("psi").magnitude
+        pressure_drop.to("psi").magnitude / upstream_pressure.to("psi").magnitude
     )
-    diameter_in = properties.internal_diameter.to("inches").magnitude
-    length_miles = properties.length.to("mile").magnitude
+    diameter_in = internal_diameter.to("inches").magnitude
+    length_miles = length.to("mile").magnitude
 
-    # Liquids: always Darcy–Weisbach
-    if fluid.specific_gravity >= 0.8:
+    # Liquids: incompressible flow → Darcy–Weisbach
+    if fluid_phase.lower() == "liquid" or fluid_specific_gravity >= 0.8:
         return FlowEquation.DARCY_WEISBACH
 
-    # Gases: refine by pressure drop, diameter, and length
+    # Gas: compressible flow
     if pressure_drop_ratio <= 0.1:
-        # Small ΔP → density nearly constant → Darcy–Weisbach is acceptable
-        return FlowEquation.DARCY_WEISBACH
+        return FlowEquation.DARCY_WEISBACH  # small ΔP → treat as incompressible
 
-    # Long transmission lines (say >10–20 miles)
-    if length_miles > 10:
-        if diameter_in >= 24:
-            return FlowEquation.MODIFIED_PANHANDLE_B  # large, high-pressure, turbulent
-        else:
-            return FlowEquation.MODIFIED_PANHANDLE_A  # moderate size, moderate Re
+    # Long pipelines: > 20 miles
+    if length_miles > 20:
+        if diameter_in >= 12:  # Large diameter
+            return FlowEquation.MODIFIED_PANHANDLE_A
+        else:  # Smaller diameter
+            return FlowEquation.MODIFIED_PANHANDLE_B
 
-    return FlowEquation.WEYMOUTH  # short/medium pipelines, conservative
+    # Short/medium pipelines
+    return FlowEquation.WEYMOUTH
 
 
 def compute_pipe_flow_rate(
@@ -1074,7 +1128,7 @@ def compute_tapered_pipe_pressure_drop(
     # Reynolds number at inlet
     reynolds_number = compute_reynolds_number(
         current_flow_rate=flow_rate,
-        pipe_internal_diameter=pipe_inlet_diameter,
+        pipe_internal_diameter=Quantity(average_pipe_diameter_m, "m"),
         fluid_density=fluid_density,
         fluid_dynamic_viscosity=fluid_dynamic_viscosity,
     )
@@ -1110,11 +1164,11 @@ def compute_tapered_pipe_pressure_drop(
             local_loss_coefficient
             * 0.5
             * fluid_density_kg_per_m3
-            * velocity_outlet_m_per_s**2
+            * velocity_inlet_m_per_s**2
         )
 
     # Total pressure drop in Pa
     total_pressure_drop_pa = frictional_pressure_drop_pa + local_pressure_drop_pa
     # Convert to psi
-    total_pressure_drop_psi = Quantity(total_pressure_drop_pa * ureg.Pa, "Pa").to("psi")
+    total_pressure_drop_psi = Quantity(total_pressure_drop_pa, "Pa").to("psi")
     return total_pressure_drop_psi

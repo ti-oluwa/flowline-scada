@@ -58,9 +58,12 @@ def main():
         )
 
         fluid = Fluid(
-            density=Quantity(1000, "kg/m^3"),
+            phase="gas",
+            density=Quantity(1.2, "kg/m³"),
             viscosity=Quantity(0.001, "Pa*s"),
             temperature=Quantity(20, "°C"),
+            molecular_weight=Quantity(28.97, "g/mol"),
+            compressibility_factor=0.77,
         )
 
         # Create pipes
@@ -74,7 +77,7 @@ def main():
         pipe2 = Pipe(
             properties=pipe2_props,
             fluid=fluid,
-            direction=PipeDirection.NORTH,
+            direction=PipeDirection.EAST,
             name="Riser Pipe",
         )
 
@@ -89,6 +92,7 @@ def main():
             pipes=[pipe1, pipe2, pipe3],
             fluid=fluid,
             name="Main Pipeline",
+            max_flow_rate=Quantity(50, "ft³/sec"),
         )
         ui.label("Pipeline Visualization").classes(
             "text-2xl text-center text-gray-700 mb-4"
@@ -101,7 +105,6 @@ def main():
         ui.separator().classes("my-4")
         # Create meters
         upstream_flow_meter = FlowMeter(
-            value=45.5,
             min_value=0,
             max_value=100,
             units="ft³/sec",
@@ -111,7 +114,6 @@ def main():
             update_func=lambda: pipeline.inlet_flow_rate.magnitude,
         )
         downstream_flow_meter = FlowMeter(
-            value=30.2,
             min_value=0,
             max_value=100,
             units="ft³/sec",
@@ -121,7 +123,6 @@ def main():
             update_func=lambda: pipeline.outlet_flow_rate.magnitude,
         )
         upstream_pressure_gauge = PressureGauge(
-            value=65.2,
             min_value=0,
             max_value=120,
             units="PSI",
@@ -131,7 +132,6 @@ def main():
             update_func=lambda: pipeline.upstream_pressure.magnitude,
         )
         downstream_pressure_gauge = PressureGauge(
-            value=45.8,
             min_value=0,
             max_value=120,
             units="PSI",
@@ -141,13 +141,15 @@ def main():
             update_func=lambda: pipeline.downstream_pressure.magnitude,
         )
         temp_gauge = TemperatureGauge(
-            value=78.5,
             min_value=0,
             max_value=150,
             units="°C",
             label="Fluid Temperature",
             alarm_high=120,
             alarm_low=5,
+            update_func=lambda: pipeline.fluid.temperature.magnitude
+            if pipeline.fluid
+            else None,
         )
 
         # Control functions for regulators
@@ -157,11 +159,11 @@ def main():
 
         def update_temperature(value):
             """Update temperature and corresponding gauge."""
-            temp_gauge.set_value(value)
+            pipeline.set_upstream_temperature(value).update_viz()
 
         # Create regulators for control
         upstream_pressure_regulator = Regulator(
-            value=65.2,
+            value=pipeline.upstream_pressure.magnitude,
             min_value=0,
             max_value=120,
             step=0.5,
@@ -175,7 +177,7 @@ def main():
             height="240px",
         )
         upstream_temperature_regulator = Regulator(
-            value=78.5,
+            value=pipeline.fluid.temperature.magnitude if pipeline.fluid else 0,
             min_value=0,
             max_value=150,
             step=1.0,

@@ -17,6 +17,7 @@ from src.properties import (
     FlowEquation,
     Fluid,
     PipeProperties,
+    compute_fluid_density,
     determine_pipe_flow_equation,
     compute_reynolds_number,
     compute_pipe_flow_rate,
@@ -59,12 +60,14 @@ class Meter:
         label: str = "Meter",
         width: str = "200px",
         height: str = "200px",
-        precision: int = 1,
+        precision: int = 3,
         alarm_high: typing.Optional[float] = None,
         alarm_low: typing.Optional[float] = None,
         animation_speed: float = 5.0,
         animation_interval: float = 0.1,
-        update_func: typing.Optional[typing.Callable[[], float]] = None,
+        update_func: typing.Optional[
+            typing.Callable[[], typing.Optional[float]]
+        ] = None,
         update_interval: float = 1.0,
     ) -> None:
         """
@@ -330,7 +333,8 @@ class Meter:
         if self.update_func is not None:
             try:
                 new_value = self.update_func()
-                self.set_value(new_value)
+                if new_value is not None:
+                    self.set_value(new_value)
             except Exception as exc:
                 logger.error(f"Error in update function: {exc}", exc_info=True)
 
@@ -396,7 +400,9 @@ class FlowMeter(Meter):
         alarm_low: typing.Optional[float] = None,
         animation_speed: float = 5.0,
         animation_interval: float = 0.1,
-        update_func: typing.Optional[typing.Callable[[], float]] = None,
+        update_func: typing.Optional[
+            typing.Callable[[], typing.Optional[float]]
+        ] = None,
         update_interval: float = 1.0,
     ) -> None:
         self.flow_direction = flow_direction
@@ -626,7 +632,9 @@ class PressureGauge(Meter):
         alarm_low: typing.Optional[float] = None,
         animation_speed: float = 5.0,
         animation_interval: float = 0.1,
-        update_func: typing.Optional[typing.Callable[[], float]] = None,
+        update_func: typing.Optional[
+            typing.Callable[[], typing.Optional[float]]
+        ] = None,
         update_interval: float = 1.0,
     ) -> None:
         self.gauge_element = None  # Placeholder for gauge element
@@ -763,7 +771,7 @@ class TemperatureGauge(Meter):
 
     def __init__(
         self,
-        value: float = 20.0,
+        value: float = 0.0,
         min_value: float = 0.0,
         max_value: float = 100.0,
         units: str = "°C",
@@ -774,7 +782,9 @@ class TemperatureGauge(Meter):
         alarm_low: typing.Optional[float] = None,
         animation_speed: float = 5.0,
         animation_interval: float = 0.1,
-        update_func: typing.Optional[typing.Callable[[], float]] = None,
+        update_func: typing.Optional[
+            typing.Callable[[], typing.Optional[float]]
+        ] = None,
         update_interval: float = 1.0,
     ):
         self.thermo_element = None
@@ -927,7 +937,7 @@ class Regulator:
         setter_func: typing.Optional[typing.Callable[[float], None]] = None,
         alarm_high: typing.Optional[float] = None,
         alarm_low: typing.Optional[float] = None,
-        precision: int = 1,
+        precision: int = 3,
     ) -> None:
         """
         Initialize the regulator.
@@ -1069,8 +1079,9 @@ class Regulator:
                     f'<div class="w-2 h-2 rounded-full ml-1" style="background-color: {self.get_status_color()};"></div>'
                 )
 
+        value = max(self.min, min(self.max, self.value))
         # Current value display with enhanced styling
-        value_text = f"{self.value:.{self.precision}f}"
+        value_text = f"{value:.{self.precision}f}"
         if self.units:
             value_text += f" {self.units}"
 
@@ -1095,7 +1106,7 @@ class Regulator:
 
         # Slider with enhanced styling
         self.slider_element = (
-            ui.slider(min=self.min, max=self.max, value=self.value, step=self.step)
+            ui.slider(min=self.min, max=self.max, value=value, step=self.step)
             .props("label-always color=primary")
             .classes("w-full mb-1")
             .style("""
@@ -1110,7 +1121,7 @@ class Regulator:
         self.input_element = (
             ui.number(
                 label="Set Value",
-                value=self.value,
+                value=value,
                 min=self.min,
                 max=self.max,
                 step=self.step,
@@ -1366,9 +1377,20 @@ class Pipe:
         :param max_flow_rate: Maximum expected flow rate for intensity normalization
         """
         self.name = name or f"Pipe-{id(self)}"
-        self._properties = evolve(properties)
-        self._fluid = evolve(fluid) if fluid else None
         self.direction = PipeDirection(direction)
+        if self.direction == PipeDirection.NORTH:
+            self._properties = evolve(
+                properties, elevation_difference=properties.length
+            )
+        elif self.direction == PipeDirection.SOUTH:
+            self._properties = evolve(
+                properties, elevation_difference=-properties.length
+            )
+        else:
+            self._properties = evolve(
+                properties, elevation_difference=0.0 * properties.length.units
+            )
+        self._fluid = evolve(fluid) if fluid else None
         self.scale_factor = scale_factor
         self.flow_rate = Quantity(0.0, "ft^3/s")
         self.max_flow_rate = max_flow_rate
@@ -1377,32 +1399,73 @@ class Pipe:
 
     @property
     def properties(self) -> PipeProperties:
-        """Get pipe properties."""
+        """Pipe properties."""
         return self._properties
 
-    def set_properties(self, new_properties: PipeProperties):
+    def set_properties(self, new_properties: PipeProperties, update: bool = True):
+        """
+        Update pipe properties and optionally recalculate flow rate.
+
+        :param new_properties: New PipeProperties instance to set
+        :param update: Whether to update flow rate after changing properties
+        :return: self or updated Pipe instance
+        """
         self._properties = evolve(new_properties)
-        return self.update_flow_rate()
+        if update:
+            return self.update_flow_rate()
+        return self
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
         """Get fluid properties."""
         return self._fluid
 
-    def set_fluid(self, new_fluid: Fluid):
+    def set_fluid(self, new_fluid: Fluid, update: bool = True):
+        """
+        Update pipe fluid and optionally recalculate flow rate.
+
+        :param new_fluid: New Fluid instance to set
+        :param update: Whether to update flow rate after changing fluid
+        :return: self or updated Pipe instance
+        """
         self._fluid = evolve(new_fluid)
-        return self.update_flow_rate()
+        if update:
+            return self.update_flow_rate()
+        return self
+
+    def set_fluid_temperature(
+        self, temperature: PlainQuantity[float], update: bool = True
+    ):
+        """
+        Update pipe fluid temperature and optionally recalculate flow rate.
+
+        :param temperature: New temperature to set
+        :param update: Whether to update flow rate after changing temperature
+        :return: self or updated Pipe instance
+        """
+        if self.fluid is not None:
+            self._fluid = evolve(self.fluid, temperature=temperature)
+        if update:
+            return self.update_flow_rate()
+        return self
 
     @property
     def flow_equation(self) -> typing.Optional[FlowEquation]:
         """Appropriate pipe flow equation based on pipe and fluid properties."""
         if self.fluid is None:
             return None
-        return determine_pipe_flow_equation(self.properties, self.fluid)
+        return determine_pipe_flow_equation(
+            pressure_drop=self.properties.pressure_drop,
+            upstream_pressure=self.properties.upstream_pressure,
+            internal_diameter=self.properties.internal_diameter,
+            length=self.properties.length,
+            fluid_phase=self.fluid.phase,
+            fluid_specific_gravity=self.fluid.specific_gravity,
+        )
 
     @property
     def mass_rate(self) -> PlainQuantity[float]:
-        """Calculate mass flow rate in (lb/s) based on current flow rate and fluid density."""
+        """Mass flow rate in pipe in (lb/s) based on current flow rate and fluid density."""
         if self.fluid is None:
             return Quantity(0.0, "lb/s")
         density = self.fluid.density.to("lb/ft^3").magnitude
@@ -1411,7 +1474,7 @@ class Pipe:
 
     @property
     def flow_velocity(self) -> PlainQuantity[float]:
-        """Calculate flow velocity in (ft/s) based on current flow rate and pipe cross-sectional area."""
+        """Flow velocity of the fluid in the pipe in (ft/s) based on current flow rate and pipe cross-sectional area."""
         area = self.properties.cross_sectional_area.to("ft^2").magnitude
         if area <= 0:
             return Quantity(0.0, "ft/s")
@@ -1689,7 +1752,7 @@ class Pipe:
             raise ValueError(
                 "Cannot set a positive flow rate without defining fluid properties. Flow cannot occur in an empty pipe."
             )
-        self.flow_rate = typing.cast(Quantity, flow_rate_q)
+        self.flow_rate = flow_rate_q
         return self
 
     def update_flow_rate(self):
@@ -1730,18 +1793,22 @@ class Pipe:
         :return: self for method chaining
         """
         if isinstance(pressure, Quantity):
+            if pressure.magnitude < 0:
+                raise ValueError("Upstream pressure cannot be negative.")
             pressure_q = pressure.to("psi")
         else:
+            if pressure < 0:
+                raise ValueError("Upstream pressure cannot be negative.")
             pressure_q = Quantity(pressure, "psi")
 
         if check and (self.properties.downstream_pressure > pressure_q):
             raise ValueError(
                 "Upstream pressure cannot be less than downstream pressure. Flow cannot occur against the pressure gradient."
             )
-        self.properties.upstream_pressure = typing.cast(Quantity, pressure_q)
-        if not update:
-            return self
-        return self.update_flow_rate()
+        self.properties.upstream_pressure = pressure_q
+        if update:
+            return self.update_flow_rate()
+        return self
 
     def set_downstream_pressure(
         self,
@@ -1758,18 +1825,22 @@ class Pipe:
         :return: self for method chaining
         """
         if isinstance(pressure, Quantity):
+            if pressure.magnitude < 0:
+                raise ValueError("Downstream pressure cannot be negative.")
             pressure_q = pressure.to("psi")
         else:
+            if pressure < 0:
+                raise ValueError("Downstream pressure cannot be negative.")
             pressure_q = Quantity(pressure, "psi")
 
         if check and (self.properties.upstream_pressure < pressure_q):
             raise ValueError(
                 "Downstream pressure cannot exceed upstream pressure. Flow cannot occur against the pressure gradient."
             )
-        self.properties.downstream_pressure = typing.cast(Quantity, pressure_q)
-        if not update:
-            return self
-        return self.update_flow_rate()
+        self.properties.downstream_pressure = pressure_q
+        if update:
+            return self.update_flow_rate()
+        return self
 
     def get_pipeline_type(self) -> typing.Type["Pipeline"]:
         """
@@ -2244,7 +2315,7 @@ class Pipeline:
         :param connector_length: Physical length of connectors between pipes (e.g., mm, cm)
         """
         self.name = name or f"Pipeline-{id(self)}"
-        self.pipes: typing.List[Pipe] = []
+        self._pipes: typing.List[Pipe] = []
         self.scale_factor = scale_factor
         self.max_flow_rate = max_flow_rate
         self.pipeline_viz = None
@@ -2252,7 +2323,8 @@ class Pipeline:
         self.connector_length = connector_length
         self._fluid = fluid
         for pipe in pipes:
-            self.add_pipe(pipe)
+            self.add_pipe(pipe, update=False)
+        self.update_properties()
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
@@ -2262,36 +2334,36 @@ class Pipeline:
     def set_fluid(self, value: Fluid):
         """Set the fluid in the pipeline and update all pipes."""
         self._fluid = value
-        for pipe in self.pipes:
+        for pipe in self._pipes:
             pipe.set_fluid(value)
         return self.update_properties()
 
     @property
     def upstream_pressure(self) -> PlainQuantity[float]:
-        """Get the upstream pressure of the pipeline (from the first pipe)."""
-        if self.pipes:
-            return self.pipes[0].properties.upstream_pressure
+        """The upstream pressure of the pipeline (from the first pipe)."""
+        if self._pipes:
+            return self._pipes[0].properties.upstream_pressure
         return Quantity(0, "psi")
 
     @property
     def downstream_pressure(self) -> PlainQuantity[float]:
-        """Get the downstream pressure (psi) of the pipeline (from the last pipe)."""
-        if self.pipes:
-            return self.pipes[-1].properties.downstream_pressure
+        """The downstream pressure (psi) of the pipeline (from the last pipe)."""
+        if self._pipes:
+            return self._pipes[-1].properties.downstream_pressure
         return Quantity(0, "psi")
 
     @property
     def inlet_flow_rate(self) -> PlainQuantity[float]:
-        """Get the inlet flow rate (ft^3/s) of the pipeline (from the first pipe)."""
-        if self.pipes:
-            return self.pipes[0].flow_rate
+        """The inlet/upstream flow rate (ft^3/s) of the pipeline (from the first pipe)."""
+        if self._pipes:
+            return self._pipes[0].flow_rate
         return Quantity(0, "ft^3/s")
 
     @property
     def outlet_flow_rate(self) -> PlainQuantity[float]:
-        """Get the outlet flow rate of the pipeline (ft^3/s) (from the last pipe)."""
-        if self.pipes:
-            return self.pipes[-1].flow_rate
+        """The outlet/downstream flow rate of the pipeline (ft^3/s) (from the last pipe)."""
+        if self._pipes:
+            return self._pipes[-1].flow_rate
         return Quantity(0, "ft^3/s")
 
     def show(
@@ -2351,7 +2423,7 @@ class Pipeline:
 
         :return: SVG string representing the entire pipeline with proper connections
         """
-        if not self.pipes:
+        if not self._pipes:
             return """
             <svg viewBox="0 0 400 100" class="mx-auto">
                 <text x="200" y="50" text-anchor="middle" font-size="14" fill="#6b7280">
@@ -2527,9 +2599,9 @@ class Pipeline:
         # Bounding box tracking for dynamic viewBox
         min_x = min_y = float("inf")
         max_x = max_y = float("-inf")
-        pipe_count = len(self.pipes)
+        pipe_count = len(self._pipes)
 
-        for i, pipe in enumerate(self.pipes):
+        for i, pipe in enumerate(self._pipes):
             # Get pipe SVG content (ensure it reflects current flow rate)
             pipe_svg_content = pipe.get_svg()
             pipe_info = get_pipe_flange_positions(pipe)
@@ -2595,7 +2667,7 @@ class Pipeline:
 
             # Add connector to next pipe (if not the last pipe)
             if i < (pipe_count - 1):
-                next_pipe = self.pipes[i + 1]
+                next_pipe = self._pipes[i + 1]
 
                 # Check if we need an elbow connector (direction change)
                 is_elbow = pipe.direction != next_pipe.direction
@@ -2758,11 +2830,11 @@ class Pipeline:
         :param pipe2_idx: Index of the second pipe
         :return: True if pipes are connected, False otherwise
         """
-        if pipe1_idx < 0 or pipe2_idx >= len(self.pipes):
+        if pipe1_idx < 0 or pipe2_idx >= len(self._pipes):
             return False
 
-        pipe1 = self.pipes[pipe1_idx]
-        pipe2 = self.pipes[pipe2_idx]
+        pipe1 = self._pipes[pipe1_idx]
+        pipe2 = self._pipes[pipe2_idx]
 
         # Check direction compatibility (only check for direction compatibility now)
         direction_compatible = check_directions_compatibility(
@@ -2780,36 +2852,37 @@ class Pipeline:
         :param check: Whether to validate the pressure change (default is True)
         :return: self for method chaining
         """
-        if self.pipes:
-            self.pipes[0].set_upstream_pressure(pressure, check=check)
+        if self._pipes:
+            self._pipes[0].set_upstream_pressure(pressure, check=check, update=True)
         return self.update_properties()
 
-    def set_downstream_pressure(
-        self, pressure: typing.Union[PlainQuantity[float], float], check: bool = True
+    def set_upstream_temperature(
+        self, temperature: typing.Union[PlainQuantity[float], float]
     ):
-        """
-        Set the downstream pressure for the entire pipeline (applied to the last pipe).
+        """Set the upstream fluid temperature for the pipeline (applied to the first pipe)."""
+        if isinstance(temperature, Quantity):
+            temperature_q = temperature.to("degF")
+        else:
+            temperature_q = Quantity(temperature, "degF")
 
-        :param pressure: Downstream pressure to set
-        :param check: Whether to validate the pressure change (default is True)
-        :return: self for method chaining
-        """
-        if self.pipes:
-            self.pipes[-1].set_downstream_pressure(pressure, check=check)
+        if self._pipes:
+            self._fluid = evolve(self._fluid, temperature=temperature_q)
+            self._pipes[0].set_fluid_temperature(temperature_q, update=False)
         return self.update_properties()
 
-    def add_pipe(self, pipe: Pipe, index: int = -1):
+    def add_pipe(self, pipe: Pipe, index: int = -1, update: bool = True):
         """
         Add a new pipe to the end of the pipeline.
 
         :param pipe: Pipe instance to add to the pipeline
         :param index: Optional index to insert the pipe at (default is -1 for appending)
+        :param update: Whether to update properties after adding (default is True)
         :return: self for method chaining
         :raises `PipelineConnectionError`: If the new pipe cannot be connected
         """
-        if self.pipes:
+        if self._pipes:
             # Validate flow direction compatibility
-            last_pipe = self.pipes[-1]
+            last_pipe = self._pipes[-1]
             if not check_directions_compatibility(last_pipe.direction, pipe.direction):
                 raise PipelineConnectionError(
                     f"Cannot add pipe with opposing flow direction: "
@@ -2824,25 +2897,34 @@ class Pipeline:
         if self.fluid is not None:
             copied_pipe.set_fluid(self.fluid)
 
-        self.pipes.insert(index, copied_pipe)
-        return self.update_properties()
+        if index < 0:
+            index = len(self._pipes) + index + 1  # Convert negative index to positive
 
-    def remove_pipe(self, index: int):
+        self._pipes.insert(index, copied_pipe)
+        if update:
+            self.update_properties()
+        return self
+
+    def remove_pipe(self, index: int = -1, update: bool = True):
         """
         Remove a pipe from the pipeline at the specified index.
 
         :param index: Index of the pipe to remove
+        :param update: Whether to update properties after removal (default is True)
         :return: self for method chaining
         :raises PipelineConnectionError: If removing the pipe breaks pipeline continuity
         """
-        if 0 <= index < len(self.pipes):
-            self.pipes.pop(index)
+        if index < 0:
+            index = len(self._pipes) + index  # Convert negative index to positive
+
+        if 0 <= index < len(self._pipes):
+            self._pipes.pop(index)
 
             # Validate remaining connections
-            if len(self.pipes) > 1:
-                for i in range(len(self.pipes) - 1):
-                    current_pipe = self.pipes[i]
-                    next_pipe = self.pipes[i + 1]
+            if len(self._pipes) > 1:
+                for i in range(len(self._pipes) - 1):
+                    current_pipe = self._pipes[i]
+                    next_pipe = self._pipes[i + 1]
 
                     if not check_directions_compatibility(
                         current_pipe.direction, next_pipe.direction
@@ -2851,38 +2933,49 @@ class Pipeline:
                             f"Removing pipe creates incompatible flow directions between segments {i} "
                             f"({current_pipe.direction.value}) and {i + 1} ({next_pipe.direction.value})"
                         )
-        return self.update_properties()
 
-    def update_properties(
-        self, start_index: int = 0, end_index: typing.Optional[int] = None
-    ):
+        if update:
+            self.update_properties()
+        return self
+
+    def update_properties(self, start_index: int = 0, end_index: int = -1):
         """
         Update properties for all pipes in the pipeline.
 
         :param start_index: Starting index of pipes to update (default is 0)
-        :param end_index: Ending index of pipes to update (default is None, meaning all pipes)
+        :param end_index: Ending index of pipes to update (default is -1 for last pipe)
         :return: self for method chaining
         """
         if self.fluid is None:
             return self
 
-        if end_index is None:
-            end_index = len(self.pipes) - 1
+        pipe_count = len(self._pipes)
+        if start_index < 0:
+            start_index = pipe_count + start_index
+
+        if end_index < 0:
+            end_index = pipe_count + end_index
 
         # Process pipes sequentially from start_index to end_index
         # Each pipe connects only to its immediate next neighbor
-        for i in range(start_index, min(end_index, len(self.pipes) - 1)):
-            current_pipe = self.pipes[i]
-            next_pipe = self.pipes[i + 1]
+        for i in range(start_index, min(end_index, pipe_count - 1)):
+            current_pipe = self._pipes[i]
+            next_pipe = self._pipes[i + 1]
+            print("Current Pipe:", current_pipe.name)
+            print("Next Pipe:", next_pipe.name)
 
-            # Ensure current pipe flow rate is updated first
-            current_pipe.update_flow_rate()
+            # # Ensure current pipe flow rate is updated first
+            # current_pipe.update_flow_rate()
 
-            # Calculate pressure drop across the connector between pipes if the pipe diameters differ
-            if (
-                current_pipe.properties.internal_diameter
-                == next_pipe.properties.internal_diameter
-            ):
+            relative_diameter_difference = (
+                abs(
+                    current_pipe.properties.internal_diameter.magnitude
+                    - next_pipe.properties.internal_diameter.magnitude
+                )
+                / current_pipe.properties.internal_diameter.magnitude
+            )
+            # If diameters are within 5%, treat as same diameter (no pressure drop across connector)
+            if relative_diameter_difference < 0.05:
                 # No pressure drop across connector if diameters are the same
                 # So mass and volumetric flow rates remain constant
                 # and the next pipe's pressures can be directly set
@@ -2922,111 +3015,202 @@ class Pipeline:
                     check=False,
                     update=False,
                 )
+                # Next pipe flow rate is same as current pipe flow rate
+                next_pipe.set_flow_rate(flow_rate=current_pipe.flow_rate)
+                continue
 
-            else:
-                current_pipe_fluid = current_pipe.fluid
-                next_pipe_fluid = next_pipe.fluid
-                if current_pipe_fluid is None or next_pipe_fluid is None:
-                    raise ValueError(
-                        "Both pipes must have fluid properties defined to update flow rates."
-                    )
-
-                mass_rate = current_pipe.mass_rate
-                print(mass_rate)
-
-                # We need to know the outlet volumetric flow rate
-                # (the volumetric rate at which the fluid is now flowing into the next pipe) of the connector
-                # so we can determine the pressure drop across the connector
-                if (
-                    self.flow_type == FlowType.COMPRESSIBLE
-                    or current_pipe_fluid.compressibility_factor > 0.0
-                ):
-                    # For compressible flow, mass rate is constant but volumetric rate changes with density
-
-                    # Use next pipe's volume and fluid mass to calculate density due to compression
-                    # or expansion in the next pipe
-                    is_elbow_connected = current_pipe.direction != next_pipe.direction
-                    if is_elbow_connected:
-                        # For elbow connectors, there are two arms each of length, `connector_length`
-                        connector_length = 2 * self.connector_length
-                    else:
-                        connector_length = self.connector_length
-
-                    if current_pipe.flow_velocity.magnitude <= 0:
-                        raise ValueError(
-                            "Current pipe must have a positive flow velocity to compute compressible flow."
-                        )
-
-                    flow_time_across_connector = (
-                        connector_length.to("ft").magnitude
-                        / current_pipe.flow_velocity.magnitude
-                    )
-                    fluid_mass_transported_across_connector: float = (
-                        mass_rate.to("lb/s").magnitude * flow_time_across_connector
-                    )
-                    fluid_density_in_next_pipe = (
-                        fluid_mass_transported_across_connector
-                        / next_pipe.properties.volume.to("ft^3").magnitude
-                    ) * ureg("lb/ft^3")
-                    fluid_density_in_next_pipe: PlainQuantity[float] = Quantity(
-                        fluid_density_in_next_pipe.magnitude, "lb/ft^3"
-                    )
-                    next_pipe.fluid.density = fluid_density_in_next_pipe  # type: ignore
-                    outlet_volumetric_rate = mass_rate / fluid_density_in_next_pipe
-                else:
-                    # For incompressible flow, mass rate and volumetric rate remain constant
-                    # since fluid density does not change
-                    outlet_volumetric_rate = current_pipe.flow_rate
-
-                # Calculate pressure drop across the connector due to diameter change
-                connector_pressure_drop = compute_tapered_pipe_pressure_drop(
-                    flow_rate=outlet_volumetric_rate,
-                    pipe_inlet_diameter=current_pipe.properties.internal_diameter,
-                    pipe_outlet_diameter=next_pipe.properties.internal_diameter,
-                    pipe_length=self.connector_length,
-                    fluid_density=current_pipe_fluid.density,
-                    fluid_dynamic_viscosity=current_pipe_fluid.viscosity,
-                    pipe_relative_roughness=current_pipe.properties.relative_roughness,
+            current_pipe_fluid = current_pipe.fluid
+            next_pipe_fluid = next_pipe.fluid
+            if current_pipe_fluid is None or next_pipe_fluid is None:
+                raise ValueError(
+                    "Both pipes must have fluid properties defined to update flow rates."
                 )
-                connector_upstream_pressure = (
-                    current_pipe.properties.downstream_pressure
-                )
-                connector_downstream_pressure = (
-                    connector_upstream_pressure - connector_pressure_drop
-                )
-                # Set next pipe's upstream pressure to connector's downstream pressure
-                next_pipe.set_upstream_pressure(
+
+            mass_rate = current_pipe.mass_rate.to("lb/s")
+            is_elbow_connected = current_pipe.direction != next_pipe.direction
+            # For elbow connectors, there are two arms each of length, `connector_length`
+            connector_length = (
+                2 * self.connector_length
+                if is_elbow_connected
+                else self.connector_length
+            )
+
+            # Calculate the pressure drop across the connector due to diameter change
+            connector_pressure_drop = compute_tapered_pipe_pressure_drop(
+                flow_rate=current_pipe.flow_rate,
+                pipe_inlet_diameter=current_pipe.properties.internal_diameter,
+                pipe_outlet_diameter=next_pipe.properties.internal_diameter,
+                pipe_length=connector_length,
+                fluid_density=current_pipe_fluid.density,
+                fluid_dynamic_viscosity=current_pipe_fluid.viscosity,
+                pipe_relative_roughness=0.0001,  # Assume very smooth connector
+            )
+
+            print("Connector Pressure Drop:", connector_pressure_drop.to("kilopascal"))
+            connector_upstream_pressure = current_pipe.properties.downstream_pressure
+            print(
+                "Connector Upstream Pressure:",
+                connector_upstream_pressure.to("kilopascal"),
+            )
+            connector_downstream_pressure = Quantity(
+                connector_upstream_pressure.to("psi").magnitude
+                - connector_pressure_drop.magnitude,
+                "psi",
+            )
+            print(
+                "Connector Downstream Pressure:",
+                connector_downstream_pressure.to("kilopascal"),
+            )
+
+            is_compressible_flow = (
+                self.flow_type == FlowType.COMPRESSIBLE
+                or current_pipe_fluid.compressibility_factor > 0.0
+            )
+            # mass rate and volumetric rate is constant for short connector,
+            # for both compressible and incompressible flow. However, for compressible flow,
+            # fluid density changes
+            if is_compressible_flow:
+                estimated_fluid_density_in_next_pipe = compute_fluid_density(
                     pressure=connector_downstream_pressure,
-                    check=False,
-                    update=False,
+                    temperature=current_pipe_fluid.temperature,
+                    molecular_weight=current_pipe_fluid.molecular_weight,
+                    compressibility_factor=current_pipe_fluid.compressibility_factor,
+                ).to("lb/ft^3")
+            else:
+                estimated_fluid_density_in_next_pipe = current_pipe_fluid.density.to(
+                    "lb/ft^3"
                 )
+
+            # Since mass rate is constant, across the pipeline, the estimated volumetric rate in the next pipe will be
+            estimated_volumetric_rate_in_next_pipe = (
+                mass_rate / estimated_fluid_density_in_next_pipe
+            )
+            next_pipe_upstream_pressure = connector_downstream_pressure
+            next_pipe_downstream_pressure = Quantity(
+                0.0, "psi"
+            )  # We don't know this yet
+
+            tolerance = 1e-6
+            for _ in range(100):
                 # Compute the pressure drop across the length of the next pipe with the outlet volumetric flow rate
-                next_pipe_flow_equation = next_pipe.flow_equation
-                if next_pipe_flow_equation is None:
-                    raise ValueError(
-                        "Next pipe must have a flow equation defined to update flow rates."
-                    )
-                pressure_drop = compute_pipe_pressure_drop(
+                pressure_drop_in_next_pipe = compute_pipe_pressure_drop(
                     properties=next_pipe.properties,
-                    flow_rate=outlet_volumetric_rate,
+                    flow_rate=estimated_volumetric_rate_in_next_pipe,
                     fluid=next_pipe_fluid,
-                    flow_equation=next_pipe_flow_equation,
+                    flow_equation=FlowEquation.WEYMOUTH,  # start with weymouth
                 )
-                next_pipe_downstream_pressure = (
-                    next_pipe.properties.upstream_pressure - pressure_drop
+                next_pipe_flow_equation = determine_pipe_flow_equation(
+                    pressure_drop=pressure_drop_in_next_pipe,
+                    upstream_pressure=next_pipe_upstream_pressure,
+                    internal_diameter=next_pipe.properties.internal_diameter,
+                    length=next_pipe.properties.length,
+                    fluid_phase=next_pipe_fluid.phase,
+                    fluid_specific_gravity=next_pipe.fluid.specific_gravity,  # type: ignore
                 )
-                next_pipe.set_downstream_pressure(
-                    pressure=next_pipe_downstream_pressure,
-                    check=False,
-                    update=False,
+                print("Flow Equation:", next_pipe_flow_equation.value)
+
+                next_pipe_downstream_pressure = Quantity(
+                    next_pipe_upstream_pressure.magnitude
+                    - pressure_drop_in_next_pipe.magnitude,
+                    "psi",
                 )
 
+                if is_compressible_flow:
+                    # use average-pressure for density evaluation
+                    average_pressure = (
+                        next_pipe_upstream_pressure.magnitude
+                        + next_pipe_downstream_pressure.magnitude
+                    ) / 2
+                    average_pressure = Quantity(average_pressure, "psi")
+                    new_density_estimate = compute_fluid_density(
+                        pressure=average_pressure,
+                        temperature=current_pipe_fluid.temperature,
+                        molecular_weight=current_pipe_fluid.molecular_weight,
+                        compressibility_factor=current_pipe_fluid.compressibility_factor,
+                    ).to("lb/ft^3")
+                else:
+                    new_density_estimate = estimated_fluid_density_in_next_pipe
+
+                new_volumetric_flow_rate_estimate = (
+                    mass_rate / new_density_estimate
+                ).to("ft^3/s")
+
+                # Convergence check
+                relative_error = abs(
+                    (
+                        new_volumetric_flow_rate_estimate
+                        - estimated_volumetric_rate_in_next_pipe
+                    ).magnitude
+                ) / max(estimated_volumetric_rate_in_next_pipe.magnitude, 1e-12)
+
+                if relative_error < tolerance:
+                    estimated_fluid_density_in_next_pipe = new_density_estimate
+                    estimated_volumetric_rate_in_next_pipe = (
+                        new_volumetric_flow_rate_estimate
+                    )
+                    break
+
+                # Relaxation update
+                estimated_fluid_density_in_next_pipe = (
+                    estimated_fluid_density_in_next_pipe.magnitude
+                    + new_density_estimate.magnitude
+                ) / 2
+                estimated_fluid_density_in_next_pipe = Quantity(
+                    estimated_fluid_density_in_next_pipe, "lb/ft^3"
+                )
+                estimated_volumetric_rate_in_next_pipe = (
+                    estimated_volumetric_rate_in_next_pipe.magnitude
+                    + new_volumetric_flow_rate_estimate.magnitude
+                ) / 2
+                estimated_volumetric_rate_in_next_pipe = Quantity(
+                    estimated_volumetric_rate_in_next_pipe, "ft^3/s"
+                )
+                # Update next pipe fluid density for next iteration
+                next_pipe.fluid.density = estimated_fluid_density_in_next_pipe  # type: ignore
+            else:
+                raise RuntimeError(
+                    "Failed to converge compressible update for next pipe"
+                )
+
+            print(
+                "Current Pipe Volumetric Rate:",
+                current_pipe.flow_rate.to("ft^3/s"),
+            )
+            print(
+                "Next Pipe Volumetric Rate:",
+                estimated_volumetric_rate_in_next_pipe.to("ft^3/s"),
+            )
+            print(
+                "Current Pipe Fluid Density:",
+                current_pipe_fluid.density.to("lb/ft^3"),
+            )
+            print(
+                "Next Pipe Fluid Density:",
+                estimated_fluid_density_in_next_pipe.to("lb/ft^3"),
+            )
+            print(
+                "Next Pipe Upstream Pressure:",
+                next_pipe_upstream_pressure.to("kilopascal"),
+            )
+            print(
+                "Next Pipe Downstream Pressure:",
+                next_pipe_downstream_pressure.to("kilopascal"),
+            )
+            next_pipe.fluid.density = estimated_fluid_density_in_next_pipe  # type: ignore
+            next_pipe.set_upstream_pressure(
+                pressure=next_pipe_upstream_pressure,
+                check=False,
+                update=False,
+            )
+            next_pipe.set_downstream_pressure(
+                pressure=next_pipe_downstream_pressure,
+                check=False,
+                update=False,
+            )
             # Update the next pipe's flow rate after pressure changes
-            next_pipe.update_flow_rate()
+            next_pipe.set_flow_rate(estimated_volumetric_rate_in_next_pipe)
+            print()
 
-        # Ensure the final pipe in the range has its flow rate updated (if not already done)
-        if end_index < len(self.pipes) and start_index <= end_index:
-            self.pipes[end_index].update_flow_rate()
         return self
 
     def validate_connections(self) -> typing.List[str]:
@@ -3036,9 +3220,9 @@ class Pipeline:
         :return: List of error messages for disconnected pipes (empty if all valid)
         """
         errors = []
-        for i in range(len(self.pipes) - 1):
-            current_pipe = self.pipes[i]
-            next_pipe = self.pipes[i + 1]
+        for i in range(len(self._pipes) - 1):
+            current_pipe = self._pipes[i]
+            next_pipe = self._pipes[i + 1]
 
             # Validate flow direction compatibility
             if not check_directions_compatibility(
@@ -3061,11 +3245,11 @@ class Pipeline:
         """
         if isinstance(other, Pipe):
             # Connect single pipe
-            return type(self)(self.pipes + [other])
+            return type(self)(self._pipes + [other])
 
         elif isinstance(other, Pipeline):
             # Connect another pipeline
-            return type(self)(self.pipes + other.pipes)
+            return type(self)(self._pipes + other._pipes)
         raise TypeError("Can only connect to Pipe or Pipeline instances")
 
     def __and__(self, other: typing.Union[Pipe, "Pipeline"]):
