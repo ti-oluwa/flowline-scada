@@ -1,13 +1,9 @@
 import copy
-import enum
 import typing
 import math
-import re
 import logging
 from attrs import evolve
 from nicegui import ui
-from enum import Enum
-
 from nicegui.elements.html import Html
 from nicegui.elements.row import Row
 from pint.facets.plain import PlainQuantity
@@ -15,14 +11,22 @@ from pint.facets.plain import PlainQuantity
 from src.units import Quantity, ureg
 from src.properties import (
     FlowEquation,
+    FlowType,
     Fluid,
-    PipeProperties,
-    compute_fluid_density,
     determine_pipe_flow_equation,
     compute_reynolds_number,
     compute_pipe_flow_rate,
     compute_pipe_pressure_drop,
     compute_tapered_pipe_pressure_drop,
+)
+from src.piping import (
+    PipeComponent,
+    PipeDirection,
+    build_horizontal_pipe,
+    build_vertical_pipe,
+    build_straight_connector,
+    build_elbow_connector,
+    Pipeline as PipelineComponent,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,9 +35,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PipeDirection",
     "PipelineConnectionError",
-    "physical_to_display_unit",
-    "calculate_flow_intensity",
-    "get_flow_color",
     "check_directions_compatibility",
     "Meter",
     "FlowMeter",
@@ -43,9 +44,22 @@ __all__ = [
     "Pipe",
     "Pipeline",
     "FlowStation",
-    "build_straight_pipe_connector_svg",
-    "build_elbow_pipe_connector_svg",
 ]
+
+
+def show_alert(
+    message: str,
+    severity: typing.Literal["info", "warning", "error", "loading"] = "info",
+    duration: int = 3000,
+):
+    """Show an alert message using NiceGUI's notify system."""
+    if severity == "error":
+        type = "negative"  # Map to NiceGUI's severity levels
+    elif severity == "loading":
+        type = "ongoing"
+    else:
+        type = severity
+    ui.notify(message, type=type, timeout=duration, close_button=True, position="top")
 
 
 class Meter:
@@ -64,11 +78,12 @@ class Meter:
         alarm_high: typing.Optional[float] = None,
         alarm_low: typing.Optional[float] = None,
         animation_speed: float = 5.0,
-        animation_interval: float = 0.1,
+        animation_interval: float = 0.01,
         update_func: typing.Optional[
             typing.Callable[[], typing.Optional[float]]
         ] = None,
         update_interval: float = 1.0,
+        alert_errors: bool = True,
     ) -> None:
         """
         Initialize the meter.
@@ -87,6 +102,7 @@ class Meter:
         :param animation_interval: Interval in seconds for animation updates
         :param update_func: Optional function to fetch updated value
         :param update_interval: Interval in seconds to call `update_func`
+        :param alert_errors: Whether to show alerts on for meter update errors.
         """
         self.value = value
         self.min = min_value
@@ -111,6 +127,7 @@ class Meter:
         self.visible = False
         self._animation_timer = None
         self._update_timer = None
+        self.alert_errors = alert_errors
 
     def show(
         self,
@@ -198,7 +215,6 @@ class Meter:
         # Initialize timers and mark as visible
         self._initialize_timers()
         self.set_visibility(True)
-
         return self.container
 
     def _initialize_timers(self):
@@ -314,8 +330,8 @@ class Meter:
         # Calculate animation step with better responsiveness
         diff = self._target_value - self.value
         # Base step on both animation speed and difference magnitude
-        base_step = self.animation_speed * 0.15
-        magnitude_factor = min(abs(diff) * 0.1, 2.0)  # Scale with difference size
+        base_step = self.animation_speed * self.animation_interval
+        magnitude_factor = min(abs(diff) * 0.1, 100.0)  # Scale with difference size
         step = min(abs(diff), base_step * (1 + magnitude_factor))
 
         if diff < 0:
@@ -336,6 +352,8 @@ class Meter:
                 if new_value is not None:
                     self.set_value(new_value)
             except Exception as exc:
+                if self.alert_errors:
+                    show_alert(f"Error updating {self.label}: {exc}", severity="error")
                 logger.error(f"Error in update function: {exc}", exc_info=True)
 
     def set_value(self, value: float, immediate: bool = False):
@@ -938,6 +956,7 @@ class Regulator:
         alarm_high: typing.Optional[float] = None,
         alarm_low: typing.Optional[float] = None,
         precision: int = 3,
+        alert_errors: bool = True,
     ) -> None:
         """
         Initialize the regulator.
@@ -954,6 +973,7 @@ class Regulator:
         :param alarm_high: High alarm threshold for color coding
         :param alarm_low: Low alarm threshold for color coding
         :param precision: Number of decimal places to display
+        :param alert_errors: Whether to show alerts on setter function errors
         """
         self.value = value
         self.min = min_value
@@ -974,6 +994,7 @@ class Regulator:
         self.slider_element = None
         self.input_element = None
         self.status_indicator = None
+        self.alert_errors = alert_errors
 
     def show(
         self,
@@ -1185,6 +1206,11 @@ class Regulator:
                 try:
                     self.setter_func(new_value)
                 except Exception as e:
+                    if self.alert_errors:
+                        show_alert(
+                            f"Error setting regulator value on target: {e}",
+                            severity="error",
+                        )
                     logger.error(
                         f"Error in regulator setter function: {e}", exc_info=True
                     )
@@ -1250,76 +1276,10 @@ class Regulator:
         return self.value
 
 
-class PipeDirection(str, Enum):
-    """Enumeration for pipe flow directions."""
-
-    NORTH = "north"
-    SOUTH = "south"
-    EAST = "east"
-    WEST = "west"
-
-
 class PipelineConnectionError(Exception):
     """Exception raised when pipes in a pipeline are not properly connected."""
 
     pass
-
-
-def physical_to_display_unit(
-    physical: PlainQuantity[float],
-    scale_factor: float = 0.1,
-    min_display_unit: typing.Optional[float] = None,
-    max_display_unit: typing.Optional[float] = None,
-) -> float:
-    """
-    Convert a physical quantity to a display unit based on the scale factor.
-
-    :param physical: The physical quantity to convert
-    :param scale_factor: The scale factor for conversion (default: 0.1) (pixels per millimeter)
-    :param min_display_unit: Minimum display unit value (default: None)
-    :param max_display_unit: Maximum display unit value (default: 100.0)
-    :return: The converted display unit value
-    """
-    display_value = physical.to("mm").magnitude * scale_factor
-    if min_display_unit is not None:
-        display_value = max(display_value, min_display_unit)
-    if max_display_unit is not None:
-        display_value = min(display_value, max_display_unit)
-    return display_value
-
-
-def calculate_flow_intensity(
-    flow_rate: PlainQuantity[float],
-    max_flow_rate: PlainQuantity[float] = Quantity(10.0, "ft^3/s"),
-) -> float:
-    """
-    Calculate flow intensity normalized to 0-1 range.
-
-    :param flow_rate: Flow rate as Quantity
-    :param max_flow_rate: Maximum expected flow rate for normalization as Quantity
-    :return: Intensity value between 0.0 and 1.0
-    """
-    flow_magnitude = flow_rate.to("ft^3/s").magnitude
-    max_flow_magnitude = max_flow_rate.to("ft^3/s").magnitude
-    return min(flow_magnitude / max_flow_magnitude, 1.0)
-
-
-def get_flow_color(intensity: float) -> str:
-    """
-    Get color based on flow intensity.
-
-    :param intensity: Flow intensity from 0.0 to 1.0
-    :return: Hex color string for the flow visualization
-    """
-    if intensity <= 0:
-        return "#9ca3af"  # Gray for no flow
-    elif intensity < 0.2:
-        return "#3b82f6"  # Blue for low flow
-    elif intensity < 0.5:
-        return "#10b981"  # Green for normal flow
-    elif intensity < 0.8:
-        return "#f59e0b"  # Orange for high flow
-    return "#ef4444"  # Red for very high flow
 
 
 def check_directions_compatibility(*directions: PipeDirection) -> bool:
@@ -1359,37 +1319,61 @@ class Pipe:
 
     def __init__(
         self,
-        properties: PipeProperties,
+        length: PlainQuantity[float],
+        internal_diameter: PlainQuantity[float],
+        upstream_pressure: PlainQuantity[float],
+        downstream_pressure: PlainQuantity[float],
+        material: str = "Steel",
+        roughness: PlainQuantity[float] = Quantity(0, "m"),
+        efficiency: float = 1.0,
+        elevation_difference: PlainQuantity[float] = Quantity(0, "m"),
         fluid: typing.Optional[Fluid] = None,
         direction: typing.Union[PipeDirection, str] = PipeDirection.EAST,
         name: typing.Optional[str] = None,
         scale_factor: float = 0.1,
         max_flow_rate: PlainQuantity[float] = Quantity(10.0, "ft^3/s"),
+        friction_factor: typing.Optional[float] = None,
+        reynolds_number: typing.Optional[float] = None,
+        flow_type: FlowType = FlowType.COMPRESSIBLE,
+        alert_errors: bool = True,
     ) -> None:
         """
         Initialize a Pipe component.
 
-        :param properties: PipeProperties instance with physical characteristics
+        :param length: Length of the pipe
+        :param internal_diameter: Internal diameter of the pipe
+        :param upstream_pressure: Upstream pressure of the pipe
+        :param downstream_pressure: Downstream pressure of the pipe
+        :param material: Material of the pipe
+        :param roughness: Absolute roughness of the pipe in meters
+        :param efficiency: Efficiency of the pipe (0 to 1)
+        :param elevation_difference: Elevation difference between upstream and downstream outlets of the pipe
+        :param fluid: Optional Fluid instance with fluid properties
         :param direction: PipeDirection enum indicating flow direction
         :param name: Optional name for the pipe
         :param scale_factor: Display scale factor for converting physical units to pixels (pixels per millimeter).
             Example: A scale_factor of 0.1 means 1 pixel represents 10 mm (1 cm).
         :param max_flow_rate: Maximum expected flow rate for intensity normalization
+        :param friction_factor: Friction factor of the pipe
+        :param reynolds_number: Reynolds number of the flow in the pipe
+        :param flow_type: Type of flow (incompressible or compressible)
+        :param alert_errors: Whether to show alerts on errors
         """
         self.name = name or f"Pipe-{id(self)}"
         self.direction = PipeDirection(direction)
-        if self.direction == PipeDirection.NORTH:
-            self._properties = evolve(
-                properties, elevation_difference=properties.length
-            )
-        elif self.direction == PipeDirection.SOUTH:
-            self._properties = evolve(
-                properties, elevation_difference=-properties.length
-            )
-        else:
-            self._properties = evolve(
-                properties, elevation_difference=0.0 * properties.length.units
-            )
+        self.length = length
+        self.internal_diameter = internal_diameter
+        self.upstream_pressure = upstream_pressure
+        self.downstream_pressure = downstream_pressure
+        self.material = material
+        self.roughness = roughness
+        self.efficiency = efficiency
+        self.elevation_difference = elevation_difference
+        self.friction_factor = friction_factor
+        self.reynolds_number = reynolds_number
+        self._flow_type = flow_type
+        self.alert_errors = alert_errors
+
         self._fluid = evolve(fluid) if fluid else None
         self.scale_factor = scale_factor
         self.flow_rate = Quantity(0.0, "ft^3/s")
@@ -1398,22 +1382,50 @@ class Pipe:
         self.update_flow_rate()
 
     @property
-    def properties(self) -> PipeProperties:
-        """Pipe properties."""
-        return self._properties
-
-    def set_properties(self, new_properties: PipeProperties, update: bool = True):
+    def pressure_drop(self) -> PlainQuantity[float]:
         """
-        Update pipe properties and optionally recalculate flow rate.
-
-        :param new_properties: New PipeProperties instance to set
-        :param update: Whether to update flow rate after changing properties
-        :return: self or updated Pipe instance
+        The pressure drop across the pipe in psi.
         """
-        self._properties = evolve(new_properties)
-        if update:
-            return self.update_flow_rate()
-        return self
+        upstream = self.upstream_pressure.to("psi").magnitude
+        downstream = self.downstream_pressure.to("psi").magnitude
+        return Quantity(upstream - downstream, "psi")
+
+    @property
+    def relative_roughness(self) -> float:
+        """
+        The relative roughness of the pipe.
+        """
+        try:
+            return (
+                self.roughness.to("m").magnitude
+                / self.internal_diameter.to("m").magnitude
+            )
+        except ZeroDivisionError:
+            if self.alert_errors:
+                show_alert(
+                    f"Error calculating relative roughness of pipe - {self.name!r}: Internal diameter is zero.",
+                    severity="error",
+                )
+            return 0.0
+
+    @property
+    def cross_sectional_area(self) -> PlainQuantity[float]:
+        """
+        The cross-sectional area of the pipe in ft².
+        """
+        radius = self.internal_diameter.to("ft").magnitude / 2.0
+        area_ft2 = math.pi * (radius**2)
+        return Quantity(area_ft2 * ureg.ft**2, "ft^2")
+
+    @property
+    def volume(self) -> PlainQuantity[float]:
+        """
+        The volume of the pipe in ft³.
+        """
+        area = self.cross_sectional_area.to("ft^2").magnitude
+        length_ft = self.length.to("ft").magnitude
+        volume_ft3 = area * length_ft
+        return Quantity(volume_ft3 * ureg.ft**3, "ft^3")
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
@@ -1454,14 +1466,28 @@ class Pipe:
         """Appropriate pipe flow equation based on pipe and fluid properties."""
         if self.fluid is None:
             return None
-        return determine_pipe_flow_equation(
-            pressure_drop=self.properties.pressure_drop,
-            upstream_pressure=self.properties.upstream_pressure,
-            internal_diameter=self.properties.internal_diameter,
-            length=self.properties.length,
-            fluid_phase=self.fluid.phase,
-            fluid_specific_gravity=self.fluid.specific_gravity,
-        )
+
+        try:
+            flow_equation = determine_pipe_flow_equation(
+                pressure_drop=self.pressure_drop,
+                upstream_pressure=self.upstream_pressure,
+                internal_diameter=self.internal_diameter,
+                length=self.length,
+                fluid_phase=self.fluid.phase,
+                flow_type=self._flow_type,
+            )
+        except Exception:
+            if self.alert_errors:
+                show_alert(
+                    f"Error determining flow equation for pipe - {self.name!r}.",
+                    severity="error",
+                )
+            logger.error(
+                f"Error determining flow equation for pipe - {self.name!r}.",
+                exc_info=True,
+            )
+            return None
+        return flow_equation
 
     @property
     def mass_rate(self) -> PlainQuantity[float]:
@@ -1475,8 +1501,13 @@ class Pipe:
     @property
     def flow_velocity(self) -> PlainQuantity[float]:
         """Flow velocity of the fluid in the pipe in (ft/s) based on current flow rate and pipe cross-sectional area."""
-        area = self.properties.cross_sectional_area.to("ft^2").magnitude
+        area = self.cross_sectional_area.to("ft^2").magnitude
         if area <= 0:
+            if self.alert_errors:
+                show_alert(
+                    f"Error calculating flow velocity in pipe - {self.name!r}: Cross-sectional area is zero.",
+                    severity="error",
+                )
             return Quantity(0.0, "ft/s")
         volumetric_rate = self.flow_rate.to("ft^3/s").magnitude
         return Quantity(volumetric_rate / area, "ft/s")
@@ -1528,210 +1559,30 @@ class Pipe:
         :return: SVG string representing the pipe visualization
         """
         if self.direction in [PipeDirection.NORTH, PipeDirection.SOUTH]:
-            return self.build_vertical_pipe_svg()
-        return self.build_horizontal_pipe_svg()
+            pipe_component = build_vertical_pipe(
+                direction=self.direction,
+                internal_diameter=self.internal_diameter,
+                length=self.length,
+                flow_rate=self.flow_rate,
+                max_flow_rate=self.max_flow_rate,
+                scale_factor=self.scale_factor,
+                canvas_width=100.0,
+                canvas_height=400.0,
+            )
+        else:
+            pipe_component = build_horizontal_pipe(
+                direction=self.direction,
+                internal_diameter=self.internal_diameter,
+                length=self.length,
+                flow_rate=self.flow_rate,
+                max_flow_rate=self.max_flow_rate,
+                scale_factor=self.scale_factor,
+                canvas_width=400.0,
+                canvas_height=100.0,
+            )
 
-    def build_horizontal_pipe_svg(self) -> str:
-        """
-        Create horizontal pipe SVG with flow animation.
-
-        :return: SVG string for horizontal pipe visualization
-        """
-        # Determine flow direction
-        if self.direction == PipeDirection.WEST:
-            start_x, end_x = 350, 50
-            arrow = "◀"
-        else:  # EAST (default)
-            start_x, end_x = 50, 350
-            arrow = "▶"
-
-        # Convert physical diameter to display units with reasonable bounds
-        pipe_diameter_in_pixels = physical_to_display_unit(
-            self.properties.internal_diameter,
-            self.scale_factor,
-            min_display_unit=10,
-            max_display_unit=80,
-        )
-        pipe_y = 50 - pipe_diameter_in_pixels / 2
-
-        # Calculate intensity and color from flow rate
-        intensity = calculate_flow_intensity(self.flow_rate, self.max_flow_rate)
-        color = get_flow_color(intensity)
-
-        # Create flow particles if there's flow
-        particles = ""
-        if intensity > 0:
-            particle_count = max(3, int(intensity * 10))
-            animation_duration = max(0.8, 3.0 - intensity * 2.0)
-
-            for i in range(particle_count):
-                delay = i * (animation_duration / particle_count)
-                particles += f'''
-                <circle r="3" fill="{color}" opacity="0">
-                    <animate attributeName="cx" 
-                             values="{start_x};{end_x}" 
-                             dur="{animation_duration}s" 
-                             repeatCount="indefinite" 
-                             begin="{delay}s"/>
-                    <animate attributeName="cy" 
-                             values="50;50" 
-                             dur="{animation_duration}s" 
-                             repeatCount="indefinite" 
-                             begin="{delay}s"/>
-                    <animate attributeName="opacity" 
-                             values="0;0.9;0.9;0" 
-                             dur="{animation_duration}s" 
-                             repeatCount="indefinite" 
-                             begin="{delay}s"/>
-                </circle>
-                '''
-
-        # Flow direction indicators
-        direction_indicators = ""
-        if intensity > 0:
-            for i in range(5):
-                x_pos = 80 + (i * 50)
-                if self.direction == PipeDirection.WEST:
-                    x_pos = 320 - (i * 50)
-
-                direction_indicators += f'''
-                <text x="{x_pos}" y="30" text-anchor="middle" font-size="14" fill="{color}" opacity="0.7">
-                    <animate attributeName="opacity" 
-                             values="0.3;1;0.3" 
-                             dur="2s" 
-                             repeatCount="indefinite" 
-                             begin="{i * 0.4}s"/>
-                    {arrow}
-                </text>
-                '''
-
-        return f'''
-        <svg width="100%" height="100" viewBox="0 0 400 100" class="mx-auto">
-            <defs>
-                <linearGradient id="pipeGrad_{id(self)}" x1="0%" y1="0%" x2="0%" y2="100%">
-                    <stop offset="0%" style="stop-color:{color};stop-opacity:0.3" />
-                    <stop offset="50%" style="stop-color:{color};stop-opacity:0.6" />
-                    <stop offset="100%" style="stop-color:{color};stop-opacity:0.3" />
-                </linearGradient>
-            </defs>
-            
-            <!-- Pipe body -->
-            <rect x="45" y="{pipe_y}" width="310" height="{pipe_diameter_in_pixels}" 
-                  fill="url(#pipeGrad_{id(self)})" stroke="{color}" stroke-width="2" rx="4"/>
-            
-            <!-- Pipe flanges/connections -->
-            <rect x="40" y="{pipe_y - 3}" width="10" height="{pipe_diameter_in_pixels + 6}" fill="#6b7280" rx="2"/>
-            <rect x="350" y="{pipe_y - 3}" width="10" height="{pipe_diameter_in_pixels + 6}" fill="#6b7280" rx="2"/>
-            
-            <!-- Connection points -->
-            <circle cx="45" cy="50" r="4" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-            <circle cx="355" cy="50" r="4" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-            
-            <!-- Flow direction indicators -->
-            {direction_indicators}
-            
-            <!-- Flow particles -->
-            {particles}
-        </svg>
-        '''
-
-    def build_vertical_pipe_svg(self) -> str:
-        """
-        Create vertical pipe SVG with flow animation.
-
-        :return: SVG string for vertical pipe visualization
-        """
-        # Determine flow direction
-        if self.direction == PipeDirection.NORTH:
-            start_y, end_y = 80, 20
-        else:  # SOUTH (default)
-            start_y, end_y = 20, 80
-
-        # Calculate pipe thickness with reasonable bounds
-        pipe_diameter_in_pixels = physical_to_display_unit(
-            self.properties.internal_diameter,
-            self.scale_factor,
-            min_display_unit=10,
-            max_display_unit=80,
-        )
-        pipe_x = 200 - pipe_diameter_in_pixels / 2
-
-        # Calculate intensity and color from flow rate
-        intensity = calculate_flow_intensity(self.flow_rate, self.max_flow_rate)
-        color = get_flow_color(intensity)
-
-        # Create flow particles
-        particles = ""
-        if intensity > 0:
-            particle_count = max(3, int(intensity * 8))
-            animation_duration = max(0.8, 3.0 - intensity * 2.0)
-
-            for i in range(particle_count):
-                delay = i * (animation_duration / particle_count)
-                particles += f'''
-                <circle r="3" fill="{color}" opacity="0">
-                    <animate attributeName="cx" 
-                             values="200;200" 
-                             dur="{animation_duration}s" 
-                             repeatCount="indefinite" 
-                             begin="{delay}s"/>
-                    <animate attributeName="cy" 
-                             values="{start_y};{end_y}" 
-                             dur="{animation_duration}s" 
-                             repeatCount="indefinite" 
-                             begin="{delay}s"/>
-                    <animate attributeName="opacity" 
-                             values="0;0.9;0.9;0" 
-                             dur="{animation_duration}s" 
-                             repeatCount="indefinite" 
-                             begin="{delay}s"/>
-                </circle>
-                '''
-
-        # Flow direction indicators
-        direction_indicators = ""
-        if intensity > 0:
-            # Add 3 directional arrows along the pipe
-            for i in range(3):
-                y_pos = 25 + i * 20  # Position arrows vertically along the pipe
-                # Choose arrow based on flow direction
-                arrow = "▲" if self.direction == PipeDirection.NORTH else "▼"
-                direction_indicators += f'''
-                <text x="220" y="{y_pos}" text-anchor="middle" font-size="10" fill="{color}" opacity="0.7">
-                    <animate attributeName="opacity" values="0.3;1;0.3" dur="1.5s" repeatCount="indefinite" begin="{i * 0.3}s"/>
-                    {arrow}
-                </text>
-                '''
-
-        return f'''
-        <svg width="100%" height="100" viewBox="0 0 400 100" class="mx-auto">
-            <defs>
-                <linearGradient id="pipeGradV_{id(self)}" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" style="stop-color:{color};stop-opacity:0.3" />
-                    <stop offset="50%" style="stop-color:{color};stop-opacity:0.6" />
-                    <stop offset="100%" style="stop-color:{color};stop-opacity:0.3" />
-                </linearGradient>
-            </defs>
-            
-            <!-- Pipe body -->
-            <rect x="{pipe_x}" y="15" width="{pipe_diameter_in_pixels}" height="70" 
-                  fill="url(#pipeGradV_{id(self)})" stroke="{color}" stroke-width="2" rx="4"/>
-            
-            <!-- Pipe flanges/connections -->
-            <rect x="{pipe_x - 3}" y="10" width="{pipe_diameter_in_pixels + 6}" height="10" fill="#6b7280" rx="2"/>
-            <rect x="{pipe_x - 3}" y="80" width="{pipe_diameter_in_pixels + 6}" height="10" fill="#6b7280" rx="2"/>
-            
-            <!-- Connection points -->
-            <circle cx="200" cy="15" r="4" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-            <circle cx="200" cy="85" r="4" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-            
-            <!-- Flow direction indicators -->
-            {direction_indicators}
-            
-            <!-- Flow particles -->
-            {particles}
-        </svg>
-        '''
+        svg_component = pipe_component.get_svg_component()
+        return svg_component.main_svg
 
     def set_flow_rate(self, flow_rate: typing.Union[PlainQuantity[float], float]):
         """
@@ -1763,49 +1614,97 @@ class Pipe:
             return self.set_flow_rate(0.0)
 
         # Compute Reynolds number
-        reynolds_number = compute_reynolds_number(
-            current_flow_rate=self.flow_rate,
-            pipe_internal_diameter=self.properties.internal_diameter,
-            fluid_density=fluid.density,
-            fluid_dynamic_viscosity=fluid.viscosity,
-        )
-        # Calculate flow rate using the appropriate equation
-        flow_rate = compute_pipe_flow_rate(
-            properties=self.properties,
-            fluid=fluid,
-            reynolds_number=reynolds_number or 2000,  # Default to laminar if undefined
-            flow_equation=flow_equation,
-        )
+        try:
+            reynolds_number = compute_reynolds_number(
+                current_flow_rate=self.flow_rate,
+                pipe_internal_diameter=self.internal_diameter,
+                fluid_density=fluid.density,
+                fluid_dynamic_viscosity=fluid.viscosity,
+            )
+        except Exception:
+            if self.alert_errors:
+                show_alert(
+                    f"Error calculating Reynolds number in pipe - {self.name!r}.",
+                    severity="error",
+                )
+            logger.error(
+                f"Error calculating Reynolds number in pipe - {self.name!r}.",
+                exc_info=True,
+            )
+            raise
+
+        try:
+            # Calculate flow rate using the appropriate equation
+            flow_rate = compute_pipe_flow_rate(
+                length=self.length,
+                internal_diameter=self.internal_diameter,
+                upstream_pressure=self.upstream_pressure,
+                downstream_pressure=self.downstream_pressure,
+                relative_roughness=self.relative_roughness,
+                efficiency=self.efficiency,
+                elevation_difference=self.elevation_difference,
+                specific_gravity=fluid.specific_gravity,
+                temperature=fluid.temperature,
+                compressibility_factor=fluid.compressibility_factor,
+                reynolds_number=reynolds_number
+                or 2000,  # Default to laminar if undefined
+                flow_equation=flow_equation,
+            )
+        except Exception:
+            if self.alert_errors:
+                show_alert(
+                    f"Error calculating flow rate in pipe - {self.name!r}.",
+                    severity="error",
+                )
+            logger.error(
+                f"Error calculating flow rate in pipe - {self.name!r}.", exc_info=True
+            )
+            raise
         return self.set_flow_rate(flow_rate)
 
     def set_upstream_pressure(
         self,
         pressure: typing.Union[PlainQuantity[float], float],
         check: bool = True,
-        update: bool = True,
+        update: bool = False,
     ):
         """
         Set upstream pressure and update flow rate.
 
         :param pressure: Upstream pressure as Quantity or float (assumed psi if float)
         :param check: Whether to check pressure constraints (default is True)
-        :param update: Whether to update flow rate after setting pressure (default is True)
+        :param update: Whether to update flow rate after setting pressure (default is False)
         :return: self for method chaining
         """
         if isinstance(pressure, Quantity):
             if pressure.magnitude < 0:
+                if self.alert_errors:
+                    show_alert(
+                        f"Upstream pressure cannot be negative in pipe - {self.name!r}.",
+                        severity="error",
+                    )
                 raise ValueError("Upstream pressure cannot be negative.")
             pressure_q = pressure.to("psi")
         else:
             if pressure < 0:
+                if self.alert_errors:
+                    show_alert(
+                        f"Upstream pressure cannot be negative in pipe - {self.name!r}.",
+                        severity="error",
+                    )
                 raise ValueError("Upstream pressure cannot be negative.")
             pressure_q = Quantity(pressure, "psi")
 
-        if check and (self.properties.downstream_pressure > pressure_q):
+        if check and (self.downstream_pressure > pressure_q):
+            if self.alert_errors:
+                show_alert(
+                    f"Upstream pressure cannot be less than downstream pressure in pipe - {self.name!r}.",
+                    severity="error",
+                )
             raise ValueError(
                 "Upstream pressure cannot be less than downstream pressure. Flow cannot occur against the pressure gradient."
             )
-        self.properties.upstream_pressure = pressure_q
+        self.upstream_pressure = pressure_q
         if update:
             return self.update_flow_rate()
         return self
@@ -1814,30 +1713,45 @@ class Pipe:
         self,
         pressure: typing.Union[PlainQuantity[float], float],
         check: bool = True,
-        update: bool = True,
+        update: bool = False,
     ):
         """
         Set downstream pressure and update flow rate.
 
         :param pressure: Downstream pressure as Quantity or float (assumed psi if float)
         :param check: Whether to check pressure constraints (default is True)
-        :param update: Whether to update flow rate after setting pressure (default is True)
+        :param update: Whether to update flow rate after setting pressure (default is False)
         :return: self for method chaining
         """
         if isinstance(pressure, Quantity):
             if pressure.magnitude < 0:
+                if self.alert_errors:
+                    show_alert(
+                        f"Downstream pressure cannot be negative in pipe - {self.name!r}.",
+                        severity="error",
+                    )
                 raise ValueError("Downstream pressure cannot be negative.")
             pressure_q = pressure.to("psi")
         else:
             if pressure < 0:
+                if self.alert_errors:
+                    show_alert(
+                        f"Downstream pressure cannot be negative in pipe - {self.name!r}.",
+                        severity="error",
+                    )
                 raise ValueError("Downstream pressure cannot be negative.")
             pressure_q = Quantity(pressure, "psi")
 
-        if check and (self.properties.upstream_pressure < pressure_q):
+        if check and (self.upstream_pressure < pressure_q):
+            if self.alert_errors:
+                show_alert(
+                    f"Downstream pressure cannot exceed upstream pressure in pipe - {self.name!r}.",
+                    severity="error",
+                )
             raise ValueError(
                 "Downstream pressure cannot exceed upstream pressure. Flow cannot occur against the pressure gradient."
             )
-        self.properties.downstream_pressure = pressure_q
+        self.downstream_pressure = pressure_q
         if update:
             return self.update_flow_rate()
         return self
@@ -1871,11 +1785,14 @@ class Pipe:
 
         # Validate flow direction compatibility
         if not check_directions_compatibility(self.direction, other.direction):
-            raise PipelineConnectionError(
+            error_msg = (
                 f"Cannot connect pipes with opposing flow directions: "
                 f"{self.direction.value} to {other.direction.value}. "
                 f"Pipes flowing in opposite directions cannot be connected."
             )
+            if self.alert_errors:
+                show_alert(error_msg, severity="error")
+            raise PipelineConnectionError(error_msg)
 
         pipeline_cls = pipeline_type or self.get_pipeline_type()
         kwargs.setdefault("scale_factor", self.scale_factor)
@@ -1892,397 +1809,6 @@ class Pipe:
         return self.connect(other)
 
     __add__ = __and__
-
-
-def build_straight_pipe_connector_svg(
-    pipe1: Pipe,
-    pipe2: Pipe,
-    connector_length: PlainQuantity[float],
-    flow_rate: typing.Union[PlainQuantity[float], float, None] = None,
-) -> str:
-    """
-    Build a straight connector SVG between two pipes with diameter transition.
-
-    :param pipe1: First pipe (upstream)
-    :param pipe2: Second pipe (downstream)
-    :param connector_length: Length of connector in physical units (e.g., mm, cm)
-    :param flow_rate: Optional flow rate for animation
-    :return: SVG string for the straight connector
-    """
-    # Scale diameters for display (use average scale factor)
-    scale_factor = (pipe1.scale_factor + pipe2.scale_factor) / 2
-    diameter1_in_pixels = physical_to_display_unit(
-        pipe1.properties.internal_diameter, scale_factor, max_display_unit=200
-    )
-    diameter2_in_pixels = physical_to_display_unit(
-        pipe2.properties.internal_diameter, scale_factor, max_display_unit=200
-    )
-    length = physical_to_display_unit(
-        connector_length, scale_factor, min_display_unit=40, max_display_unit=300
-    )
-
-    # Calculate flow properties
-    flow_rate = pipe1.flow_rate if flow_rate is None else flow_rate
-    if not isinstance(flow_rate, Quantity):
-        flow_rate = Quantity(flow_rate, "ft^3/s")
-
-    intensity = calculate_flow_intensity(flow_rate, pipe1.max_flow_rate)
-    color = get_flow_color(intensity)
-
-    # Connector dimensions
-    y1 = 50 - diameter1_in_pixels / 2
-    y2 = 50 - diameter2_in_pixels / 2
-
-    # Create transition path
-    if abs(diameter1_in_pixels - diameter2_in_pixels) < 2:
-        # Minimal diameter change - straight connector
-        connector_path = f'''
-        <rect x="5" y="{min(y1, y2)}" width="{length}" height="{max(diameter1_in_pixels, diameter2_in_pixels)}" 
-              fill="url(#connectorGrad)" stroke="{color}" stroke-width="2" rx="4"/>
-        '''
-    else:
-        # Significant diameter change - tapered connector
-        if diameter1_in_pixels > diameter2_in_pixels:
-            # Contracting (reducer)
-            connector_path = f'''
-            <polygon points="5,{y1} {5 + length},{y2} {5 + length},{y2 + diameter2_in_pixels} 5,{y1 + diameter1_in_pixels}" 
-                     fill="url(#connectorGrad)" stroke="{color}" stroke-width="2"/>
-            '''
-        else:
-            # Expanding (expander)
-            connector_path = f'''
-            <polygon points="5,{y1} {5 + length},{y2} {5 + length},{y2 + diameter2_in_pixels} 5,{y1 + diameter1_in_pixels}" 
-                     fill="url(#connectorGrad)" stroke="{color}" stroke-width="2"/>
-            '''
-
-    # Flow particles through connector
-    particles = ""
-    if intensity > 0:
-        particle_count = max(2, int(intensity * 6))
-        animation_duration = max(0.8, 3.0 - intensity * 2.0)
-
-        for i in range(particle_count):
-            delay = i * (animation_duration / particle_count)
-
-            # Particles follow the centerline, adjusting for diameter changes
-            start_y = 50
-            end_y = 50
-
-            particles += f'''
-            <circle r="2" fill="{color}" opacity="0">
-                <animate attributeName="cx" 
-                         values="5;{5 + length}" 
-                         dur="{animation_duration}s" 
-                         repeatCount="indefinite" 
-                         begin="{delay}s"/>
-                <animate attributeName="cy" 
-                         values="{start_y};{end_y}" 
-                         dur="{animation_duration}s" 
-                         repeatCount="indefinite" 
-                         begin="{delay}s"/>
-                <animate attributeName="opacity" 
-                         values="0;0.8;0.8;0" 
-                         dur="{animation_duration}s" 
-                         repeatCount="indefinite" 
-                         begin="{delay}s"/>
-            </circle>
-            '''
-
-    return f'''
-    <svg width="{5 + length + 5}" height="100" viewBox="0 0 {5 + length + 5} 100" class="mx-auto">
-        <defs>
-            <linearGradient id="connectorGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                <stop offset="0%" style="stop-color:{color};stop-opacity:0.3" />
-                <stop offset="50%" style="stop-color:{color};stop-opacity:0.6" />
-                <stop offset="100%" style="stop-color:{color};stop-opacity:0.3" />
-            </linearGradient>
-        </defs>
-        
-        <!-- Connector body with diameter transition -->
-        {connector_path}
-        
-        <!-- Connection flanges -->
-        <rect x="0" y="{y1 - 2}" width="5" height="{diameter1_in_pixels + 4}" fill="#6b7280" rx="2"/>
-        <rect x="{5 + length}" y="{y2 - 2}" width="5" height="{diameter2_in_pixels + 4}" fill="#6b7280" rx="2"/>
-        
-        <!-- Connection points -->
-        <circle cx="0" cy="50" r="3" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-        <circle cx="{5 + length + 5}" cy="50" r="3" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-        
-        <!-- Flow particles -->
-        {particles}
-    </svg>
-    '''
-
-
-def build_elbow_pipe_connector_svg(
-    pipe1: Pipe,
-    pipe2: Pipe,
-    connector_length: typing.Optional[PlainQuantity[float]] = None,
-    flow_rate: typing.Union[PlainQuantity[float], float, None] = None,
-) -> str:
-    """
-    Build an elbow connector SVG between two pipes with dynamic orientation.
-    The elbow orientation is determined by the flow directions of the connected pipes.
-
-    :param pipe1: First pipe (upstream)
-    :param pipe2: Second pipe (downstream)
-    :param connector_length: Physical length of connector arms (e.g., mm, cm). If None, uses default.
-    :param flow_rate: Optional flow rate for animation
-    :return: SVG string for the elbow connector
-    """
-    # Scale diameters for display (use average scale factor)
-    scale_factor = (pipe1.scale_factor + pipe2.scale_factor) / 2
-    diameter1_in_pixels = physical_to_display_unit(
-        pipe1.properties.internal_diameter,
-        scale_factor,
-        max_display_unit=200,
-    )
-    diameter2_in_pixels = physical_to_display_unit(
-        pipe2.properties.internal_diameter,
-        scale_factor,
-        max_display_unit=200,
-    )
-
-    flow_rate = pipe1.flow_rate if flow_rate is None else flow_rate
-    if not isinstance(flow_rate, Quantity):
-        flow_rate = Quantity(flow_rate, "ft^3/s")
-
-    intensity = calculate_flow_intensity(flow_rate, pipe1.max_flow_rate)
-    color = get_flow_color(intensity)
-
-    # Determine elbow orientation based on pipe directions
-    dir1 = pipe1.direction
-    dir2 = pipe2.direction
-
-    # Map directions to elbow orientations
-    # The elbow inlet faces opposite to pipe1's direction
-    # The elbow outlet faces the same as pipe2's direction
-    orientation_map = {
-        (PipeDirection.EAST, PipeDirection.NORTH): (
-            "west",
-            "north",
-        ),  # west inlet, north outlet
-        (PipeDirection.EAST, PipeDirection.SOUTH): (
-            "west",
-            "south",
-        ),  # west inlet, south outlet
-        (PipeDirection.WEST, PipeDirection.NORTH): (
-            "east",
-            "north",
-        ),  # east inlet, north outlet
-        (PipeDirection.WEST, PipeDirection.SOUTH): (
-            "east",
-            "south",
-        ),  # east inlet, south outlet
-        (PipeDirection.SOUTH, PipeDirection.EAST): (
-            "north",
-            "east",
-        ),  # north inlet, east outlet
-        (PipeDirection.SOUTH, PipeDirection.WEST): (
-            "north",
-            "west",
-        ),  # north inlet, west outlet
-        (PipeDirection.NORTH, PipeDirection.EAST): (
-            "south",
-            "east",
-        ),  # south inlet, east outlet
-        (PipeDirection.NORTH, PipeDirection.WEST): (
-            "south",
-            "west",
-        ),  # south inlet, west outlet
-    }
-
-    if (dir1, dir2) not in orientation_map:
-        # Fallback to default orientation if combination not found
-        inlet_face, outlet_face = "west", "north"
-    else:
-        inlet_face, outlet_face = orientation_map[(dir1, dir2)]
-
-    # Use average thickness for consistent appearance
-    avg_thickness = (diameter1_in_pixels + diameter2_in_pixels) / 2
-
-    # Calculate arm length from connector length or use default
-    # Each arm should use the connector_length independently
-    if connector_length is not None:
-        # Convert physical connector length to display units for each arm
-        arm_length = physical_to_display_unit(
-            connector_length, scale_factor, min_display_unit=40, max_display_unit=50
-        )
-    else:
-        # Default arm length for compact design
-        arm_length = 25
-
-    if inlet_face == "west" and outlet_face == "north":
-        # West inlet (left), North outlet (top)
-        # Connection points at the edges of the elbow arms
-        inlet_x, inlet_y = 50 - arm_length, 50
-        outlet_x, outlet_y = 50, 50 - arm_length
-        h_rect = f'<rect x="{inlet_x}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{outlet_y}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M {inlet_x + 5} 50 L {50 - 5} 50 Q 50 50 50 {50 - 5} L 50 {outlet_y + 5}"
-        )
-
-    elif inlet_face == "west" and outlet_face == "south":
-        # West inlet (left), South outlet (bottom)
-        inlet_x, inlet_y = 50 - arm_length, 50
-        outlet_x, outlet_y = 50, 50 + arm_length
-        h_rect = f'<rect x="{inlet_x}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M {inlet_x + 5} 50 L {50 - 5} 50 Q 50 50 50 {50 + 5} L 50 {outlet_y - 5}"
-        )
-
-    elif inlet_face == "east" and outlet_face == "north":
-        # East inlet (right), North outlet (top)
-        inlet_x, inlet_y = 50 + arm_length, 50
-        outlet_x, outlet_y = 50, 50 - arm_length
-        h_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{outlet_y}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M {inlet_x - 5} 50 L {50 + 5} 50 Q 50 50 50 {50 - 5} L 50 {outlet_y + 5}"
-        )
-
-    elif inlet_face == "east" and outlet_face == "south":
-        # East inlet (right), South outlet (bottom)
-        inlet_x, inlet_y = 50 + arm_length, 50
-        outlet_x, outlet_y = 50, 50 + arm_length
-        h_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M {inlet_x - 5} 50 L {50 + 5} 50 Q 50 50 50 {50 + 5} L 50 {outlet_y - 5}"
-        )
-
-    elif inlet_face == "north" and outlet_face == "east":
-        # North inlet (top), East outlet (right)
-        inlet_x, inlet_y = 50, 50 - arm_length
-        outlet_x, outlet_y = 50 + arm_length, 50
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{inlet_y}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        h_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M 50 {inlet_y + 5} L 50 {50 - 5} Q 50 50 {50 + 5} 50 L {outlet_x - 5} 50"
-        )
-
-    elif inlet_face == "north" and outlet_face == "west":
-        # North inlet (top), West outlet (left)
-        inlet_x, inlet_y = 50, 50 - arm_length
-        outlet_x, outlet_y = 50 - arm_length, 50
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{inlet_y}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        h_rect = f'<rect x="{outlet_x}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M 50 {inlet_y + 5} L 50 {50 - 5} Q 50 50 {50 - 5} 50 L {outlet_x + 5} 50"
-        )
-
-    elif inlet_face == "south" and outlet_face == "east":
-        # South inlet (bottom), East outlet (right)
-        inlet_x, inlet_y = 50, 50 + arm_length
-        outlet_x, outlet_y = 50 + arm_length, 50
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        h_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M 50 {inlet_y - 5} L 50 {50 + 5} Q 50 50 {50 + 5} 50 L {outlet_x - 5} 50"
-        )
-
-    else:  # inlet_face == "south" and outlet_face == "west"
-        # South inlet (bottom), West outlet (left)
-        inlet_x, inlet_y = 50, 50 + arm_length
-        outlet_x, outlet_y = 50 - arm_length, 50
-        v_rect = f'<rect x="{50 - avg_thickness / 2}" y="{50 - avg_thickness / 2}" width="{avg_thickness}" height="{arm_length + avg_thickness / 2}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        h_rect = f'<rect x="{outlet_x}" y="{50 - avg_thickness / 2}" width="{arm_length + avg_thickness / 2}" height="{avg_thickness}" fill="url(#elbowGrad_{id(pipe1)})" stroke="{color}" stroke-width="2" rx="3"/>'
-        particle_path = (
-            f"M 50 {inlet_y - 5} L 50 {50 + 5} Q 50 50 {50 - 5} 50 L {outlet_x + 5} 50"
-        )
-
-    # Create the elbow geometry with overlapping sections (no corner needed)
-    elbow_geometry = f"""
-        <!-- Horizontal section -->
-        {h_rect}
-        <!-- Vertical section (overlaps horizontal) -->
-        {v_rect}
-    """
-
-    # Flow particles following the elbow curved path
-    particles = ""
-    if intensity > 0:
-        particle_count = max(3, int(intensity * 8))
-        animation_duration = max(1.0, 4.0 - intensity * 3.0)
-        particle_color = color
-
-        for i in range(particle_count):
-            delay = i * (animation_duration / particle_count)
-
-            particles += f'''
-            <circle r="2" fill="{particle_color}" opacity="0">
-                <animateMotion dur="{animation_duration}s" repeatCount="indefinite" begin="{delay}s">
-                    <path d="{particle_path}"/>
-                </animateMotion>
-                <animate attributeName="opacity" 
-                         values="0;0.8;0.8;0" 
-                         dur="{animation_duration}s" 
-                         repeatCount="indefinite" 
-                         begin="{delay}s"/>
-            </circle>
-            '''
-
-    return f'''
-    <svg width="80" height="80" viewBox="0 0 80 80" class="mx-auto">
-        <defs>
-            <linearGradient id="elbowGrad_{
-        id(pipe1)
-    }" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" style="stop-color:{color};stop-opacity:0.3" />
-                <stop offset="50%" style="stop-color:{color};stop-opacity:0.6" />
-                <stop offset="100%" style="stop-color:{color};stop-opacity:0.3" />
-            </linearGradient>
-        </defs>
-        
-        <!-- Elbow body with dynamic orientation -->
-        {elbow_geometry}
-        
-        <!-- Connection flanges positioned to overlap with pipe flanges -->
-        <!-- Inlet flange - extends outward from connection point toward the connecting pipe -->
-        {
-        f'<rect x="{inlet_x}" y="{inlet_y - diameter1_in_pixels / 2 - 2}" width="5" height="{diameter1_in_pixels + 4}" fill="#6b7280" rx="2"/>'
-        if inlet_face == "east"
-        else f'<rect x="{inlet_x - 5}" y="{inlet_y - diameter1_in_pixels / 2 - 2}" width="5" height="{diameter1_in_pixels + 4}" fill="#6b7280" rx="2"/>'
-        if inlet_face == "west"
-        else f'<rect x="{inlet_x - diameter1_in_pixels / 2 - 2}" y="{inlet_y}" width="{diameter1_in_pixels + 4}" height="5" fill="#6b7280" rx="2"/>'
-        if inlet_face == "south"
-        else f'<rect x="{inlet_x - diameter1_in_pixels / 2 - 2}" y="{inlet_y - 5}" width="{diameter1_in_pixels + 4}" height="5" fill="#6b7280" rx="2"/>'
-    }
-        <!-- Outlet flange - extends outward from connection point toward the connecting pipe -->
-        {
-        f'<rect x="{outlet_x}" y="{outlet_y - diameter2_in_pixels / 2 - 2}" width="5" height="{diameter2_in_pixels + 4}" fill="#6b7280" rx="2"/>'
-        if outlet_face == "east"
-        else f'<rect x="{outlet_x - 5}" y="{outlet_y - diameter2_in_pixels / 2 - 2}" width="5" height="{diameter2_in_pixels + 4}" fill="#6b7280" rx="2"/>'
-        if outlet_face == "west"
-        else f'<rect x="{outlet_x - diameter2_in_pixels / 2 - 2}" y="{outlet_y}" width="{diameter2_in_pixels + 4}" height="5" fill="#6b7280" rx="2"/>'
-        if outlet_face == "south"
-        else f'<rect x="{outlet_x - diameter2_in_pixels / 2 - 2}" y="{outlet_y - 5}" width="{diameter2_in_pixels + 4}" height="5" fill="#6b7280" rx="2"/>'
-    }
-        
-        <!-- Connection points -->
-        <circle cx="{inlet_x}" cy="{
-        inlet_y
-    }" r="3" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-        <circle cx="{outlet_x}" cy="{
-        outlet_y
-    }" r="3" fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-        
-        <!-- Flow particles -->
-        {particles}
-    </svg>
-    '''
-
-
-class FlowType(str, enum.Enum):
-    """Enumeration of flow types for pipes."""
-
-    COMPRESSIBLE = "compressible"
-    """Compressible flow (e.g., gases). With the flow type, the volumetric rate in pipes will vary with pressure and temperature."""
-    INCOMPRESSIBLE = "incompressible"
-    """Incompressible flow (e.g., liquids). The volumetric rate in pipes remains constant regardless of pressure changes."""
 
 
 class Pipeline:
@@ -2302,6 +1828,7 @@ class Pipeline:
         max_flow_rate: PlainQuantity[float] = Quantity(10.0, "ft^3/s"),
         flow_type: FlowType = FlowType.COMPRESSIBLE,
         connector_length: PlainQuantity[float] = Quantity(0.1, "m"),
+        alert_errors: bool = True,
     ) -> None:
         """
         Initialize a Pipeline component.
@@ -2313,15 +1840,17 @@ class Pipeline:
         :param max_flow_rate: Maximum expected flow rate for intensity normalization
         :param flow_type: Flow type for the pipeline (compressible or incompressible)
         :param connector_length: Physical length of connectors between pipes (e.g., mm, cm)
+        :param alert_errors: Whether to alert on connection errors between pipes
         """
         self.name = name or f"Pipeline-{id(self)}"
         self._pipes: typing.List[Pipe] = []
         self.scale_factor = scale_factor
         self.max_flow_rate = max_flow_rate
         self.pipeline_viz = None
-        self.flow_type = flow_type
+        self._flow_type = flow_type
         self.connector_length = connector_length
         self._fluid = fluid
+        self.alert_errors = alert_errors
         for pipe in pipes:
             self.add_pipe(pipe, update=False)
         self.update_properties()
@@ -2342,29 +1871,33 @@ class Pipeline:
     def upstream_pressure(self) -> PlainQuantity[float]:
         """The upstream pressure of the pipeline (from the first pipe)."""
         if self._pipes:
-            return self._pipes[0].properties.upstream_pressure
+            return self._pipes[0].upstream_pressure.to("psi")
         return Quantity(0, "psi")
 
     @property
     def downstream_pressure(self) -> PlainQuantity[float]:
         """The downstream pressure (psi) of the pipeline (from the last pipe)."""
         if self._pipes:
-            return self._pipes[-1].properties.downstream_pressure
+            return self._pipes[-1].downstream_pressure.to("psi")
         return Quantity(0, "psi")
 
     @property
     def inlet_flow_rate(self) -> PlainQuantity[float]:
         """The inlet/upstream flow rate (ft^3/s) of the pipeline (from the first pipe)."""
         if self._pipes:
-            return self._pipes[0].flow_rate
+            return self._pipes[0].flow_rate.to("ft^3/s")
         return Quantity(0, "ft^3/s")
 
     @property
     def outlet_flow_rate(self) -> PlainQuantity[float]:
         """The outlet/downstream flow rate of the pipeline (ft^3/s) (from the last pipe)."""
         if self._pipes:
-            return self._pipes[-1].flow_rate
+            return self._pipes[-1].flow_rate.to("ft^3/s")
         return Quantity(0, "ft^3/s")
+
+    def __iter__(self):
+        """Iterate over the pipes in the pipeline."""
+        return iter(self._pipes)
 
     def show(
         self,
@@ -2385,10 +1918,16 @@ class Pipeline:
         container = (
             ui.row()
             .classes(
-                "w-full h-auto p-4 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col items-center"
+                "w-full h-auto p-2 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col items-center space-y-2"
             )
             .style(
-                f"width: {width}; height: {height}; min-height: 300px; overflow: auto;"
+                f"""
+                width: {width}; 
+                min-height: {height}; 
+                overflow: auto; 
+                flex-wrap: nowrap;
+                scrollbar-width: thin;
+                """,
             )
         )
 
@@ -2399,12 +1938,17 @@ class Pipeline:
 
             # Get the SVG content and check if it's valid
             svg_content = self.get_svg()
-            self.pipeline_viz = (
-                ui.html(svg_content)
-                .classes("w-full")
-                .style(
-                    "min-height: 200px; border: 1px solid #ccc; background: #f9f9f9;"
-                )
+            self.pipeline_viz = ui.html(svg_content).style(
+                """
+                    width: 100%;
+                    height: auto;
+                    min-height: 200px; 
+                    border: 1px solid #ccc; 
+                    background: #f9f9f9;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    """
             )
         return container
 
@@ -2419,408 +1963,131 @@ class Pipeline:
 
     def get_svg(self) -> str:
         """
-        Generate a unified SVG showing all pipes connected together based on their actual flow directions.
+        Generate a unified SVG showing all pipes connected together.
 
         :return: SVG string representing the entire pipeline with proper connections
         """
-        if not self._pipes:
-            return """
-            <svg viewBox="0 0 400 100" class="mx-auto">
-                <text x="200" y="50" text-anchor="middle" font-size="14" fill="#6b7280">
-                    Empty Pipeline
-                </text>
-            </svg>
-            """
-
-        def extract_svg_dimensions(svg_content: str) -> tuple[float, float]:
-            """Extract width and height from SVG content."""
-            # Try to extract from viewBox first
-            viewbox_match = re.search(
-                r'viewBox="[\d\s.-]+ [\d\s.-]+ ([\d\s.-]+) ([\d\s.-]+)"', svg_content
-            )
-            if viewbox_match:
-                return float(viewbox_match.group(1)), float(viewbox_match.group(2))
-
-            # Fallback to width/height attributes
-            width_match = re.search(r'width="([\d.]+)"', svg_content)
-            height_match = re.search(r'height="([\d.]+)"', svg_content)
-            if width_match and height_match:
-                return float(width_match.group(1)), float(height_match.group(1))
-
-            # Default fallback
-            return 400.0, 100.0
-
-        def get_pipe_flange_positions(pipe: Pipe) -> dict:
-            """Get flange positions for a pipe based on its direction and actual dimensions."""
-            svg_content = pipe.get_svg()
-            width, height = extract_svg_dimensions(svg_content)
-
-            if pipe.direction == PipeDirection.EAST:
-                return {
-                    "inlet": {"x": 45, "y": height / 2},  # Left flange
-                    "outlet": {"x": width - 45, "y": height / 2},  # Right flange
-                    "width": width,
-                    "height": height,
-                }
-            elif pipe.direction == PipeDirection.WEST:
-                return {
-                    "inlet": {"x": width - 45, "y": height / 2},  # Right flange (inlet)
-                    "outlet": {"x": 45, "y": height / 2},  # Left flange (outlet)
-                    "width": width,
-                    "height": height,
-                }
-            elif pipe.direction == PipeDirection.SOUTH:
-                return {
-                    "inlet": {"x": width / 2, "y": 15},  # Top flange
-                    "outlet": {"x": width / 2, "y": height - 15},  # Bottom flange
-                    "width": width,
-                    "height": height,
-                }
-            # NORTH
-            return {
-                "inlet": {
-                    "x": width / 2,
-                    "y": height - 15,
-                },  # Bottom flange (inlet)
-                "outlet": {"x": width / 2, "y": 15},  # Top flange (outlet)
-                "width": width,
-                "height": height,
-            }
-
-        def calculate_straight_flange_overlap_offset() -> float:
-            """
-            Calculate the proper offset for straight connector flange overlap.
-
-            Based on testing, 20 pixels provides the optimal flange overlap for
-            straight connectors where pipe flanges sit properly on top of connector flanges.
-
-            :return: Offset in pixels for proper straight connector flange overlap
-            """
-            return 20  # Empirically determined optimal offset for straight connectors
-
-        def calculate_elbow_flange_overlap_offset() -> float:
-            """
-            Calculate the proper offset for elbow connector flange overlap.
-
-            Based on testing, 25 pixels provides the optimal flange overlap for
-            elbow connectors where pipe flanges sit properly on top of connector flanges.
-
-            :return: Offset in pixels for proper elbow connector flange overlap
-            """
-            return 25  # Empirically determined optimal offset for elbow connectors
-
-        def get_connector_dimensions_and_flanges(
-            pipe1: Pipe, pipe2: Pipe, is_elbow: bool
-        ) -> dict:
-            """Get connector dimensions and flange positions."""
-            if is_elbow:
-                # Elbow connector - fixed 80x80 viewBox
-                arm_length = physical_to_display_unit(
-                    self.connector_length,
-                    (pipe1.scale_factor + pipe2.scale_factor) / 2,
-                    min_display_unit=15,
-                    max_display_unit=50,
-                )
-
-                # Map pipe directions to elbow inlet/outlet positions
-                dir1, dir2 = pipe1.direction, pipe2.direction
-                orientation_map = {
-                    (PipeDirection.EAST, PipeDirection.NORTH): ("west", "north"),
-                    (PipeDirection.EAST, PipeDirection.SOUTH): ("west", "south"),
-                    (PipeDirection.WEST, PipeDirection.NORTH): ("east", "north"),
-                    (PipeDirection.WEST, PipeDirection.SOUTH): ("east", "south"),
-                    (PipeDirection.SOUTH, PipeDirection.EAST): ("north", "east"),
-                    (PipeDirection.SOUTH, PipeDirection.WEST): ("north", "west"),
-                    (PipeDirection.NORTH, PipeDirection.EAST): ("south", "east"),
-                    (PipeDirection.NORTH, PipeDirection.WEST): ("south", "west"),
-                }
-
-                inlet_face, outlet_face = orientation_map.get(
-                    (dir1, dir2), ("west", "north")
-                )
-
-                # Calculate inlet and outlet positions based on faces
-                if inlet_face == "west":
-                    inlet_pos = {"x": 50 - arm_length, "y": 50}
-                elif inlet_face == "east":
-                    inlet_pos = {"x": 50 + arm_length, "y": 50}
-                elif inlet_face == "north":
-                    inlet_pos = {"x": 50, "y": 50 - arm_length}
-                else:  # south
-                    inlet_pos = {"x": 50, "y": 50 + arm_length}
-
-                if outlet_face == "west":
-                    outlet_pos = {"x": 50 - arm_length, "y": 50}
-                elif outlet_face == "east":
-                    outlet_pos = {"x": 50 + arm_length, "y": 50}
-                elif outlet_face == "north":
-                    outlet_pos = {"x": 50, "y": 50 - arm_length}
-                else:  # south
-                    outlet_pos = {"x": 50, "y": 50 + arm_length}
-
-                return {
-                    "inlet": inlet_pos,
-                    "outlet": outlet_pos,
-                    "width": 80,
-                    "height": 80,
-                }
-            else:
-                # Straight connector - dynamic length based on connector_length
-                scale_factor = (pipe1.scale_factor + pipe2.scale_factor) / 2
-                length = physical_to_display_unit(
-                    self.connector_length,
-                    scale_factor,
-                    min_display_unit=20,
-                    max_display_unit=300,
-                )
-
-                return {
-                    "inlet": {"x": 0, "y": 50},  # Left side
-                    "outlet": {
-                        "x": length + 10,
-                        "y": 50,
-                    },  # Right side (length + flanges)
-                    "width": length + 10,
-                    "height": 100,
-                }
-
-        # Dynamic dimensions will be calculated per pipe/connector
-        # No fixed constants needed - use actual SVG dimensions
-
-        # Track all elements to be rendered - separate layers for proper z-ordering
-        connector_elements = []  # Connectors rendered first (underneath)
-        pipe_elements = []  # Pipes rendered second (on top)
-        gradient_defs = []  # Collect all gradient definitions
-
-        # Current position tracker - where the next pipe should connect
-        current_connection_x = 0
-        current_connection_y = 0
-
-        # Bounding box tracking for dynamic viewBox
-        min_x = min_y = float("inf")
-        max_x = max_y = float("-inf")
         pipe_count = len(self._pipes)
+        modular_components: typing.List[PipeComponent] = []
 
         for i, pipe in enumerate(self._pipes):
-            # Get pipe SVG content (ensure it reflects current flow rate)
-            pipe_svg_content = pipe.get_svg()
-            pipe_info = get_pipe_flange_positions(pipe)
-
-            # Extract both defs and content separately
-            defs_match = re.search(r"<defs>(.*?)</defs>", pipe_svg_content, re.DOTALL)
-            if defs_match:
-                gradient_defs.append(defs_match.group(1))
-
-            # Extract the main content (everything except the outer svg tag and defs)
-            content_match = re.search(
-                r"<svg[^>]*>.*?<defs>.*?</defs>(.*?)</svg>", pipe_svg_content, re.DOTALL
-            )
-            if not content_match:
-                # Fallback if no defs found
-                content_match = re.search(
-                    r"<svg[^>]*>(.*)</svg>", pipe_svg_content, re.DOTALL
-                )
-
-            inner_svg_content = (
-                content_match.group(1) if content_match else pipe_svg_content
-            )
-
-            # Position pipe for proper flange overlap - minimal offset for pipe positioning
-            # Pipes should be positioned to just touch connectors, with connectors handling the overlap offset
-            pipe_positioning_offset = 5  # Minimal offset just for edge alignment
-
-            if pipe.direction == PipeDirection.EAST:
-                # For east-flowing pipes, move right slightly so left flange edge aligns with connector
-                pipe_x = (
-                    current_connection_x
-                    - pipe_info["inlet"]["x"]
-                    + pipe_positioning_offset
-                )
-            elif pipe.direction == PipeDirection.WEST:
-                # For west-flowing pipes, move left slightly so right flange edge aligns with connector
-                pipe_x = (
-                    current_connection_x
-                    - pipe_info["inlet"]["x"]
-                    - pipe_positioning_offset
+            # Add the pipe component
+            if pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
+                # Horizontal pipe
+                pipe_component = build_horizontal_pipe(
+                    direction=pipe.direction,
+                    internal_diameter=pipe.internal_diameter,
+                    length=pipe.length,
+                    flow_rate=pipe.flow_rate,
+                    max_flow_rate=pipe.max_flow_rate,
+                    scale_factor=pipe.scale_factor,
+                    canvas_width=400.0,
+                    canvas_height=100.0,
                 )
             else:
-                # For vertical pipes, use standard center positioning
-                pipe_x = current_connection_x - pipe_info["inlet"]["x"]
-
-            pipe_y = current_connection_y - pipe_info["inlet"]["y"]
-            next_connection_x = pipe_x + pipe_info["outlet"]["x"]
-            next_connection_y = pipe_y + pipe_info["outlet"]["y"]
-
-            # Add pipe element with unique transform group
-            pipe_elements.append(f"""
-            <!-- Pipe {i + 1}: {pipe.name} ({pipe.direction.value}) -->
-            <g transform="translate({pipe_x}, {pipe_y})">
-                {inner_svg_content}
-            </g>
-            """)
-
-            # Update bounding box
-            min_x = min(min_x, pipe_x)
-            min_y = min(min_y, pipe_y)
-            max_x = max(max_x, pipe_x + pipe_info["width"])
-            max_y = max(max_y, pipe_y + pipe_info["height"])
+                # Vertical pipe
+                pipe_component = build_vertical_pipe(
+                    direction=pipe.direction,
+                    internal_diameter=pipe.internal_diameter,
+                    length=pipe.length,
+                    flow_rate=pipe.flow_rate,
+                    max_flow_rate=pipe.max_flow_rate,
+                    scale_factor=pipe.scale_factor,
+                    canvas_width=100.0,
+                    canvas_height=400.0,
+                )
+            modular_components.append(pipe_component)
 
             # Add connector to next pipe (if not the last pipe)
             if i < (pipe_count - 1):
                 next_pipe = self._pipes[i + 1]
 
-                # Check if we need an elbow connector (direction change)
-                is_elbow = pipe.direction != next_pipe.direction
-
-                # Get connector dimensions and flange positions
-                connector_info = get_connector_dimensions_and_flanges(
-                    pipe, next_pipe, is_elbow
-                )
-
-                if is_elbow:
-                    # Generate elbow connector with pipeline flow rate
-                    connector_svg = build_elbow_pipe_connector_svg(
-                        pipe,
-                        next_pipe,
-                        flow_rate=pipe.flow_rate,
-                        connector_length=self.connector_length,
+                # Build next pipe component first
+                if next_pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
+                    next_pipe_component = build_horizontal_pipe(
+                        direction=next_pipe.direction,
+                        internal_diameter=next_pipe.internal_diameter,
+                        length=next_pipe.length,
+                        flow_rate=next_pipe.flow_rate,
+                        max_flow_rate=next_pipe.max_flow_rate,
+                        scale_factor=next_pipe.scale_factor,
+                        canvas_width=400.0,
+                        canvas_height=100.0,
                     )
                 else:
-                    # Generate straight connector with pipeline flow rate
-                    connector_svg = build_straight_pipe_connector_svg(
-                        pipe,
-                        next_pipe,
-                        flow_rate=pipe.flow_rate,
-                        connector_length=self.connector_length,
+                    next_pipe_component = build_vertical_pipe(
+                        direction=next_pipe.direction,
+                        internal_diameter=next_pipe.internal_diameter,
+                        length=next_pipe.length,
+                        flow_rate=next_pipe.flow_rate,
+                        max_flow_rate=next_pipe.max_flow_rate,
+                        scale_factor=next_pipe.scale_factor,
+                        canvas_width=100.0,
+                        canvas_height=400.0,
                     )
 
-                # Extract connector defs and content
-                defs_match = re.search(r"<defs>(.*?)</defs>", connector_svg, re.DOTALL)
-                if defs_match:
-                    gradient_defs.append(defs_match.group(1))
-
-                content_match = re.search(
-                    r"<svg[^>]*>.*?<defs>.*?</defs>(.*?)</svg>",
-                    connector_svg,
-                    re.DOTALL,
-                )
-                if not content_match:
-                    content_match = re.search(
-                        r"<svg[^>]*>(.*)</svg>", connector_svg, re.DOTALL
+                # Determine if we need an elbow or straight connector
+                if pipe.direction != next_pipe.direction:
+                    # Different directions - need elbow connector
+                    connector = build_elbow_connector(
+                        pipe1=pipe_component,
+                        pipe2=next_pipe_component,
+                        arm_length=self.connector_length,
                     )
-
-                connector_content = (
-                    content_match.group(1) if content_match else connector_svg
-                )
-
-                # Position connector so its inlet flange overlaps with current pipe's outlet flange
-                # Move connectors back by negative X offset for proper alignment
-                connector_back_offset = 15  # Move connectors back by 15 pixels
-
-                if is_elbow:
-                    # Elbow positioning with backward offset
-                    if pipe.direction == PipeDirection.EAST:
-                        connector_x = (
-                            next_connection_x
-                            - connector_info["inlet"]["x"]
-                            - connector_back_offset
-                        )
-                        connector_y = next_connection_y - connector_info["inlet"]["y"]
-                    elif pipe.direction == PipeDirection.WEST:
-                        connector_x = (
-                            next_connection_x
-                            - connector_info["inlet"]["x"]
-                            + connector_back_offset
-                        )
-                        connector_y = next_connection_y - connector_info["inlet"]["y"]
-                    elif pipe.direction == PipeDirection.SOUTH:
-                        connector_x = next_connection_x - connector_info["inlet"]["x"]
-                        connector_y = (
-                            next_connection_y
-                            - connector_info["inlet"]["y"]
-                            - connector_back_offset
-                        )
-                    else:  # PipeDirection.NORTH
-                        connector_x = next_connection_x - connector_info["inlet"]["x"]
-                        connector_y = (
-                            next_connection_y
-                            - connector_info["inlet"]["y"]
-                            + connector_back_offset
-                        )
                 else:
-                    # Straight connector positioning with backward offset
-                    if pipe.direction == PipeDirection.EAST:
-                        connector_x = (
-                            next_connection_x
-                            - connector_info["inlet"]["x"]
-                            - connector_back_offset
-                        )
-                        connector_y = next_connection_y - connector_info["inlet"]["y"]
-                    elif pipe.direction == PipeDirection.WEST:
-                        connector_x = (
-                            next_connection_x
-                            - connector_info["inlet"]["x"]
-                            + connector_back_offset
-                        )
-                        connector_y = next_connection_y - connector_info["inlet"]["y"]
-                    else:
-                        # For vertical pipes, apply Y offset instead of X
-                        connector_x = next_connection_x - connector_info["inlet"]["x"]
-                        if pipe.direction == PipeDirection.SOUTH:
-                            connector_y = (
-                                next_connection_y
-                                - connector_info["inlet"]["y"]
-                                - connector_back_offset
-                            )
-                        else:  # PipeDirection.NORTH
-                            connector_y = (
-                                next_connection_y
-                                - connector_info["inlet"]["y"]
-                                + connector_back_offset
-                            )
+                    # Same direction - need straight connector
+                    connector = build_straight_connector(
+                        pipe1=pipe_component,
+                        pipe2=next_pipe_component,
+                        length=self.connector_length,
+                    )
+                modular_components.append(connector)
 
-                connector_elements.append(f"""
-                <!-- {"Elbow" if is_elbow else "Straight"} Connector {i + 1} to {i + 2} -->
-                <g transform="translate({connector_x}, {connector_y})">
-                    {connector_content}
-                </g>
+        # Create modular pipeline with proper connectors
+        if len(modular_components) == 1:
+            # Single pipe - just return its SVG
+            svg_component = modular_components[0].get_svg_component()
+            return svg_component.main_svg
+
+        # Multiple pipes with connectors - create pipeline
+        try:
+            modular_pipeline = PipelineComponent(modular_components)
+            svg_component = modular_pipeline.get_svg_component()
+            return svg_component.main_svg
+        except Exception:
+            # Fallback to simple concatenation if modular pipeline fails
+            # This provides a basic visualization even if the advanced layout fails
+            pipe_svgs = []
+            total_width = 0
+            max_height = 100
+
+            for i, component in enumerate(modular_components):
+                svg_comp = component.get_svg_component()
+                pipe_svgs.append(f"""
+                    <g transform="translate({total_width}, 0)">
+                        {svg_comp.inner_content}
+                    </g>
                 """)
+                total_width += svg_comp.width + 20  # Add spacing
+                max_height = max(max_height, svg_comp.height)
 
-                # Update bounding box for connector
-                min_x = min(min_x, connector_x)
-                min_y = min(min_y, connector_y)
-                max_x = max(max_x, connector_x + connector_info["width"])
-                max_y = max(max_y, connector_y + connector_info["height"])
-
-                # Update connection point for next pipe to connector's outlet position
-                current_connection_x = connector_x + connector_info["outlet"]["x"]
-                current_connection_y = connector_y + connector_info["outlet"]["y"]
-
-        # Calculate final viewBox with padding
-        if min_x == float("inf"):  # No elements
-            viewbox = "0 0 400 100"
-        else:
-            padding = 50
-            viewbox_width = max_x - min_x + (2 * padding)
-            viewbox_height = max_y - min_y + (2 * padding)
-            viewbox_x = min_x - padding
-            viewbox_y = min_y - padding
-            viewbox = f"{viewbox_x} {viewbox_y} {viewbox_width} {viewbox_height}"
-
-        # Combine all elements in proper z-order (connectors first, then pipes)
-        # This ensures pipe flanges appear on top of connector flanges for proper overlap
-        svg_content = f'''
-        <svg viewBox="{viewbox}" class="mx-auto">
-            <defs>
-                {"".join(gradient_defs)}
-            </defs>
-            <!-- Connectors layer (underneath) -->
-            {"".join(connector_elements)}
-            <!-- Pipes layer (on top for flanges to overlap) -->
-            {"".join(pipe_elements)}
-        </svg>
-        '''
-        return svg_content
+            return f'''
+            <svg viewBox="0 0 {total_width} {max_height}" class="mx-auto" style="width: 100%; height: auto; max-width: 100%;">
+                <defs>
+                    <linearGradient id="fallbackGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                        <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.3" />
+                        <stop offset="50%" style="stop-color:#3b82f6;stop-opacity:0.6" />
+                        <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.3" />
+                    </linearGradient>
+                </defs>
+                {"".join(pipe_svgs)}
+                <!-- Fallback message -->
+                <text x="{total_width / 2}" y="{max_height - 10}" text-anchor="middle" 
+                      font-size="10" fill="#6b7280" opacity="0.7">
+                    Basic Pipeline View (Advanced layout unavailable)
+                </text>
+            </svg>
+            '''
 
     def is_connected(self, pipe1_idx: int, pipe2_idx: int) -> bool:
         """
@@ -2842,18 +2109,60 @@ class Pipeline:
         )
         return direction_compatible
 
-    def set_upstream_pressure(
+    def set_initial_upstream_pressure(
         self, pressure: typing.Union[PlainQuantity[float], float], check: bool = True
     ):
         """
-        Set the upstream pressure for the entire pipeline (applied to the first pipe).
+        Set the upstream pressure for the entire pipeline (applied to the first pipe section).
 
         :param pressure: Upstream pressure to set
         :param check: Whether to validate the pressure change (default is True)
         :return: self for method chaining
         """
         if self._pipes:
-            self._pipes[0].set_upstream_pressure(pressure, check=check, update=True)
+            if isinstance(pressure, Quantity):
+                pressure = pressure.to("psi")
+            else:
+                pressure = pressure * ureg("psi")
+
+            first_pipe = self._pipes[0]
+            try:
+                first_pipe.set_upstream_pressure(pressure, check=check, update=True)
+            except Exception as e:
+                if self.alert_errors:
+                    show_alert(
+                        f"Failed to set upstream pressure in first pipe - {self.name!r}: {e}",
+                        severity="error",
+                    )
+                raise
+        return self.update_properties()
+
+    def set_initial_downstream_pressure(
+        self, pressure: typing.Union[PlainQuantity[float], float], check: bool = True
+    ):
+        """
+        Set the downstream pressure for the first pipe section of the pipeline.
+
+        :param pressure: Downstream pressure to set
+        :param check: Whether to validate the pressure change (default is True)
+        :return: self for method chaining
+        """
+        if self._pipes:
+            if isinstance(pressure, Quantity):
+                pressure = pressure.to("psi")
+            else:
+                pressure = pressure * ureg("psi")
+
+            first_pipe = self._pipes[0]
+            try:
+                first_pipe.set_downstream_pressure(pressure, check=check, update=True)
+            except Exception as e:
+                if self.alert_errors:
+                    show_alert(
+                        f"Failed to set downstream pressure in first pipe - {self.name!r}: {e}",
+                        severity="error",
+                    )
+                raise
         return self.update_properties()
 
     def set_upstream_temperature(
@@ -2867,7 +2176,15 @@ class Pipeline:
 
         if self._pipes:
             self._fluid = evolve(self._fluid, temperature=temperature_q)
-            self._pipes[0].set_fluid_temperature(temperature_q, update=False)
+            try:
+                self._pipes[0].set_fluid_temperature(temperature_q, update=True)
+            except Exception as e:
+                if self.alert_errors:
+                    show_alert(
+                        f"Failed to set upstream temperature in first pipe - {self.name!r}: {e}",
+                        severity="error",
+                    )
+                raise
         return self.update_properties()
 
     def add_pipe(self, pipe: Pipe, index: int = -1, update: bool = True):
@@ -2884,11 +2201,14 @@ class Pipeline:
             # Validate flow direction compatibility
             last_pipe = self._pipes[-1]
             if not check_directions_compatibility(last_pipe.direction, pipe.direction):
-                raise PipelineConnectionError(
+                error_msg = (
                     f"Cannot add pipe with opposing flow direction: "
                     f"{last_pipe.direction.value} to {pipe.direction.value}. "
                     f"Pipes flowing in opposite directions cannot be connected."
                 )
+                if self.alert_errors:
+                    show_alert(error_msg, severity="error")
+                raise PipelineConnectionError(error_msg)
 
         copied_pipe = copy.deepcopy(pipe)
         # Apply the pipeline's scale factor and max flow rate to the pipe
@@ -2896,6 +2216,9 @@ class Pipeline:
         copied_pipe.max_flow_rate = self.max_flow_rate
         if self.fluid is not None:
             copied_pipe.set_fluid(self.fluid)
+
+        # Ensure the pipe's flow type matches the pipeline's flow type
+        copied_pipe._flow_type = self._flow_type
 
         if index < 0:
             index = len(self._pipes) + index + 1  # Convert negative index to positive
@@ -2929,10 +2252,13 @@ class Pipeline:
                     if not check_directions_compatibility(
                         current_pipe.direction, next_pipe.direction
                     ):
-                        raise PipelineConnectionError(
+                        error_msg = (
                             f"Removing pipe creates incompatible flow directions between segments {i} "
                             f"({current_pipe.direction.value}) and {i + 1} ({next_pipe.direction.value})"
                         )
+                        if self.alert_errors:
+                            show_alert(error_msg, severity="error")
+                        raise PipelineConnectionError(error_msg)
 
         if update:
             self.update_properties()
@@ -2961,21 +2287,25 @@ class Pipeline:
         for i in range(start_index, min(end_index, pipe_count - 1)):
             current_pipe = self._pipes[i]
             next_pipe = self._pipes[i + 1]
-            print("Current Pipe:", current_pipe.name)
-            print("Next Pipe:", next_pipe.name)
+            logger.info(
+                f"Processing pipe connection: {current_pipe.name} -> {next_pipe.name}"
+            )
+            logger.debug(
+                f"Current pipe: {current_pipe.name}, Next pipe: {next_pipe.name}"
+            )
 
             # # Ensure current pipe flow rate is updated first
             # current_pipe.update_flow_rate()
 
-            relative_diameter_difference = (
-                abs(
-                    current_pipe.properties.internal_diameter.magnitude
-                    - next_pipe.properties.internal_diameter.magnitude
-                )
-                / current_pipe.properties.internal_diameter.magnitude
-            )
+            relative_diameter_difference = abs(
+                current_pipe.internal_diameter.to("m")
+                - next_pipe.internal_diameter.to("m")
+            ) / current_pipe.internal_diameter.to("m")
             # If diameters are within 5%, treat as same diameter (no pressure drop across connector)
-            if relative_diameter_difference < 0.05:
+            if relative_diameter_difference < 0.02:
+                logger.debug(
+                    "Pipes have similar diameters; treating as same diameter connection."
+                )
                 # No pressure drop across connector if diameters are the same
                 # So mass and volumetric flow rates remain constant
                 # and the next pipe's pressures can be directly set
@@ -2985,8 +2315,9 @@ class Pipeline:
                         "Next pipe must have fluid properties defined to update flow rates."
                     )
                 # Set next pipe's upstream pressure to current pipe's downstream pressure
-                next_pipe_upstream_pressure = (
-                    current_pipe.properties.downstream_pressure
+                next_pipe_upstream_pressure = current_pipe.downstream_pressure
+                logger.debug(
+                    f"Setting next pipe upstream pressure: {next_pipe_upstream_pressure.to('kilopascal'):.2f} kPa"
                 )
                 next_pipe.set_upstream_pressure(
                     pressure=next_pipe_upstream_pressure,
@@ -3000,16 +2331,31 @@ class Pipeline:
                     raise ValueError(
                         "Next pipe must have a flow equation defined to update flow rates."
                     )
+                logger.debug(f"Next pipe flow equation: {next_pipe_flow_equation}")
                 pressure_drop = compute_pipe_pressure_drop(
-                    properties=next_pipe.properties,
+                    upstream_pressure=next_pipe.upstream_pressure,
+                    length=next_pipe.length,
+                    internal_diameter=next_pipe.internal_diameter,
+                    relative_roughness=next_pipe.relative_roughness,
+                    efficiency=next_pipe.efficiency,
+                    elevation_difference=next_pipe.elevation_difference,
+                    specific_gravity=next_pipe_fluid.specific_gravity,
+                    temperature=next_pipe_fluid.temperature,
+                    compressibility_factor=next_pipe_fluid.compressibility_factor,
+                    density=next_pipe_fluid.density,
+                    viscosity=next_pipe_fluid.viscosity,
                     flow_rate=current_pipe.flow_rate,
-                    fluid=next_pipe_fluid,
                     flow_equation=next_pipe_flow_equation,
                 )
-                next_pipe_downstream_pressure = (
-                    next_pipe.properties.upstream_pressure.to("psi").magnitude
-                    - pressure_drop.magnitude
-                ) * ureg.psi
+                logger.debug(
+                    f"Next pipe pressure drop: {pressure_drop.to('kilopascal'):.2f} kPa"
+                )
+                next_pipe_downstream_pressure = next_pipe.upstream_pressure.to(
+                    "psi"
+                ) - pressure_drop.to("psi")
+                logger.debug(
+                    f"Next pipe downstream pressure: {next_pipe_downstream_pressure.to('kilopascal'):.2f} kPa"
+                )
                 next_pipe.set_downstream_pressure(
                     pressure=next_pipe_downstream_pressure,
                     check=False,
@@ -3027,176 +2373,108 @@ class Pipeline:
                 )
 
             mass_rate = current_pipe.mass_rate.to("lb/s")
-            is_elbow_connected = current_pipe.direction != next_pipe.direction
+            elbow_to_next_connected = current_pipe.direction != next_pipe.direction
             # For elbow connectors, there are two arms each of length, `connector_length`
             connector_length = (
                 2 * self.connector_length
-                if is_elbow_connected
+                if elbow_to_next_connected
                 else self.connector_length
             )
 
             # Calculate the pressure drop across the connector due to diameter change
             connector_pressure_drop = compute_tapered_pipe_pressure_drop(
                 flow_rate=current_pipe.flow_rate,
-                pipe_inlet_diameter=current_pipe.properties.internal_diameter,
-                pipe_outlet_diameter=next_pipe.properties.internal_diameter,
+                pipe_inlet_diameter=current_pipe.internal_diameter,
+                pipe_outlet_diameter=next_pipe.internal_diameter,
                 pipe_length=connector_length,
                 fluid_density=current_pipe_fluid.density,
                 fluid_dynamic_viscosity=current_pipe_fluid.viscosity,
                 pipe_relative_roughness=0.0001,  # Assume very smooth connector
             )
 
-            print("Connector Pressure Drop:", connector_pressure_drop.to("kilopascal"))
-            connector_upstream_pressure = current_pipe.properties.downstream_pressure
-            print(
-                "Connector Upstream Pressure:",
-                connector_upstream_pressure.to("kilopascal"),
+            logger.debug(
+                f"Connector pressure drop: {connector_pressure_drop.to('kilopascal'):.2f} kPa"
             )
-            connector_downstream_pressure = Quantity(
-                connector_upstream_pressure.to("psi").magnitude
-                - connector_pressure_drop.magnitude,
-                "psi",
+            connector_upstream_pressure = current_pipe.downstream_pressure
+            logger.debug(
+                f"Connector upstream pressure: {connector_upstream_pressure.to('kilopascal'):.2f} kPa"
             )
-            print(
-                "Connector Downstream Pressure:",
-                connector_downstream_pressure.to("kilopascal"),
+            connector_downstream_pressure = connector_upstream_pressure.to(
+                "psi"
+            ) - connector_pressure_drop.to("psi")
+            logger.debug(
+                f"Connector downstream pressure: {connector_downstream_pressure.to('kilopascal'):.2f} kPa"
             )
 
             is_compressible_flow = (
-                self.flow_type == FlowType.COMPRESSIBLE
+                self._flow_type == FlowType.COMPRESSIBLE
                 or current_pipe_fluid.compressibility_factor > 0.0
             )
             # mass rate and volumetric rate is constant for short connector,
             # for both compressible and incompressible flow. However, for compressible flow,
             # fluid density changes
             if is_compressible_flow:
-                estimated_fluid_density_in_next_pipe = compute_fluid_density(
-                    pressure=connector_downstream_pressure,
+                next_pipe_fluid = Fluid.from_coolprop(
+                    fluid_name=current_pipe_fluid.name,
+                    phase=current_pipe_fluid.phase,
                     temperature=current_pipe_fluid.temperature,
+                    pressure=connector_downstream_pressure,
                     molecular_weight=current_pipe_fluid.molecular_weight,
-                    compressibility_factor=current_pipe_fluid.compressibility_factor,
-                ).to("lb/ft^3")
-            else:
-                estimated_fluid_density_in_next_pipe = current_pipe_fluid.density.to(
-                    "lb/ft^3"
                 )
+                next_pipe.set_fluid(next_pipe_fluid)
 
             # Since mass rate is constant, across the pipeline, the estimated volumetric rate in the next pipe will be
             estimated_volumetric_rate_in_next_pipe = (
-                mass_rate / estimated_fluid_density_in_next_pipe
-            )
+                mass_rate / next_pipe_fluid.density.to("lb/ft^3")
+            ).to("ft^3/s")
             next_pipe_upstream_pressure = connector_downstream_pressure
-            next_pipe_downstream_pressure = Quantity(
-                0.0, "psi"
-            )  # We don't know this yet
-
-            tolerance = 1e-6
-            for _ in range(100):
-                # Compute the pressure drop across the length of the next pipe with the outlet volumetric flow rate
-                pressure_drop_in_next_pipe = compute_pipe_pressure_drop(
-                    properties=next_pipe.properties,
-                    flow_rate=estimated_volumetric_rate_in_next_pipe,
-                    fluid=next_pipe_fluid,
-                    flow_equation=FlowEquation.WEYMOUTH,  # start with weymouth
-                )
-                next_pipe_flow_equation = determine_pipe_flow_equation(
-                    pressure_drop=pressure_drop_in_next_pipe,
-                    upstream_pressure=next_pipe_upstream_pressure,
-                    internal_diameter=next_pipe.properties.internal_diameter,
-                    length=next_pipe.properties.length,
-                    fluid_phase=next_pipe_fluid.phase,
-                    fluid_specific_gravity=next_pipe.fluid.specific_gravity,  # type: ignore
-                )
-                print("Flow Equation:", next_pipe_flow_equation.value)
-
-                next_pipe_downstream_pressure = Quantity(
-                    next_pipe_upstream_pressure.magnitude
-                    - pressure_drop_in_next_pipe.magnitude,
-                    "psi",
+            next_pipe_flow_equation = next_pipe.flow_equation
+            if next_pipe_flow_equation is None:
+                raise ValueError(
+                    "Next pipe must have a flow equation defined to update flow rates."
                 )
 
-                if is_compressible_flow:
-                    # use average-pressure for density evaluation
-                    average_pressure = (
-                        next_pipe_upstream_pressure.magnitude
-                        + next_pipe_downstream_pressure.magnitude
-                    ) / 2
-                    average_pressure = Quantity(average_pressure, "psi")
-                    new_density_estimate = compute_fluid_density(
-                        pressure=average_pressure,
-                        temperature=current_pipe_fluid.temperature,
-                        molecular_weight=current_pipe_fluid.molecular_weight,
-                        compressibility_factor=current_pipe_fluid.compressibility_factor,
-                    ).to("lb/ft^3")
-                else:
-                    new_density_estimate = estimated_fluid_density_in_next_pipe
+            # Compute the pressure drop across the length of the next pipe with the outlet volumetric flow rate
+            pressure_drop_in_next_pipe = compute_pipe_pressure_drop(
+                upstream_pressure=next_pipe_upstream_pressure,
+                length=next_pipe.length,
+                internal_diameter=next_pipe.internal_diameter,
+                relative_roughness=next_pipe.relative_roughness,
+                efficiency=next_pipe.efficiency,
+                elevation_difference=next_pipe.elevation_difference,
+                specific_gravity=next_pipe_fluid.specific_gravity,
+                temperature=next_pipe_fluid.temperature,
+                compressibility_factor=next_pipe_fluid.compressibility_factor,
+                density=next_pipe_fluid.density,
+                viscosity=next_pipe_fluid.viscosity,
+                flow_rate=estimated_volumetric_rate_in_next_pipe,
+                flow_equation=FlowEquation.WEYMOUTH,
+            )
+            next_pipe_downstream_pressure = next_pipe_upstream_pressure.to(
+                "psi"
+            ) - pressure_drop_in_next_pipe.to("psi")
 
-                new_volumetric_flow_rate_estimate = (
-                    mass_rate / new_density_estimate
-                ).to("ft^3/s")
-
-                # Convergence check
-                relative_error = abs(
-                    (
-                        new_volumetric_flow_rate_estimate
-                        - estimated_volumetric_rate_in_next_pipe
-                    ).magnitude
-                ) / max(estimated_volumetric_rate_in_next_pipe.magnitude, 1e-12)
-
-                if relative_error < tolerance:
-                    estimated_fluid_density_in_next_pipe = new_density_estimate
-                    estimated_volumetric_rate_in_next_pipe = (
-                        new_volumetric_flow_rate_estimate
-                    )
-                    break
-
-                # Relaxation update
-                estimated_fluid_density_in_next_pipe = (
-                    estimated_fluid_density_in_next_pipe.magnitude
-                    + new_density_estimate.magnitude
-                ) / 2
-                estimated_fluid_density_in_next_pipe = Quantity(
-                    estimated_fluid_density_in_next_pipe, "lb/ft^3"
-                )
-                estimated_volumetric_rate_in_next_pipe = (
-                    estimated_volumetric_rate_in_next_pipe.magnitude
-                    + new_volumetric_flow_rate_estimate.magnitude
-                ) / 2
-                estimated_volumetric_rate_in_next_pipe = Quantity(
-                    estimated_volumetric_rate_in_next_pipe, "ft^3/s"
-                )
-                # Update next pipe fluid density for next iteration
-                next_pipe.fluid.density = estimated_fluid_density_in_next_pipe  # type: ignore
-            else:
-                raise RuntimeError(
-                    "Failed to converge compressible update for next pipe"
-                )
-
-            print(
-                "Current Pipe Volumetric Rate:",
-                current_pipe.flow_rate.to("ft^3/s"),
+            logger.debug(
+                f"Current pipe volumetric rate: {current_pipe.flow_rate.to('ft^3/s'):.3f} ft³/s"
             )
-            print(
-                "Next Pipe Volumetric Rate:",
-                estimated_volumetric_rate_in_next_pipe.to("ft^3/s"),
+            logger.debug(
+                f"Next pipe volumetric rate: {estimated_volumetric_rate_in_next_pipe.to('ft^3/s'):.3f} ft³/s"
             )
-            print(
-                "Current Pipe Fluid Density:",
-                current_pipe_fluid.density.to("lb/ft^3"),
+            logger.debug(
+                f"Current pipe fluid density: {current_pipe_fluid.density.to('lb/ft^3'):.3f} lb/ft³"
             )
-            print(
-                "Next Pipe Fluid Density:",
-                estimated_fluid_density_in_next_pipe.to("lb/ft^3"),
+            logger.debug(
+                f"Next pipe fluid density: {next_pipe_fluid.density.to('lb/ft^3'):.3f} lb/ft³"
             )
-            print(
-                "Next Pipe Upstream Pressure:",
-                next_pipe_upstream_pressure.to("kilopascal"),
+            logger.debug(
+                f"Pressure drop in next pipe: {pressure_drop_in_next_pipe.to('kilopascal'):.2f} kPa"
             )
-            print(
-                "Next Pipe Downstream Pressure:",
-                next_pipe_downstream_pressure.to("kilopascal"),
+            logger.debug(
+                f"Next pipe upstream pressure: {next_pipe_upstream_pressure.to('kilopascal'):.2f} kPa"
             )
-            next_pipe.fluid.density = estimated_fluid_density_in_next_pipe  # type: ignore
+            logger.debug(
+                f"Next pipe downstream pressure: {next_pipe_downstream_pressure.to('kilopascal'):.2f} kPa"
+            )
             next_pipe.set_upstream_pressure(
                 pressure=next_pipe_upstream_pressure,
                 check=False,
@@ -3209,7 +2487,9 @@ class Pipeline:
             )
             # Update the next pipe's flow rate after pressure changes
             next_pipe.set_flow_rate(estimated_volumetric_rate_in_next_pipe)
-            print()
+            logger.info(
+                f"Completed pipe connection processing for {current_pipe.name} -> {next_pipe.name}"
+            )
 
         return self
 
@@ -3243,13 +2523,21 @@ class Pipeline:
         :return: self for method chaining
         :raises TypeError: If other is not a Pipe or Pipeline instance
         """
-        if isinstance(other, Pipe):
-            # Connect single pipe
-            return type(self)(self._pipes + [other])
+        try:
+            if isinstance(other, Pipe):
+                # Connect single pipe
+                return type(self)(self._pipes + [other])
 
-        elif isinstance(other, Pipeline):
-            # Connect another pipeline
-            return type(self)(self._pipes + other._pipes)
+            elif isinstance(other, Pipeline):
+                # Connect another pipeline
+                return type(self)(self._pipes + other._pipes)
+        except Exception as e:
+            if self.alert_errors:
+                show_alert(
+                    f"Failed to connect pipes/pipelines to pipeline - {self.name!r}: {e}",
+                    severity="error",
+                )
+            raise
         raise TypeError("Can only connect to Pipe or Pipeline instances")
 
     def __and__(self, other: typing.Union[Pipe, "Pipeline"]):

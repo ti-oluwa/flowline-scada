@@ -1,224 +1,90 @@
-from nicegui import ui
-from src.units import Quantity
-from src.components import (
-    FlowMeter,
-    FlowStation,
-    Pipeline,
-    PressureGauge,
-    TemperatureGauge,
-    Regulator,
-    Pipe,
-    PipeDirection,
+"""
+Main Entry Point for SCADA Pipeline Management System Application.
+"""
+
+import logging
+from nicegui import ui, app
+
+from src.ui.builder import PipelineBuilderUI, PipelineBuilder
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-from src.properties import Fluid, PipeProperties
+
+logger = logging.getLogger(__name__)
+
+
+def build_application(min_width: int = 800, max_width: int = 1440):
+    """Create the main SCADA Pipeline Management System application."""
+
+    # Main layout container
+    main_container = (
+        ui.column()
+        .classes("w-full h-screen bg-gray-50")
+        .style(
+            f"max-width: {max_width}px; min-width: minmax({min_width}px, 100%); margin: auto;"
+        )
+    )
+
+    with main_container:
+        # Header
+        header = ui.row().classes(
+            "w-full bg-green-600 text-white p-4 shadow-lg items-center"
+        )
+        with header:
+            ui.icon("engineering").classes("text-3xl mr-3")
+            ui.label("SCADA Pipeline Management System").classes(
+                "text-2xl font-bold flex-1 sm:text-lg"
+            )
+
+        # Main content area with the pipeline builder
+        content_area = ui.column().classes("flex-1 w-full overflow-auto p-4")
+
+        with content_area:
+            welcome_card = ui.card().classes(
+                "w-full p-4 mb-4 bg-gradient-to-r from-blue-50 to-indigo-50 border-l-4 border-blue-500"
+            )
+            with welcome_card:
+                ui.label("Pipeline Builder").classes(
+                    "text-xl font-semibold text-blue-800 mb-2"
+                )
+                ui.label(
+                    "Design, configure, and monitor industrial pipelines with real-time validation and automatic instrumentation."
+                ).classes("text-blue-700")
+
+            # Pipeline builder interface
+            pipeline_builder_container = ui.column().classes("w-full")
+            with pipeline_builder_container:
+                builder = PipelineBuilder()
+                builder_ui = PipelineBuilderUI(builder, theme_color="green")
+                builder_ui.show(theme_color="green")
+
+    return main_container
 
 
 def main():
-    """Main function demonstrating Regulators in a SCADA context."""
+    """Main application entry point."""
+    logger.info("Starting SCADA Pipeline Management System")
 
-    container = ui.column().style(
-        "max-width: 1200px; margin: auto; with: 90%; padding-block: 40px;"
+    # Configure NiceGUI application
+    try:
+        app.add_static_files("/static", "static")  # Add static file serving if needed
+    except Exception:
+        pass  # Static files directory might not exist, that's OK
+
+    build_application()
+
+    logger.info("Application initialized successfully")
+    ui.run(
+        title="SCADA Pipeline Management System",
+        port=8080,
+        host="0.0.0.0",
+        reload=True,
+        show=True,
+        favicon="🔧",
+        dark=False,
     )
-    with container:
-        ui.label("Flow Station SCADA System").classes(
-            "text-4xl text-center text-blue-600 mb-8"
-        )
-
-        ###################
-        # Pipeline System #
-        ###################
-        pipe1_props = PipeProperties(
-            length=Quantity(50, "m"),
-            internal_diameter=Quantity(0.3, "m"),
-            upstream_pressure=Quantity(150, "kPa"),
-            downstream_pressure=Quantity(120, "kPa"),
-            material="Steel",
-            roughness=Quantity(0.001, "m"),
-            efficiency=0.95,
-        )
-
-        pipe2_props = PipeProperties(
-            length=Quantity(75, "m"),
-            internal_diameter=Quantity(0.2, "m"),
-            upstream_pressure=Quantity(120, "kPa"),
-            downstream_pressure=Quantity(80, "kPa"),
-            material="Steel",
-            roughness=Quantity(0.001, "m"),
-            efficiency=0.90,
-        )
-
-        pipe3_props = PipeProperties(
-            length=Quantity(60, "m"),
-            internal_diameter=Quantity(0.5, "m"),
-            upstream_pressure=Quantity(80, "kPa"),
-            downstream_pressure=Quantity(50, "kPa"),
-            material="Steel",
-            roughness=Quantity(0.001, "m"),
-            efficiency=0.85,
-        )
-
-        fluid = Fluid(
-            phase="gas",
-            density=Quantity(1.2, "kg/m³"),
-            viscosity=Quantity(0.001, "Pa*s"),
-            temperature=Quantity(20, "°C"),
-            molecular_weight=Quantity(28.97, "g/mol"),
-            compressibility_factor=0.77,
-        )
-
-        # Create pipes
-        pipe1 = Pipe(
-            properties=pipe1_props,
-            fluid=fluid,
-            direction=PipeDirection.EAST,
-            name="Inlet Pipe",
-        )
-
-        pipe2 = Pipe(
-            properties=pipe2_props,
-            fluid=fluid,
-            direction=PipeDirection.EAST,
-            name="Riser Pipe",
-        )
-
-        pipe3 = Pipe(
-            properties=pipe3_props,
-            fluid=fluid,
-            direction=PipeDirection.EAST,
-            name="Outlet Pipe",
-        )
-
-        pipeline = Pipeline(
-            pipes=[pipe1, pipe2, pipe3],
-            fluid=fluid,
-            name="Main Pipeline",
-            max_flow_rate=Quantity(50, "ft³/sec"),
-        )
-        ui.label("Pipeline Visualization").classes(
-            "text-2xl text-center text-gray-700 mb-4"
-        )
-        pipeline.show(label="Pipeline System", width="100%", height="400px")
-
-        #################
-        # Flow Stations #
-        #################
-        ui.separator().classes("my-4")
-        # Create meters
-        upstream_flow_meter = FlowMeter(
-            min_value=0,
-            max_value=100,
-            units="ft³/sec",
-            label="Upstream Flow Rate",
-            alarm_high=90,
-            alarm_low=10,
-            update_func=lambda: pipeline.inlet_flow_rate.magnitude,
-        )
-        downstream_flow_meter = FlowMeter(
-            min_value=0,
-            max_value=100,
-            units="ft³/sec",
-            label="Downstream Flow Rate",
-            alarm_high=90,
-            alarm_low=10,
-            update_func=lambda: pipeline.outlet_flow_rate.magnitude,
-        )
-        upstream_pressure_gauge = PressureGauge(
-            min_value=0,
-            max_value=120,
-            units="PSI",
-            label="Upstream Pressure",
-            alarm_high=100,
-            alarm_low=20,
-            update_func=lambda: pipeline.upstream_pressure.magnitude,
-        )
-        downstream_pressure_gauge = PressureGauge(
-            min_value=0,
-            max_value=120,
-            units="PSI",
-            label="Downstream Pressure",
-            alarm_high=100,
-            alarm_low=20,
-            update_func=lambda: pipeline.downstream_pressure.magnitude,
-        )
-        temp_gauge = TemperatureGauge(
-            min_value=0,
-            max_value=150,
-            units="°C",
-            label="Fluid Temperature",
-            alarm_high=120,
-            alarm_low=5,
-            update_func=lambda: pipeline.fluid.temperature.magnitude
-            if pipeline.fluid
-            else None,
-        )
-
-        # Control functions for regulators
-        def update_pressure(value):
-            """Update pressure and corresponding gauge."""
-            pipeline.set_upstream_pressure(value).update_viz()
-
-        def update_temperature(value):
-            """Update temperature and corresponding gauge."""
-            pipeline.set_upstream_temperature(value).update_viz()
-
-        # Create regulators for control
-        upstream_pressure_regulator = Regulator(
-            value=pipeline.upstream_pressure.magnitude,
-            min_value=0,
-            max_value=120,
-            step=0.5,
-            units="PSI",
-            label="Pressure Control",
-            setter_func=update_pressure,
-            alarm_high=100,
-            alarm_low=20,
-            precision=1,
-            width="300px",
-            height="240px",
-        )
-        upstream_temperature_regulator = Regulator(
-            value=pipeline.fluid.temperature.magnitude if pipeline.fluid else 0,
-            min_value=0,
-            max_value=150,
-            step=1.0,
-            units="°C",
-            label="Temperature Control",
-            setter_func=update_temperature,
-            alarm_high=120,
-            alarm_low=5,
-            precision=0,
-            width="300px",
-            height="240px",
-        )
-
-        upstream_flow_station = FlowStation(
-            meters=[
-                upstream_flow_meter,
-                upstream_pressure_gauge,
-                temp_gauge,
-            ],
-            regulators=[
-                upstream_pressure_regulator,
-                upstream_temperature_regulator,
-            ],
-            name="Upstream Flow Station",
-            width="100%",
-            height="400px",
-        )
-        downstream_flow_station = FlowStation(
-            meters=[downstream_flow_meter, downstream_pressure_gauge],
-            regulators=[],
-            name="Downstream Flow Station",
-            width="100%",
-            height="400px",
-        )
-        ui.label("Flow Control Panel").classes(
-            "text-2xl text-center text-gray-700 mb-4"
-        )
-        upstream_flow_station.show()
-        downstream_flow_station.show()
 
 
 if __name__ in {"__main__", "__mp_main__"}:
     main()
-    ui.run(title="Flowstation SCADA", favicon="🏭", port=8084)

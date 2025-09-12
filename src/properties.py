@@ -3,6 +3,7 @@ import typing
 import attrs
 import math
 from pint.facets.plain import PlainQuantity
+from CoolProp.CoolProp import PropsSI
 
 from src.units import ureg, Quantity
 
@@ -16,75 +17,11 @@ AIR_DENSITY = Quantity(
 
 
 @attrs.define
-class PipeProperties:
-    """Properties for the pipe."""
-
-    length: PlainQuantity[float] = attrs.field()
-    """Length of the pipe"""
-    internal_diameter: PlainQuantity[float] = attrs.field()
-    """Internal diameter of the pipe"""
-    upstream_pressure: PlainQuantity[float] = attrs.field()
-    """Upstream pressure of the pipe"""
-    downstream_pressure: PlainQuantity[float] = attrs.field()
-    """Downstream pressure of the pipe"""
-    material: str = attrs.field(default="Steel")
-    """Material of the pipe"""
-    roughness: PlainQuantity[float] = attrs.field(default=Quantity(0, "m"))
-    """Absolute roughness of the pipe in meters"""
-    efficiency: float = attrs.field(default=1.0)
-    """Efficiency of the pipe (0 to 1)"""
-    friction_factor: typing.Optional[float] = attrs.field(default=None)
-    """Friction factor of the pipe"""
-    reynolds_number: typing.Optional[float] = attrs.field(default=None)
-    """Reynolds number of the flow in the pipe"""
-    elevation_difference: PlainQuantity[float] = attrs.field(
-        factory=lambda: Quantity(0, "m")
-    )
-    """Elevation difference between upstream and downstream outlets of the pipe"""
-
-    @property
-    def pressure_drop(self) -> PlainQuantity[float]:
-        """
-        The pressure drop across the pipe in psi.
-        This is a placeholder for the actual calculation logic.
-        """
-        upstream = self.upstream_pressure.to("psi").magnitude
-        downstream = self.downstream_pressure.to("psi").magnitude
-        return Quantity(upstream - downstream, "psi")
-
-    @property
-    def relative_roughness(self) -> float:
-        """
-        The relative roughness of the pipe.
-        """
-        return (
-            self.roughness.to("m").magnitude / self.internal_diameter.to("m").magnitude
-        )
-
-    @property
-    def cross_sectional_area(self) -> PlainQuantity[float]:
-        """
-        The cross-sectional area of the pipe in ft².
-        """
-        radius = self.internal_diameter.to("ft").magnitude / 2.0
-        area_ft2 = math.pi * (radius**2)
-        return Quantity(area_ft2 * ureg.ft**2, "ft^2")
-
-    @property
-    def volume(self) -> PlainQuantity[float]:
-        """
-        The volume of the pipe in ft³.
-        """
-        area = self.cross_sectional_area.to("ft^2").magnitude
-        length_ft = self.length.to("ft").magnitude
-        volume_ft3 = area * length_ft
-        return Quantity(volume_ft3 * ureg.ft**3, "ft^3")
-
-
-@attrs.define
 class Fluid:
     """Model representing a fluid with its properties."""
 
+    name: str = attrs.field()
+    """Name of the fluid"""
     phase: typing.Literal["liquid", "gas"] = attrs.field()
     """Phase of the fluid: 'liquid' or 'gas'"""
     density: PlainQuantity[float] = attrs.field()
@@ -108,34 +45,132 @@ class Fluid:
         The specific gravity of the fluid.
         """
         if self.phase == "gas":
-            return self.density.to("kg/m^3").magnitude / AIR_DENSITY.magnitude
-        return self.density.to("kg/m^3").magnitude / WATER_DENSITY.magnitude
+            return (
+                self.density.to("kg/m^3").magnitude / AIR_DENSITY.to("kg/m^3").magnitude
+            )
+        return (
+            self.density.to("kg/m^3").magnitude / WATER_DENSITY.to("kg/m^3").magnitude
+        )
+
+    @classmethod
+    def from_coolprop(
+        cls,
+        fluid_name: str,
+        pressure: PlainQuantity[float],
+        temperature: PlainQuantity[float],
+        phase: typing.Literal["liquid", "gas"],
+        molecular_weight: typing.Optional[PlainQuantity[float]] = None,
+    ) -> "Fluid":
+        """
+        Create a Fluid instance by querying CoolProp for properties.
+
+        :param fluid_name: Name of the fluid as recognized by CoolProp
+                           (e.g., "Methane", "CO2", "Water", "Nitrogen").
+        :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
+        :param temperature: Fluid temperature (as a Quantity, convertible to K).
+        :param phase: Phase of the fluid: 'liquid' or 'gas'.
+        :return: Fluid instance with properties populated from CoolProp.
+        """
+        density = compute_fluid_density(pressure, temperature, fluid_name)
+        viscosity = compute_fluid_viscosity(pressure, temperature, fluid_name)
+        if molecular_weight is None:
+            molecular_weight = compute_molecular_weight(fluid_name)
+
+        compressibility_factor = 0.0
+        if phase == "gas":
+            compressibility_factor = compute_fluid_compressibility_factor(
+                pressure, temperature, fluid_name
+            ).magnitude
+
+        return cls(
+            name=fluid_name,
+            phase=phase,
+            density=density,
+            viscosity=viscosity,
+            temperature=temperature,
+            molecular_weight=molecular_weight,
+            compressibility_factor=compressibility_factor,
+        )
 
 
 def compute_fluid_density(
     pressure: PlainQuantity[float],
     temperature: PlainQuantity[float],
-    molecular_weight: PlainQuantity[float],
-    compressibility_factor: float = 1.0,
+    fluid_name: str,
 ) -> PlainQuantity[float]:
     """
-    Compute the density of a fluid using the real gas law.
+    Compute the fluid density using CoolProp.
 
-    :param pressure: Pressure of the fluid (e.g., Pa).
-    :param temperature: Temperature of the fluid (e.g., K).
-    :param molecular_weight: Molecular weight of the fluid (e.g., kg/mol).
-    :param compressibility_factor: Compressibility factor (dimensionless), default is 1.0 for ideal gas.
-    :return: Density of the fluid (e.g., kg/m^3).
+    :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
+    :param temperature: Fluid temperature (as a Quantity, convertible to K).
+    :param fluid_name: Name of the fluid as recognized by CoolProp
+                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+    :return: Fluid density as a Quantity (kg/m^3).
     """
-    R = 8.314  # Universal gas constant in J/(mol·K)
     pressure_pa = pressure.to("Pa").magnitude
     temperature_k = temperature.to("K").magnitude
-    molecular_weight_kg_per_mol = molecular_weight.to("kg/mol").magnitude
 
-    density_kg_per_m3 = (pressure_pa * molecular_weight_kg_per_mol) / (
-        compressibility_factor * R * temperature_k
+    # Query CoolProp
+    density_kg_per_m3 = PropsSI(
+        "Dmass", "P", pressure_pa, "T", temperature_k, fluid_name
     )
     return Quantity(density_kg_per_m3, "kg/m^3")
+
+
+def compute_molecular_weight(fluid_name: str) -> PlainQuantity[float]:
+    """
+    Compute the molecular weight of a fluid using CoolProp.
+
+    :param fluid_name: Name of the fluid as recognized by CoolProp
+                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+    :return: Molecular weight of the fluid as a Quantity (kg/mol).
+    """
+    molecular_weight_kg_per_mol = PropsSI("M", "P", 101325, "T", 298.15, fluid_name)
+    return Quantity(molecular_weight_kg_per_mol, "kg/mol")
+
+
+def compute_fluid_viscosity(
+    pressure: PlainQuantity[float],
+    temperature: PlainQuantity[float],
+    fluid_name: str,
+) -> PlainQuantity[float]:
+    """
+    Compute the dynamic viscosity of a fluid using CoolProp.
+
+    :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
+    :param temperature: Fluid temperature (as a Quantity, convertible to K).
+    :param fluid_name: Name of the fluid as recognized by CoolProp
+                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+    :return: Dynamic viscosity of the fluid as a Quantity (Pa·s).
+    """
+    pressure_pa = pressure.to("Pa").magnitude
+    temperature_k = temperature.to("K").magnitude
+
+    viscosity_pa_s = PropsSI("V", "P", pressure_pa, "T", temperature_k, fluid_name)
+    return Quantity(viscosity_pa_s, "Pa.s")
+
+
+def compute_fluid_compressibility_factor(
+    pressure: PlainQuantity[float],
+    temperature: PlainQuantity[float],
+    fluid_name: str,
+) -> PlainQuantity[float]:
+    """
+    Compute the compressibility factor of a fluid using CoolProp.
+
+    :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
+    :param temperature: Fluid temperature (as a Quantity, convertible to K).
+    :param fluid_name: Name of the fluid as recognized by CoolProp
+                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+    :return: Compressibility factor of the fluid (dimensionless).
+    """
+    pressure_pa = pressure.to("Pa").magnitude
+    temperature_k = temperature.to("K").magnitude
+
+    compressibility_factor = PropsSI(
+        "Z", "P", pressure_pa, "T", temperature_k, fluid_name
+    )
+    return Quantity(compressibility_factor, "dimensionless")
 
 
 def compute_reynolds_number(
@@ -257,7 +292,7 @@ def compute_darcy_weisbach_flow_rate(
         (pressure_drop * internal_diameter_inches**5)
         / (0.0000115 * friction_factor * length_feet * specific_gravity)
     ) * (ureg.bbl / ureg.day)
-    return Quantity(flow_rate_in_bbl_per_day, "bbl/day").to("ft^3/s")
+    return flow_rate_in_bbl_per_day.to("ft^3/s")  # type: ignore
 
 
 def _compute_slope(
@@ -413,7 +448,7 @@ def compute_weymouth_flow_rate(
         * (internal_diameter_inches**2.667)
         * pipeline_efficiency
     ) * (ureg.scf / ureg.day)
-    return Quantity(flow_rate_scf_per_day, "scf/day").to("ft^3/s")
+    return flow_rate_scf_per_day.to("ft^3/s")  # type: ignore
 
 
 def compute_modified_panhandle_A_flow_rate(
@@ -515,7 +550,7 @@ def compute_modified_panhandle_A_flow_rate(
         * (internal_diameter_inches**2.6182)
         * pipeline_efficiency
     ) * (ureg.scf / ureg.day)
-    return Quantity(flow_rate_scf_per_day, "scf/day").to("ft^3/s")
+    return flow_rate_scf_per_day.to("ft^3/s")  # type: ignore
 
 
 def compute_modified_panhandle_B_flow_rate(
@@ -617,7 +652,7 @@ def compute_modified_panhandle_B_flow_rate(
         * (internal_diameter_inches**2.52)
         * pipeline_efficiency
     ) * (ureg.scf / ureg.day)
-    return Quantity(flow_rate_scf_per_day, "scf/day").to("ft^3/s")
+    return flow_rate_scf_per_day.to("ft^3/s")  # type: ignore
 
 
 def compute_darcy_weisbach_pressure_drop(
@@ -662,10 +697,11 @@ def compute_darcy_weisbach_pressure_drop(
         * specific_gravity
         * flow_rate_bbl_per_day**2
     ) / (internal_diameter_inches**5)
-    return Quantity(pressure_drop_psi * ureg.psi, "psi")
+    return pressure_drop_psi * ureg.psi
 
 
 def compute_weymouth_pressure_drop(
+    upstream_pressure: PlainQuantity[float],
     flow_rate: PlainQuantity[float],
     pipeline_length: PlainQuantity[float],
     internal_diameter: PlainQuantity[float],
@@ -681,10 +717,15 @@ def compute_weymouth_pressure_drop(
 
     This function rearranges the Weymouth equation to solve for pressure drop:
 
-        P1^2 - [exp(s) * P2^2] = (Q / (433.5 * (Tsc/Psc) * D^2.667 * E))^2 * (SG * L * T * Z)
+        ∆P^2 = P1^2 - [exp(s) * P2^2] = (Q / (433.5 * (Tsc/Psc) * D^2.667 * E))^2 * (SG * L * T * Z)
+        ∆P = P1 - P2
+        P2^2 =( P1^2 - ∆P^2) / exp(s)
+        P2 = sqrt(P2^2)
+        ∆P = P1 - P2
 
     where s is the slope factor and L is corrected for elevation.
 
+    :param upstream_pressure: Upstream pressure at the start of the pipeline (convertible to psi).
     :param flow_rate: Gas flow rate as a Quantity (convertible to scf/day).
     :param pipeline_length: Length of the pipeline (convertible to miles).
     :param internal_diameter: Internal diameter of the pipe (convertible to inches).
@@ -695,6 +736,7 @@ def compute_weymouth_pressure_drop(
     :param elevation_difference: Elevation difference between upstream and downstream (default 0 ft).
     :return: Pressure drop as a Quantity (psi).
     """
+    upstream_pressure_psi = upstream_pressure.to("psi").magnitude
     flow_rate_scf_per_day = flow_rate.to("scf/day").magnitude
     pipeline_length_miles = pipeline_length.to("mile").magnitude
     internal_diameter_inches = internal_diameter.to("inch").magnitude
@@ -729,10 +771,19 @@ def compute_weymouth_pressure_drop(
     pressure_squared_difference = (
         flow_rate_scf_per_day / denominator_flow
     ) ** 2 * numerator_pressure
-    return Quantity(math.sqrt(pressure_squared_difference), "psi")
+    downstream_pressure_squared = (
+        upstream_pressure_psi**2 - pressure_squared_difference
+    ) / math.exp(slope)
+    downstream_pressure_squared = max(
+        downstream_pressure_squared, 0
+    )  # Prevent negative due to rounding
+    downstream_pressure = math.sqrt(downstream_pressure_squared)
+    pressure_drop = upstream_pressure_psi - downstream_pressure
+    return pressure_drop * ureg.psi
 
 
 def compute_modified_panhandle_A_pressure_drop(
+    upstream_pressure: PlainQuantity[float],
     flow_rate: PlainQuantity[float],
     pipeline_length: PlainQuantity[float],
     internal_diameter: PlainQuantity[float],
@@ -749,7 +800,12 @@ def compute_modified_panhandle_A_pressure_drop(
     This function rearranges the Modified Panhandle A equation to solve for pressure drop:
 
         P1^2 - [exp(s) * P2^2] = (Q / (435.87 * (Tsc/Psc)^1.0788 * D^2.6182 * E))^(2/1.0788) * (SG^0.8539 * L * T * Z)
+        ∆P = P1 - P2
+        P2^2 =( P1^2 - ∆P^2) / exp(s)
+        P2 = sqrt(P2^2)
+        ∆P = P1 - P2
 
+    :param upstream_pressure: Upstream pressure at the start of the pipeline (convertible to psi).
     :param flow_rate: Gas flow rate as a Quantity (convertible to scf/day).
     :param pipeline_length: Length of the pipeline (convertible to miles).
     :param internal_diameter: Internal diameter of the pipe (convertible to inches).
@@ -760,6 +816,7 @@ def compute_modified_panhandle_A_pressure_drop(
     :param elevation_difference: Elevation difference between upstream and downstream (default 0 ft).
     :return: Pressure drop as a Quantity (psi).
     """
+    upstream_pressure_psi = upstream_pressure.to("psi").magnitude
     flow_rate_scf_per_day = flow_rate.to("scf/day").magnitude
     pipeline_length_miles = pipeline_length.to("mile").magnitude
     internal_diameter_inches = internal_diameter.to("inch").magnitude
@@ -794,11 +851,19 @@ def compute_modified_panhandle_A_pressure_drop(
     pressure_squared_difference = (flow_rate_scf_per_day / denominator_flow) ** (
         2 / 0.5394
     ) * numerator_pressure
-
-    return Quantity(math.sqrt(pressure_squared_difference) * ureg.psi, "psi")
+    downstream_pressure_squared = (
+        upstream_pressure_psi**2 - pressure_squared_difference
+    ) / math.exp(slope)
+    downstream_pressure_squared = max(
+        downstream_pressure_squared, 0
+    )  # Prevent negative due to rounding
+    downstream_pressure = math.sqrt(downstream_pressure_squared)
+    pressure_drop = upstream_pressure_psi - downstream_pressure
+    return pressure_drop * ureg.psi
 
 
 def compute_modified_panhandle_B_pressure_drop(
+    upstream_pressure: PlainQuantity[float],
     flow_rate: PlainQuantity[float],
     pipeline_length: PlainQuantity[float],
     internal_diameter: PlainQuantity[float],
@@ -815,7 +880,12 @@ def compute_modified_panhandle_B_pressure_drop(
     This function rearranges the Modified Panhandle B equation to solve for pressure drop:
 
         P1^2 - [exp(s) * P2^2] = (Q / (737 * (Tsc/Psc)^1.02 * D^2.52 * E))^(2/1.02) * (SG^0.961 * L * T * Z)
+        ∆P = P1 - P2
+        P2^2 =( P1^2 - ∆P^2) / exp(s)
+        P2 = sqrt(P2^2)
+        ∆P = P1 - P2
 
+    :param upstream_pressure: Upstream pressure at the start of the pipeline (convertible to psi).
     :param flow_rate: Gas flow rate as a Quantity (convertible to scf/day).
     :param pipeline_length: Length of the pipeline (convertible to miles).
     :param internal_diameter: Internal diameter of the pipe (convertible to inches).
@@ -826,6 +896,7 @@ def compute_modified_panhandle_B_pressure_drop(
     :param elevation_difference: Elevation difference between upstream and downstream (default 0 ft).
     :return: Pressure drop as a Quantity (psi).
     """
+    upstream_pressure_psi = upstream_pressure.to("psi").magnitude
     flow_rate_scf_per_day = flow_rate.to("scf/day").magnitude
     pipeline_length_miles = pipeline_length.to("mile").magnitude
     internal_diameter_inches = internal_diameter.to("inch").magnitude
@@ -860,8 +931,15 @@ def compute_modified_panhandle_B_pressure_drop(
     pressure_squared_difference = (flow_rate_scf_per_day / denominator_flow) ** (
         2 / 0.51
     ) * numerator_pressure
-
-    return Quantity(math.sqrt(pressure_squared_difference) * ureg.psi, "psi")
+    downstream_pressure_squared = (
+        upstream_pressure_psi**2 - pressure_squared_difference
+    ) / math.exp(slope)
+    downstream_pressure_squared = max(
+        downstream_pressure_squared, 0
+    )  # Prevent negative due to rounding
+    downstream_pressure = math.sqrt(downstream_pressure_squared)
+    pressure_drop = upstream_pressure_psi - downstream_pressure
+    return pressure_drop * ureg.psi
 
 
 class FlowEquation(str, enum.Enum):
@@ -873,13 +951,22 @@ class FlowEquation(str, enum.Enum):
     MODIFIED_PANHANDLE_B = "Modified Panhandle B"
 
 
+class FlowType(str, enum.Enum):
+    """Enumeration of flow types for pipes."""
+
+    COMPRESSIBLE = "compressible"
+    """Compressible flow (e.g., gases). With the flow type, the volumetric rate in pipes will vary with pressure and temperature."""
+    INCOMPRESSIBLE = "incompressible"
+    """Incompressible flow (e.g., liquids). The volumetric rate in pipes remains constant regardless of pressure changes."""
+
+
 def determine_pipe_flow_equation(
     pressure_drop: PlainQuantity[float],
     upstream_pressure: PlainQuantity[float],
     internal_diameter: PlainQuantity[float],
     length: PlainQuantity[float],
     fluid_phase: typing.Literal["liquid", "gas"],
-    fluid_specific_gravity: float,
+    flow_type: FlowType,
 ) -> FlowEquation:
     """
     Select an appropriate flow equation based on fluid type, flow regime, pipe size, and pressure conditions.
@@ -891,7 +978,6 @@ def determine_pipe_flow_equation(
     :param internal_diameter: Internal diameter of the pipe (inches).
     :param length: Length of the pipe (miles).
     :param fluid_phase: Phase of the fluid, either "liquid" or "gas".
-    :param fluid_specific_gravity: Specific gravity of the fluid relative to water.
     :return: Selected flow equation from `FlowEquation` enum.
     """
     pressure_drop_ratio = (
@@ -901,11 +987,11 @@ def determine_pipe_flow_equation(
     length_miles = length.to("mile").magnitude
 
     # Liquids: incompressible flow → Darcy–Weisbach
-    if fluid_phase.lower() == "liquid" or fluid_specific_gravity >= 0.8:
+    if flow_type == FlowType.INCOMPRESSIBLE or fluid_phase.lower() == "liquid":
         return FlowEquation.DARCY_WEISBACH
 
     # Gas: compressible flow
-    if pressure_drop_ratio <= 0.1:
+    if pressure_drop_ratio <= 0.1 and length_miles <= 10:
         return FlowEquation.DARCY_WEISBACH  # small ΔP → treat as incompressible
 
     # Long pipelines: > 20 miles
@@ -920,16 +1006,32 @@ def determine_pipe_flow_equation(
 
 
 def compute_pipe_flow_rate(
-    properties: PipeProperties,
-    fluid: Fluid,
+    length: PlainQuantity[float],
+    internal_diameter: PlainQuantity[float],
+    upstream_pressure: PlainQuantity[float],
+    downstream_pressure: PlainQuantity[float],
+    relative_roughness: float,
+    efficiency: float,
+    elevation_difference: PlainQuantity[float],
+    specific_gravity: float,
+    temperature: PlainQuantity[float],
+    compressibility_factor: float,
     reynolds_number: float,
     flow_equation: FlowEquation,
 ) -> PlainQuantity[float]:
     """
     Compute the flow rate in the pipe using the selected flow equation.
 
-    :param properties: PipeProperties object containing pipeline properties.
-    :param fluid: Fluid object containing fluid properties.
+    :param length: Length of the pipe.
+    :param internal_diameter: Internal diameter of the pipe.
+    :param upstream_pressure: Upstream pressure of the pipe.
+    :param downstream_pressure: Downstream pressure of the pipe.
+    :param relative_roughness: Relative roughness of the pipe.
+    :param efficiency: Efficiency of the pipe.
+    :param elevation_difference: Elevation difference between upstream and downstream.
+    :param specific_gravity: Specific gravity of the fluid.
+    :param temperature: Temperature of the fluid.
+    :param compressibility_factor: Compressibility factor of the fluid.
     :param reynolds_number: Reynolds number of the flow (dimensionless).
     :param flow_equation: Selected flow equation from FlowEquation enum.
     :return: Computed flow rate as a Quantity (e.g., ft³/s).
@@ -938,69 +1040,87 @@ def compute_pipe_flow_rate(
     if flow_equation == FlowEquation.DARCY_WEISBACH:
         # Compute Darcy-Weisbach friction factor
         friction_factor = compute_darcy_weisbach_friction_factor(
-            reynolds_number, relative_roughness=properties.relative_roughness
+            reynolds_number, relative_roughness=relative_roughness
         )
         return compute_darcy_weisbach_flow_rate(
-            length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            upstream_pressure=properties.upstream_pressure,
-            downstream_pressure=properties.downstream_pressure,
-            specific_gravity=fluid.specific_gravity,
+            length=length,
+            internal_diameter=internal_diameter,
+            upstream_pressure=upstream_pressure,
+            downstream_pressure=downstream_pressure,
+            specific_gravity=specific_gravity,
             friction_factor=friction_factor,
         )
 
     elif flow_equation == FlowEquation.WEYMOUTH:
         return compute_weymouth_flow_rate(
-            pipeline_length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            upstream_pressure=properties.upstream_pressure,
-            downstream_pressure=properties.downstream_pressure,
-            gas_specific_gravity=fluid.specific_gravity,
-            average_temperature=fluid.temperature,
-            compressibility_factor=fluid.compressibility_factor,
-            pipeline_efficiency=properties.efficiency,
-            elevation_difference=properties.elevation_difference,
+            pipeline_length=length,
+            internal_diameter=internal_diameter,
+            upstream_pressure=upstream_pressure,
+            downstream_pressure=downstream_pressure,
+            gas_specific_gravity=specific_gravity,
+            average_temperature=temperature,
+            compressibility_factor=compressibility_factor,
+            pipeline_efficiency=efficiency,
+            elevation_difference=elevation_difference,
         )
 
     elif flow_equation == FlowEquation.MODIFIED_PANHANDLE_A:
         return compute_modified_panhandle_A_flow_rate(
-            pipeline_length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            upstream_pressure=properties.upstream_pressure,
-            downstream_pressure=properties.downstream_pressure,
-            gas_specific_gravity=fluid.specific_gravity,
-            average_temperature=fluid.temperature,
-            compressibility_factor=fluid.compressibility_factor,
-            pipeline_efficiency=properties.efficiency,
-            elevation_difference=properties.elevation_difference,
+            pipeline_length=length,
+            internal_diameter=internal_diameter,
+            upstream_pressure=upstream_pressure,
+            downstream_pressure=downstream_pressure,
+            gas_specific_gravity=specific_gravity,
+            average_temperature=temperature,
+            compressibility_factor=compressibility_factor,
+            pipeline_efficiency=efficiency,
+            elevation_difference=elevation_difference,
         )
     elif flow_equation == FlowEquation.MODIFIED_PANHANDLE_B:
         return compute_modified_panhandle_B_flow_rate(
-            pipeline_length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            upstream_pressure=properties.upstream_pressure,
-            downstream_pressure=properties.downstream_pressure,
-            gas_specific_gravity=fluid.specific_gravity,
-            average_temperature=fluid.temperature,
-            compressibility_factor=fluid.compressibility_factor,
-            pipeline_efficiency=properties.efficiency,
-            elevation_difference=properties.elevation_difference,
+            pipeline_length=length,
+            internal_diameter=internal_diameter,
+            upstream_pressure=upstream_pressure,
+            downstream_pressure=downstream_pressure,
+            gas_specific_gravity=specific_gravity,
+            average_temperature=temperature,
+            compressibility_factor=compressibility_factor,
+            pipeline_efficiency=efficiency,
+            elevation_difference=elevation_difference,
         )
 
     raise ValueError(f"Unsupported flow equation: {flow_equation}")
 
 
 def compute_pipe_pressure_drop(
-    properties: PipeProperties,
-    fluid: Fluid,
+    upstream_pressure: PlainQuantity[float],
+    length: PlainQuantity[float],
+    internal_diameter: PlainQuantity[float],
+    relative_roughness: float,
+    efficiency: float,
+    elevation_difference: PlainQuantity[float],
+    specific_gravity: float,
+    temperature: PlainQuantity[float],
+    compressibility_factor: float,
+    density: PlainQuantity[float],
+    viscosity: PlainQuantity[float],
     flow_rate: PlainQuantity[float],
     flow_equation: FlowEquation,
 ) -> PlainQuantity[float]:
     """
     Compute the pressure drop in the pipe using the selected flow equation and given flow rate.
 
-    :param properties: PipeProperties object containing pipeline properties.
-    :param fluid: Fluid object containing fluid properties.
+    :param upstream_pressure: Upstream pressure of the pipe.
+    :param length: Length of the pipe.
+    :param internal_diameter: Internal diameter of the pipe.
+    :param relative_roughness: Relative roughness of the pipe.
+    :param efficiency: Efficiency of the pipe.
+    :param elevation_difference: Elevation difference between upstream and downstream.
+    :param specific_gravity: Specific gravity of the fluid.
+    :param temperature: Temperature of the fluid.
+    :param compressibility_factor: Compressibility factor of the fluid.
+    :param density: Density of the fluid.
+    :param viscosity: Dynamic viscosity of the fluid.
     :param flow_rate: Flow rate through the pipe as a Quantity (e.g., ft³/s).
     :param flow_equation: Selected flow equation from FlowEquation enum.
     :return: Computed pressure drop as a Quantity (psi).
@@ -1009,59 +1129,62 @@ def compute_pipe_pressure_drop(
         # Calculate Reynolds number for friction factor
         reynolds_number = compute_reynolds_number(
             current_flow_rate=flow_rate,
-            pipe_internal_diameter=properties.internal_diameter,
-            fluid_density=fluid.density,
-            fluid_dynamic_viscosity=fluid.viscosity,
+            pipe_internal_diameter=internal_diameter,
+            fluid_density=density,
+            fluid_dynamic_viscosity=viscosity,
         )
         # Compute Darcy-Weisbach friction factor
         friction_factor = compute_darcy_weisbach_friction_factor(
-            reynolds_number, relative_roughness=properties.relative_roughness
+            reynolds_number, relative_roughness=relative_roughness
         )
         return compute_darcy_weisbach_pressure_drop(
             flow_rate=flow_rate,
-            length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            specific_gravity=fluid.specific_gravity,
+            length=length,
+            internal_diameter=internal_diameter,
+            specific_gravity=specific_gravity,
             friction_factor=friction_factor,
         )
 
     elif flow_equation == FlowEquation.WEYMOUTH:
         return compute_weymouth_pressure_drop(
+            upstream_pressure=upstream_pressure,
             flow_rate=flow_rate,
-            pipeline_length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            gas_specific_gravity=fluid.specific_gravity,
-            average_temperature=fluid.temperature,
-            compressibility_factor=fluid.compressibility_factor,
-            pipeline_efficiency=properties.efficiency,
-            elevation_difference=properties.elevation_difference,
+            pipeline_length=length,
+            internal_diameter=internal_diameter,
+            gas_specific_gravity=specific_gravity,
+            average_temperature=temperature,
+            compressibility_factor=compressibility_factor,
+            pipeline_efficiency=efficiency,
+            elevation_difference=elevation_difference,
         )
 
     elif flow_equation == FlowEquation.MODIFIED_PANHANDLE_A:
         return compute_modified_panhandle_A_pressure_drop(
+            upstream_pressure=upstream_pressure,
             flow_rate=flow_rate,
-            pipeline_length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            gas_specific_gravity=fluid.specific_gravity,
-            average_temperature=fluid.temperature,
-            compressibility_factor=fluid.compressibility_factor,
-            pipeline_efficiency=properties.efficiency,
-            elevation_difference=properties.elevation_difference,
+            pipeline_length=length,
+            internal_diameter=internal_diameter,
+            gas_specific_gravity=specific_gravity,
+            average_temperature=temperature,
+            compressibility_factor=compressibility_factor,
+            pipeline_efficiency=efficiency,
+            elevation_difference=elevation_difference,
         )
 
     elif flow_equation == FlowEquation.MODIFIED_PANHANDLE_B:
         return compute_modified_panhandle_B_pressure_drop(
+            upstream_pressure=upstream_pressure,
             flow_rate=flow_rate,
-            pipeline_length=properties.length,
-            internal_diameter=properties.internal_diameter,
-            gas_specific_gravity=fluid.specific_gravity,
-            average_temperature=fluid.temperature,
-            compressibility_factor=fluid.compressibility_factor,
-            pipeline_efficiency=properties.efficiency,
-            elevation_difference=properties.elevation_difference,
+            pipeline_length=length,
+            internal_diameter=internal_diameter,
+            gas_specific_gravity=specific_gravity,
+            average_temperature=temperature,
+            compressibility_factor=compressibility_factor,
+            pipeline_efficiency=efficiency,
+            elevation_difference=elevation_difference,
         )
 
-    raise ValueError(f"Unsupported flow equation: {flow_equation}")
+    raise ValueError(f"Unsupported flow equation: {flow_equation!r}")
 
 
 def compute_tapered_pipe_pressure_drop(
@@ -1072,33 +1195,16 @@ def compute_tapered_pipe_pressure_drop(
     fluid_density: PlainQuantity[float],
     fluid_dynamic_viscosity: PlainQuantity[float],
     pipe_relative_roughness: float = 0.0,
+    gradual_angle_threshold_deg: float = 30.0,
 ) -> PlainQuantity[float]:
     """
-    Calculate the pressure drop across a tapered (reducer or expander) pipe using
-    the Darcy-Weisbach equation for frictional losses and additional local
-    loss coefficients for gradual contraction or expansion.
+    Calculate the pressure drop across a tapered pipe (reducer or expander).
 
-    The formula used combines frictional losses along the tapered length and
-    local losses due to the change in diameter:
+    - If taper angle < gradual_angle_threshold_deg → treat as gradual.
+    - Otherwise → treat as sudden (use Borda-Carnot or empirical contraction).
 
-        ΔP_friction = f * (L/D_avg) * (ρ * V_avg^2 / 2)
-
-        ΔP_local = K * (ρ * V_out^2 / 2)
-
-        Total ΔP = ΔP_friction + ΔP_local
-    where:
-        - f is the Darcy-Weisbach friction factor (dimensionless)
-        - L is the length of the tapered section (m)
-        - D_avg is the average diameter of the pipe (m)
-        - ρ is the fluid density (kg/m^3)
-        - V_avg is the average velocity in the tapered section (m/s)
-        - K is the local loss coefficient (dimensionless)
-        - V_out is the velocity at the outlet of the tapered section (m/s)
-        - ΔP is the pressure drop (Pa)
-        - D_avg = (D_inlet + D_outlet) / 2
-        - V_avg = (V_inlet + V_outlet) / 2
-        - For gradual expansion: K = (1 - (A_inlet / A_outlet))^2
-        - For gradual contraction: K = 0.5 * (1 - (A_outlet / A_inlet))^0.75
+    Uses Darcy-Weisbach for distributed losses and adds local losses
+    depending on geometry.
 
     :param flow_rate: Volumetric flow rate of the fluid (e.g., m^3/s)
     :param pipe_inlet_diameter: Internal diameter at the pipe inlet (e.g., m)
@@ -1109,36 +1215,31 @@ def compute_tapered_pipe_pressure_drop(
     :param pipe_relative_roughness: Relative roughness of the pipe (dimensionless, default 0.0)
     :return: Pressure drop across the tapered pipe in psi (as a Pint Quantity).
     """
-    # Convert to SI units
     pipe_inlet_diameter_m = pipe_inlet_diameter.to("m").magnitude
     pipe_outlet_diameter_m = pipe_outlet_diameter.to("m").magnitude
     pipe_length_m = pipe_length.to("m").magnitude
     fluid_density_kg_per_m3 = fluid_density.to("kg/m^3").magnitude
 
-    # Cross-sectional areas and average velocities
+    # Areas & velocities
     area_inlet_m2 = math.pi * (pipe_inlet_diameter_m**2) / 4
     area_outlet_m2 = math.pi * (pipe_outlet_diameter_m**2) / 4
     velocity_inlet_m_per_s = flow_rate.to("m^3/s").magnitude / area_inlet_m2
     velocity_outlet_m_per_s = flow_rate.to("m^3/s").magnitude / area_outlet_m2
-
-    # Average diameter and velocity for friction along taper
-    average_pipe_diameter_m = (pipe_inlet_diameter_m + pipe_outlet_diameter_m) / 2
     average_velocity_m_per_s = (velocity_inlet_m_per_s + velocity_outlet_m_per_s) / 2
+    average_pipe_diameter_m = (pipe_inlet_diameter_m + pipe_outlet_diameter_m) / 2
 
-    # Reynolds number at inlet
+    # Reynolds number
     reynolds_number = compute_reynolds_number(
         current_flow_rate=flow_rate,
         pipe_internal_diameter=Quantity(average_pipe_diameter_m, "m"),
         fluid_density=fluid_density,
         fluid_dynamic_viscosity=fluid_dynamic_viscosity,
     )
-
-    # Darcy-Weisbach friction factor
     friction_factor = compute_darcy_weisbach_friction_factor(
         reynolds_number=reynolds_number, relative_roughness=pipe_relative_roughness
     )
 
-    # Frictional pressure drop along tapered length
+    # Frictional ΔP
     frictional_pressure_drop_pa = (
         friction_factor
         * (pipe_length_m / average_pipe_diameter_m)
@@ -1147,10 +1248,21 @@ def compute_tapered_pipe_pressure_drop(
         * average_velocity_m_per_s**2
     )
 
-    # Local loss coefficient for expansion or contraction
+    # Compute taper angle
+    delta_diameter = abs(pipe_outlet_diameter_m - pipe_inlet_diameter_m)
+    taper_angle_deg = math.degrees(math.atan(delta_diameter / (2 * pipe_length_m)))
+
+    # Local loss coefficient
     if pipe_outlet_diameter_m > pipe_inlet_diameter_m:
-        # Gradual expansion
-        local_loss_coefficient = (1 - (area_inlet_m2 / area_outlet_m2)) ** 2
+        # Expansion
+        if taper_angle_deg <= gradual_angle_threshold_deg:
+            # Gradual expansion (Crane TP-410: K = (1 - A_in/A_out)^2 * (sin θ / θ))
+            local_loss_coefficient = (1 - area_inlet_m2 / area_outlet_m2) ** 2 * (
+                math.sin(math.radians(taper_angle_deg)) / math.radians(taper_angle_deg)
+            )
+        else:
+            # Sudden expansion (Borda-Carnot)
+            local_loss_coefficient = (1 - area_inlet_m2 / area_outlet_m2) ** 2
         local_pressure_drop_pa = (
             local_loss_coefficient
             * 0.5
@@ -1158,8 +1270,15 @@ def compute_tapered_pipe_pressure_drop(
             * velocity_outlet_m_per_s**2
         )
     else:
-        # Gradual contraction
-        local_loss_coefficient = 0.5 * (1 - (area_outlet_m2 / area_inlet_m2)) ** 0.75
+        # Contraction
+        if taper_angle_deg <= gradual_angle_threshold_deg:
+            # Gradual contraction (use conservative low-loss coefficient)
+            local_loss_coefficient = 0.1  # Crane gives ~0.04–0.2 depending on angle
+        else:
+            # Sudden contraction (empirical)
+            local_loss_coefficient = (
+                0.5 * (1 - (area_outlet_m2 / area_inlet_m2)) ** 0.75
+            )
         local_pressure_drop_pa = (
             local_loss_coefficient
             * 0.5
@@ -1167,8 +1286,120 @@ def compute_tapered_pipe_pressure_drop(
             * velocity_inlet_m_per_s**2
         )
 
-    # Total pressure drop in Pa
-    total_pressure_drop_pa = frictional_pressure_drop_pa + local_pressure_drop_pa
-    # Convert to psi
-    total_pressure_drop_psi = Quantity(total_pressure_drop_pa, "Pa").to("psi")
-    return total_pressure_drop_psi
+    # Total ΔP
+    total_pressure_drop_pa = (
+        frictional_pressure_drop_pa + local_pressure_drop_pa
+    ) * ureg.Pa
+    return total_pressure_drop_pa.to("psi")  # type: ignore
+
+
+# def compute_tapered_pipe_pressure_drop(
+#     flow_rate: PlainQuantity[float],
+#     pipe_inlet_diameter: PlainQuantity[float],
+#     pipe_outlet_diameter: PlainQuantity[float],
+#     pipe_length: PlainQuantity[float],
+#     fluid_density: PlainQuantity[float],
+#     fluid_dynamic_viscosity: PlainQuantity[float],
+#     pipe_relative_roughness: float = 0.0,
+# ) -> PlainQuantity[float]:
+#     """
+#     Calculate the pressure drop across a tapered (reducer or expander) pipe using
+#     the Darcy-Weisbach equation for frictional losses and additional local
+#     loss coefficients for gradual contraction or expansion.
+
+#     The formula used combines frictional losses along the tapered length and
+#     local losses due to the change in diameter:
+
+#         ΔP_friction = f * (L/D_avg) * (ρ * V_avg^2 / 2)
+
+#         ΔP_local = K * (ρ * V_out^2 / 2)
+
+#         Total ΔP = ΔP_friction + ΔP_local
+#     where:
+#         - f is the Darcy-Weisbach friction factor (dimensionless)
+#         - L is the length of the tapered section (m)
+#         - D_avg is the average diameter of the pipe (m)
+#         - ρ is the fluid density (kg/m^3)
+#         - V_avg is the average velocity in the tapered section (m/s)
+#         - K is the local loss coefficient (dimensionless)
+#         - V_out is the velocity at the outlet of the tapered section (m/s)
+#         - ΔP is the pressure drop (Pa)
+#         - D_avg = (D_inlet + D_outlet) / 2
+#         - V_avg = (V_inlet + V_outlet) / 2
+#         - For gradual expansion: K = (1 - (A_inlet / A_outlet))^2
+#         - For gradual contraction: K = 0.5 * (1 - (A_outlet / A_inlet))^0.75
+
+#     :param flow_rate: Volumetric flow rate of the fluid (e.g., m^3/s)
+#     :param pipe_inlet_diameter: Internal diameter at the pipe inlet (e.g., m)
+#     :param pipe_outlet_diameter: Internal diameter at the pipe outlet (e.g., m)
+#     :param pipe_length: Length of the tapered section (e.g., m)
+#     :param fluid_density: Fluid density (e.g., kg/m^3)
+#     :param fluid_dynamic_viscosity: Fluid dynamic viscosity (e.g., Pa·s)
+#     :param pipe_relative_roughness: Relative roughness of the pipe (dimensionless, default 0.0)
+#     :return: Pressure drop across the tapered pipe in psi (as a Pint Quantity).
+#     """
+#     # Convert to SI units
+#     pipe_inlet_diameter_m = pipe_inlet_diameter.to("m").magnitude
+#     pipe_outlet_diameter_m = pipe_outlet_diameter.to("m").magnitude
+#     pipe_length_m = pipe_length.to("m").magnitude
+#     fluid_density_kg_per_m3 = fluid_density.to("kg/m^3").magnitude
+
+#     # Cross-sectional areas and average velocities
+#     area_inlet_m2 = math.pi * (pipe_inlet_diameter_m**2) / 4
+#     area_outlet_m2 = math.pi * (pipe_outlet_diameter_m**2) / 4
+#     velocity_inlet_m_per_s = flow_rate.to("m^3/s").magnitude / area_inlet_m2
+#     velocity_outlet_m_per_s = flow_rate.to("m^3/s").magnitude / area_outlet_m2
+
+#     # Average diameter and velocity for friction along taper
+#     average_pipe_diameter_m = (pipe_inlet_diameter_m + pipe_outlet_diameter_m) / 2
+#     average_velocity_m_per_s = (velocity_inlet_m_per_s + velocity_outlet_m_per_s) / 2
+
+#     # Reynolds number at inlet
+#     reynolds_number = compute_reynolds_number(
+#         current_flow_rate=flow_rate,
+#         pipe_internal_diameter=Quantity(average_pipe_diameter_m, "m"),
+#         fluid_density=fluid_density,
+#         fluid_dynamic_viscosity=fluid_dynamic_viscosity,
+#     )
+
+#     # Darcy-Weisbach friction factor
+#     friction_factor = compute_darcy_weisbach_friction_factor(
+#         reynolds_number=reynolds_number, relative_roughness=pipe_relative_roughness
+#     )
+
+#     # Frictional pressure drop along tapered length
+#     frictional_pressure_drop_pa = (
+#         friction_factor
+#         * (pipe_length_m / average_pipe_diameter_m)
+#         * 0.5
+#         * fluid_density_kg_per_m3
+#         * average_velocity_m_per_s**2
+#     )
+
+#     # Local loss coefficient for expansion or contraction
+#     if pipe_outlet_diameter_m > pipe_inlet_diameter_m:
+#         # Gradual expansion
+#         local_loss_coefficient = (1 - (area_inlet_m2 / area_outlet_m2)) ** 2
+#         local_pressure_drop_pa = (
+#             local_loss_coefficient
+#             * 0.5
+#             * fluid_density_kg_per_m3
+#             * velocity_outlet_m_per_s**2
+#         )
+#     else:
+#         # Gradual contraction
+#         local_loss_coefficient = 0.5 * (1 - (area_outlet_m2 / area_inlet_m2)) ** 0.75
+#         local_pressure_drop_pa = (
+#             local_loss_coefficient
+#             * 0.5
+#             * fluid_density_kg_per_m3
+#             * velocity_inlet_m_per_s**2
+#         )
+
+#     # Total pressure drop in Pa
+#     total_pressure_drop_pa = (
+#         frictional_pressure_drop_pa + local_pressure_drop_pa
+#     ) * ureg.Pa
+#     # Convert to psi
+#     total_pressure_drop_psi = total_pressure_drop_pa.to("psi")  # type: ignore
+#     return total_pressure_drop_psi
