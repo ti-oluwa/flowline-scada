@@ -424,6 +424,7 @@ class FlowMeter(Meter):
             typing.Callable[[], typing.Optional[float]]
         ] = None,
         update_interval: float = 1.0,
+        precision: int = 2,
     ) -> None:
         self.flow_direction = flow_direction
         self.flow_viz = None  # Placeholder for flow visualization element
@@ -441,6 +442,7 @@ class FlowMeter(Meter):
             animation_interval=animation_interval,
             update_func=update_func,
             update_interval=update_interval,
+            precision=precision,
         )
 
     def display(self) -> None:
@@ -657,6 +659,7 @@ class PressureGauge(Meter):
             typing.Callable[[], typing.Optional[float]]
         ] = None,
         update_interval: float = 1.0,
+        precision: int = 2,
     ) -> None:
         self.gauge_element = None  # Placeholder for gauge element
         super().__init__(
@@ -673,6 +676,7 @@ class PressureGauge(Meter):
             animation_interval=animation_interval,
             update_func=update_func,
             update_interval=update_interval,
+            precision=precision,
         )
 
     def display(self):
@@ -808,6 +812,7 @@ class TemperatureGauge(Meter):
             typing.Callable[[], typing.Optional[float]]
         ] = None,
         update_interval: float = 1.0,
+        precision: int = 1,
     ):
         self.thermo_element = None
         super().__init__(
@@ -824,6 +829,7 @@ class TemperatureGauge(Meter):
             animation_interval=animation_interval,
             update_func=update_func,
             update_interval=update_interval,
+            precision=precision,
         )
 
     def display(self):
@@ -1864,6 +1870,10 @@ class Pipeline:
         self.update_properties()
 
     @property
+    def pipes(self) -> typing.List[Pipe]:
+        return self._pipes.copy()
+
+    @property
     def fluid(self) -> typing.Optional[Fluid]:
         """Get the fluid in the pipeline."""
         return self._fluid
@@ -2272,7 +2282,7 @@ class Pipeline:
             self.update_properties()
         return self
 
-    def update_properties(self, start_index: int = 0, end_index: int = -1) -> Self:
+    def update_properties(self) -> Self:
         """
         Update properties for all pipes in the pipeline.
 
@@ -2284,15 +2294,9 @@ class Pipeline:
             return self
 
         pipe_count = len(self._pipes)
-        if start_index < 0:
-            start_index = pipe_count + start_index
-
-        if end_index < 0:
-            end_index = pipe_count + end_index
-
         # Process pipes sequentially from start_index to end_index
         # Each pipe connects only to its immediate next neighbor
-        for i in range(start_index, min(end_index, pipe_count - 1)):
+        for i in range(pipe_count - 1):
             current_pipe = self._pipes[i]
             next_pipe = self._pipes[i + 1]
             logger.info(
@@ -2500,28 +2504,6 @@ class Pipeline:
             )
 
         return self
-
-    def validate_connections(self) -> typing.List[str]:
-        """
-        Validate all pipe connections and return any error messages.
-
-        :return: List of error messages for disconnected pipes (empty if all valid)
-        """
-        errors = []
-        for i in range(len(self._pipes) - 1):
-            current_pipe = self._pipes[i]
-            next_pipe = self._pipes[i + 1]
-
-            # Validate flow direction compatibility
-            if not check_directions_compatibility(
-                current_pipe.direction, next_pipe.direction
-            ):
-                errors.append(
-                    f"Incompatible flow directions between pipe {i} ({current_pipe.direction.value}) "
-                    f"and pipe {i + 1} ({next_pipe.direction.value}). "
-                    f"Opposing flow directions cannot be connected."
-                )
-        return errors
 
     def connect(self, other: typing.Union[Pipe, "Pipeline"]) -> Self:
         """

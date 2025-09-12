@@ -5,10 +5,21 @@ Main Entry Point for SCADA Pipeline Management System Application.
 import logging
 from nicegui import ui, app
 
-from src.ui.builder import PipelineBuilderUI, PipelineBuilder
+from src.ui.manage import (
+    PipelineManagerUI,
+    PipelineManager,
+    UpstreamStationFactory,
+    DownstreamStationFactory,
+    FlowStationConfig,
+    MeterConfig,
+    RegulatorConfig,
+)
+from src.ui.components import Pipeline, Fluid
+from src.units import Quantity
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - [%(name)s:%(funcName)s:%(lineno)d] - %(levelname)s - %(message)s",
 )
 
 logger = logging.getLogger(__name__)
@@ -52,12 +63,107 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                     "Design, configure, and monitor industrial pipelines with real-time validation and automatic instrumentation."
                 ).classes("text-blue-700")
 
-            # Pipeline builder interface
-            pipeline_builder_container = ui.column().classes("w-full")
-            with pipeline_builder_container:
-                builder = PipelineBuilder()
-                builder_ui = PipelineBuilderUI(builder, theme_color="green")
-                builder_ui.show(theme_color="green")
+            # Pipeline manager interface
+            pipeline_manager_container = ui.column().classes("w-full")
+            with pipeline_manager_container:
+                initial_fluid = Fluid.from_coolprop(
+                    fluid_name="Methane",
+                    phase="gas",
+                    temperature=Quantity(60, "degF"),
+                    pressure=Quantity(100, "psi"),
+                    molecular_weight=Quantity(16.04, "g/mol"),
+                )
+
+                pipeline = Pipeline(
+                    pipes=[],
+                    fluid=initial_fluid,
+                    name="Main Pipeline",
+                    max_flow_rate=Quantity(1e6, "MSCF/day"),
+                )
+
+                upstream_config = FlowStationConfig(
+                    station_name="Upstream Station",
+                    station_type="upstream",
+                    pressure_unit="psi",
+                    temperature_unit="degF",
+                    flow_unit="MSCF/day",
+                    pressure_config=MeterConfig(
+                        label="Upstream Pressure",
+                        units="PSI",
+                        max_value=2000.0,
+                        height="180px",
+                        precision=1,
+                    ),
+                    temperature_config=MeterConfig(
+                        label="Upstream Temperature",
+                        units="°F",
+                        min_value=-40.0,
+                        max_value=200.0,
+                        width="160px",
+                        height="240px",
+                        precision=1,
+                    ),
+                    flow_config=MeterConfig(
+                        label="Upstream Flow",
+                        units="MSCF/DAY",
+                        max_value=1e9,
+                        height="220px",
+                        precision=0,
+                    ),
+                    pressure_regulator_config=RegulatorConfig(
+                        label="Upstream Pressure Control",
+                        units="PSI",
+                        max_value=2000.0,
+                        precision=3,
+                    ),
+                    temperature_regulator_config=RegulatorConfig(
+                        label="Upstream Temperature Control",
+                        units="°F",
+                        min_value=-40.0,
+                        max_value=200.0,
+                        precision=1,
+                    ),
+                )
+
+                downstream_config = FlowStationConfig(
+                    station_name="Downstream Station",
+                    station_type="downstream",
+                    pressure_unit="psi",
+                    temperature_unit="degF",
+                    flow_unit="MSCF/day",
+                    pressure_config=MeterConfig(
+                        label="Downstream Pressure",
+                        units="PSI",
+                        max_value=2000.0,
+                        height="180px",
+                        precision=1,
+                    ),
+                    temperature_config=MeterConfig(
+                        label="Downstream Temperature",
+                        units="°F",
+                        min_value=-40.0,
+                        max_value=200.0,
+                        width="160px",
+                        height="240px",
+                        precision=1,
+                    ),
+                    flow_config=MeterConfig(
+                        label="Downstream Flow",
+                        units="MSCF/DAY",
+                        max_value=1e9,
+                        height="220px",
+                        precision=0,
+                    ),
+                )
+
+                upstream_factory = UpstreamStationFactory(upstream_config)
+                downstream_factory = DownstreamStationFactory(downstream_config)
+                manager = PipelineManager(
+                    pipeline,
+                    flow_station_factories=[upstream_factory, downstream_factory],
+                )
+                manager_ui = PipelineManagerUI(manager)
+                manager_ui.show(theme_color="green")
 
     return main_container
 
