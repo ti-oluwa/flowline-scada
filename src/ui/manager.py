@@ -968,8 +968,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 else:
                     ui.space()  # Spacer when no label
 
-                # Configuration menu button
-                self.show_config_menu_button()
+                # # Configuration menu button
+                # self.show_config_menu_button()
 
             # Unit system controls
             self.unit_controls_container = self.show_unit_system_controls()
