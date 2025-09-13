@@ -8,6 +8,7 @@ from nicegui import ui
 from nicegui.elements.html import Html
 from nicegui.elements.row import Row
 from pint.facets.plain import PlainQuantity
+from scipy.optimize import root_scalar
 
 from src.units import Quantity, ureg
 from src.properties import (
@@ -1839,7 +1840,7 @@ class Pipeline:
         fluid: typing.Optional[Fluid] = None,
         name: typing.Optional[str] = None,
         scale_factor: float = 0.1,
-        max_flow_rate: PlainQuantity[float] = Quantity(10.0, "ft^3/s"),
+        max_flow_rate: PlainQuantity[float] = Quantity(0.0, "ft^3/s"),
         flow_type: FlowType = FlowType.COMPRESSIBLE,
         connector_length: PlainQuantity[float] = Quantity(0.1, "m"),
         alert_errors: bool = True,
@@ -2127,14 +2128,13 @@ class Pipeline:
         )
         return direction_compatible
 
-    def set_initial_upstream_pressure(
-        self, pressure: typing.Union[PlainQuantity[float], float], check: bool = True
+    def set_upstream_pressure(
+        self, pressure: typing.Union[PlainQuantity[float], float]
     ) -> Self:
         """
         Set the upstream pressure for the entire pipeline (applied to the first pipe section).
 
         :param pressure: Upstream pressure to set
-        :param check: Whether to validate the pressure change (default is True)
         :return: self for method chaining
         """
         if self._pipes:
@@ -2143,9 +2143,19 @@ class Pipeline:
             else:
                 pressure = pressure * ureg("psi")
 
+            if pressure.magnitude < self.downstream_pressure.magnitude:
+                if self.alert_errors:
+                    show_alert(
+                        f"Upstream pressure cannot be less than downstream pressure in pipeline - {self.name!r}.",
+                        severity="error",
+                    )
+                raise ValueError(
+                    "Upstream pressure cannot be less than downstream pressure. Flow cannot occur against the pressure gradient."
+                )
+
             first_pipe = self._pipes[0]
             try:
-                first_pipe.set_upstream_pressure(pressure, check=check, update=True)
+                first_pipe.set_upstream_pressure(pressure, check=False, update=False)
             except Exception as e:
                 if self.alert_errors:
                     show_alert(
@@ -2155,14 +2165,13 @@ class Pipeline:
                 raise
         return self.update_properties()
 
-    def set_initial_downstream_pressure(
-        self, pressure: typing.Union[PlainQuantity[float], float], check: bool = True
+    def set_downstream_pressure(
+        self, pressure: typing.Union[PlainQuantity[float], float]
     ) -> Self:
         """
-        Set the downstream pressure for the first pipe section of the pipeline.
+        Set the downstream pressure for the pipeline
 
         :param pressure: Downstream pressure to set
-        :param check: Whether to validate the pressure change (default is True)
         :return: self for method chaining
         """
         if self._pipes:
@@ -2171,13 +2180,23 @@ class Pipeline:
             else:
                 pressure = pressure * ureg("psi")
 
-            first_pipe = self._pipes[0]
+            if pressure.magnitude > self.upstream_pressure.magnitude:
+                if self.alert_errors:
+                    show_alert(
+                        f"Downstream pressure cannot exceed upstream pressure in pipeline - {self.name!r}.",
+                        severity="error",
+                    )
+                raise ValueError(
+                    "Downstream pressure cannot exceed upstream pressure. Flow cannot occur against the pressure gradient."
+                )
+
+            last_pipe = self._pipes[-1]
             try:
-                first_pipe.set_downstream_pressure(pressure, check=check, update=True)
+                last_pipe.set_downstream_pressure(pressure, check=False, update=False)
             except Exception as e:
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to set downstream pressure in first pipe - {self.name!r}: {e}",
+                        f"Failed to set downstream pressure in last pipe - {self.name!r}: {e}",
                         severity="error",
                     )
                 raise
@@ -2231,7 +2250,13 @@ class Pipeline:
         copied_pipe = copy.deepcopy(pipe)
         # Apply the pipeline's scale factor and max flow rate to the pipe
         copied_pipe.scale_factor = self.scale_factor
-        copied_pipe.max_flow_rate = self.max_flow_rate
+        if self.max_flow_rate.magnitude > 0:
+            copied_pipe.max_flow_rate = self.max_flow_rate
+        else:
+            # If pipeline max flow rate is zero, use the pipe's own max flow rate
+            # Basically the first pipe added sets the max flow rate if not defined
+            self.max_flow_rate = copied_pipe.max_flow_rate
+
         if self.fluid is not None:
             copied_pipe.set_fluid(self.fluid)
 
@@ -2277,10 +2302,217 @@ class Pipeline:
                         if self.alert_errors:
                             show_alert(error_msg, severity="error")
                         raise PipelineConnectionError(error_msg)
-
+                    
         if update:
             self.update_properties()
         return self
+
+    def _compute_outlet_pressure(
+        self, mass_flow_rate: PlainQuantity[float], set_pressures: bool = False
+    ) -> PlainQuantity[float]:
+        """
+        For a given system-wide mass flow rate, calculate the final outlet pressure.
+        Returns the calculated outlet pressure.
+
+        :param mass_flow_rate: Mass flow rate through the pipeline (kg/s)
+        :param set_pressures: Whether to set the calculated pressures on each pipe (default is False)
+        :return: Calculated outlet pressure (psi)
+        """
+        if not self._pipes:
+            return Quantity(0.0, "psi")
+
+        fluid = self.fluid
+        if fluid is None:
+            raise ValueError(
+                "Fluid properties must be defined to compute pressure drops."
+            )
+
+        logger.info(
+            "Starting outlet pressure calculation for pipeline %r with mass flow rate: %s",
+            self.name,
+            mass_flow_rate,
+        )
+        current_pressure = self.upstream_pressure
+        current_temp = fluid.temperature  # Assume constant temperature for simplicity
+
+        for i in range(len(self._pipes)):
+            current_pipe = self._pipes[i]
+
+            logger.info("Pipe %d Upstream Pressure: %s", i + 1, current_pressure)
+            # If the pressure drops to zero or below, flow cannot continue
+            # return zero to notify the root solver to try another mass rate
+            if current_pressure.magnitude <= 0:
+                return Quantity(0.0, "psi")
+
+            # Get fluid properties at the current pressure and temperature
+            fluid_at_pipe_inlet = Fluid.from_coolprop(
+                fluid_name=fluid.name,
+                phase=fluid.phase,
+                pressure=current_pressure,
+                temperature=current_temp,
+                molecular_weight=fluid.molecular_weight,
+            )
+
+            # Calculate volumetric flow rate from mass flow rate
+            volumetric_flow_rate = mass_flow_rate.to(
+                "lb/s"
+            ) / fluid_at_pipe_inlet.density.to("lb/ft^3")
+            logger.info("Pipe %d Volumetric Flow Rate: %s", i + 1, volumetric_flow_rate)
+
+            # 1. Calculate pressure drop across the pipe itself
+            flow_equation = current_pipe.flow_equation
+            if flow_equation is None:
+                raise ValueError(
+                    f"Flow equation must be defined for pipe {current_pipe.name!r} to compute pressure drop."
+                )
+
+            pipe_pressure_drop = compute_pipe_pressure_drop(
+                upstream_pressure=current_pressure,
+                length=current_pipe.length,
+                internal_diameter=current_pipe.internal_diameter,
+                relative_roughness=current_pipe.relative_roughness,
+                efficiency=current_pipe.efficiency,
+                elevation_difference=current_pipe.elevation_difference,
+                specific_gravity=fluid_at_pipe_inlet.specific_gravity,
+                temperature=fluid_at_pipe_inlet.temperature,
+                compressibility_factor=fluid_at_pipe_inlet.compressibility_factor,
+                density=fluid_at_pipe_inlet.density,
+                viscosity=fluid_at_pipe_inlet.viscosity,
+                flow_rate=volumetric_flow_rate,
+                flow_equation=flow_equation,
+            )
+            downstream_pipe_pressure = current_pressure - pipe_pressure_drop
+            logger.info(
+                "Pipe %d Pressure Drop: %s, Downstream Pressure: %s",
+                i + 1,
+                pipe_pressure_drop,
+                downstream_pipe_pressure,
+            )
+            # If the pressure drops to zero or below, flow cannot continue
+            # return zero to notify the root solver to try another mass rate
+            if downstream_pipe_pressure.magnitude <= 0:
+                return Quantity(0.0, "psi")
+
+            if set_pressures:
+                current_pipe.set_upstream_pressure(
+                    current_pressure, check=False, update=False
+                )
+                current_pipe.set_flow_rate(volumetric_flow_rate.to("ft^3/s"))
+                current_pipe.set_downstream_pressure(
+                    downstream_pipe_pressure, check=False, update=False
+                )
+
+            # Check if this is the last pipe
+            if i == len(self._pipes) - 1:
+                return downstream_pipe_pressure  # This is the final outlet pressure
+
+            # 2. Calculate pressure drop across the connector to the next pipe
+            next_pipe = self._pipes[i + 1]
+
+            fluid_at_connector_inlet = Fluid.from_coolprop(
+                fluid_name=fluid.name,
+                phase=fluid.phase,
+                pressure=downstream_pipe_pressure,
+                temperature=current_temp,
+                molecular_weight=fluid.molecular_weight,
+            )
+
+            # NOTE: Even a straight connector has length and thus frictional drop!
+            # Your assumption of zero drop for <2% diff is only valid if length is zero.
+            relative_diameter_difference = abs(
+                current_pipe.internal_diameter.to("m")
+                - next_pipe.internal_diameter.to("m")
+            ) / current_pipe.internal_diameter.to("m")
+            logger.info(
+                "Connector between Pipe %d and Pipe %d Relative Diameter Difference: %.4f",
+                i + 1,
+                i + 2,
+                relative_diameter_difference,
+            )
+            # If diameters are within 2%, treat as same diameter (assume connector is straight)
+            if relative_diameter_difference < 0.02:
+                connector_pressure_drop = compute_pipe_pressure_drop(
+                    upstream_pressure=downstream_pipe_pressure,
+                    length=self.connector_length,  # Your connector length
+                    internal_diameter=current_pipe.internal_diameter,
+                    relative_roughness=0.0001,  # Assume very smooth connector
+                    efficiency=1.0,  # Assume no efficiency loss in short connector
+                    elevation_difference=Quantity(
+                        0.0, "m"
+                    ),  # Assume horizontal connector
+                    specific_gravity=fluid_at_connector_inlet.specific_gravity,
+                    temperature=fluid_at_connector_inlet.temperature,
+                    compressibility_factor=fluid_at_connector_inlet.compressibility_factor,
+                    density=fluid_at_connector_inlet.density,
+                    viscosity=fluid_at_connector_inlet.viscosity,
+                    flow_rate=volumetric_flow_rate,
+                    flow_equation=FlowEquation.DARCY_WEISBACH
+                    if self._flow_type == FlowType.INCOMPRESSIBLE
+                    else FlowEquation.WEYMOUTH,
+                )
+            else:
+                connector_pressure_drop = compute_tapered_pipe_pressure_drop(
+                    flow_rate=volumetric_flow_rate,
+                    pipe_inlet_diameter=current_pipe.internal_diameter,
+                    pipe_outlet_diameter=next_pipe.internal_diameter,
+                    pipe_length=self.connector_length,  # Your connector length
+                    fluid_density=fluid_at_connector_inlet.density,
+                    fluid_dynamic_viscosity=fluid_at_connector_inlet.viscosity,
+                    pipe_relative_roughness=0.0001,  # Assume very smooth connector
+                )
+            logger.info(
+                "Connector Pressure Drop between Pipe %d and Pipe %d: %s",
+                i + 1,
+                i + 2,
+                connector_pressure_drop,
+            )
+
+            # Update the pressure for the start of the next pipe
+            current_pressure = downstream_pipe_pressure - connector_pressure_drop
+
+        # This part should ideally not be reached if the loop returns
+        return current_pressure
+
+    def _compute_mass_rate_range(self) -> typing.Tuple[float, float]:
+        """
+        Estimate a reasonable mass flow rate range for the solver based on max flow rates of pipes.
+
+        :return: Tuple of (min_mass_flow_rate, max_mass_flow_rate) in kg/s
+        """
+        if not self._pipes or self.fluid is None:
+            return 0.001, 1000.0
+
+        fluid = self.fluid
+        max_internal_diameter = max(
+            pipe.internal_diameter.to("m").magnitude for pipe in self._pipes
+        )
+        total_length = sum(pipe.length.to("m").magnitude for pipe in self._pipes)
+        upstream_pressure = self.upstream_pressure.to("psi")
+        downstream_pressure = self.downstream_pressure.to("psi")
+        relative_roughness = min(pipe.relative_roughness for pipe in self._pipes)
+        efficiency = max(pipe.efficiency for pipe in self._pipes)
+        elevation_difference = sum(
+            pipe.elevation_difference.to("m").magnitude for pipe in self._pipes
+        )
+        reynolds_number = 1e5  # Assume turbulent flow for max estimate
+        max_volumetric_flow_rate = compute_pipe_flow_rate(
+            internal_diameter=Quantity(max_internal_diameter, "m"),
+            length=Quantity(total_length, "m"),
+            upstream_pressure=upstream_pressure,
+            downstream_pressure=downstream_pressure,
+            relative_roughness=relative_roughness,
+            efficiency=efficiency,
+            specific_gravity=fluid.specific_gravity,
+            temperature=fluid.temperature,
+            elevation_difference=Quantity(elevation_difference, "m"),
+            compressibility_factor=fluid.compressibility_factor,
+            reynolds_number=reynolds_number,
+            flow_equation=FlowEquation.DARCY_WEISBACH
+            if self._flow_type == FlowType.INCOMPRESSIBLE
+            else FlowEquation.WEYMOUTH,
+        )
+        max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
+        return 0.001, max_mass_flow_rate.magnitude
 
     def update_properties(self) -> Self:
         """
@@ -2290,219 +2522,74 @@ class Pipeline:
         :param end_index: Ending index of pipes to update (default is -1 for last pipe)
         :return: self for method chaining
         """
-        if self.fluid is None:
+        if self.fluid is None or len(self._pipes) < 2:
             return self
 
-        pipe_count = len(self._pipes)
-        # Process pipes sequentially from start_index to end_index
-        # Each pipe connects only to its immediate next neighbor
-        for i in range(pipe_count - 1):
-            current_pipe = self._pipes[i]
-            next_pipe = self._pipes[i + 1]
-            logger.info(
-                f"Processing pipe connection: {current_pipe.name} -> {next_pipe.name}"
+        target_downstream_pressure = self.downstream_pressure
+
+        def error_function(mass_flow_rate_guess: float) -> float:
+            """
+            Returns the difference between calculated/guessed outlet pressure and actual outlet pressure.
+            The solver will try to make this function return 0.
+
+            :param mass_flow_rate_guess: Guessed mass flow rate (kg/s)
+            :return: Difference between calculated and target downstream pressure (psi)
+            """
+            nonlocal target_downstream_pressure
+
+            mass_flow_rate = Quantity(mass_flow_rate_guess, "kg/s")
+            # Guess the outlet pressure based on the guessed mass flow rate
+            calculated_downstream_pressure = self._compute_outlet_pressure(
+                mass_flow_rate
             )
-            logger.debug(
-                f"Current pipe: {current_pipe.name}, Next pipe: {next_pipe.name}"
+            error_psi = (
+                (calculated_downstream_pressure - target_downstream_pressure)
+                .to("psi")
+                .magnitude
+            )
+            return error_psi
+
+        min_mass_rate, max_mass_rate = self._compute_mass_rate_range()
+        logger.info("Min Mass Flow Rate: %s", min_mass_rate)
+        logger.info("Max Mass Flow Rate: %s", max_mass_rate)
+        min_error = error_function(min_mass_rate)
+        max_error = error_function(max_mass_rate)
+        sign_change = (min_error * max_error) < 0
+        if not sign_change:
+            logger.warning(
+                f"No sign change in error function over mass flow rate range "
+                f"[{min_mass_rate:.4f}, {max_mass_rate:.4f}] kg/s. "
+                f"Solver may not converge. Try adjusting pipe parameters."
             )
 
-            # # Ensure current pipe flow rate is updated first
-            # current_pipe.update_flow_rate()
-
-            relative_diameter_difference = abs(
-                current_pipe.internal_diameter.to("m")
-                - next_pipe.internal_diameter.to("m")
-            ) / current_pipe.internal_diameter.to("m")
-            # If diameters are within 5%, treat as same diameter (no pressure drop across connector)
-            if relative_diameter_difference < 0.02:
-                logger.debug(
-                    "Pipes have similar diameters; treating as same diameter connection."
+        solution = root_scalar(
+            error_function,
+            bracket=[min_mass_rate, max_mass_rate],
+            method="brentq",
+            xtol=1e-5,
+        )
+        if not solution.converged:
+            logger.warning("Solver did not converge. Check your bracket or function.")
+            if self.alert_errors:
+                show_alert(
+                    f"Pipeline solver did not converge for pipeline - {self.name!r}. Check pipe parameter, pressures and flow conditions for unphysical conditions.",
+                    severity="warning",
                 )
-                # No pressure drop across connector if diameters are the same
-                # So mass and volumetric flow rates remain constant
-                # and the next pipe's pressures can be directly set
-                next_pipe_fluid = next_pipe.fluid
-                if next_pipe_fluid is None:
-                    raise ValueError(
-                        "Next pipe must have fluid properties defined to update flow rates."
-                    )
-                # Set next pipe's upstream pressure to current pipe's downstream pressure
-                next_pipe_upstream_pressure = current_pipe.downstream_pressure
-                logger.debug(
-                    f"Setting next pipe upstream pressure: {next_pipe_upstream_pressure.to('kilopascal'):.2f} kPa"
-                )
-                next_pipe.set_upstream_pressure(
-                    pressure=next_pipe_upstream_pressure,
-                    check=False,
-                    update=False,
-                )
-                # Compute the pressure drop across the length of the next pipe with the flow rate of the current pipe
-                # entering the next pipe
-                next_pipe_flow_equation = next_pipe.flow_equation
-                if next_pipe_flow_equation is None:
-                    raise ValueError(
-                        "Next pipe must have a flow equation defined to update flow rates."
-                    )
-                logger.debug(f"Next pipe flow equation: {next_pipe_flow_equation}")
-                pressure_drop = compute_pipe_pressure_drop(
-                    upstream_pressure=next_pipe.upstream_pressure,
-                    length=next_pipe.length,
-                    internal_diameter=next_pipe.internal_diameter,
-                    relative_roughness=next_pipe.relative_roughness,
-                    efficiency=next_pipe.efficiency,
-                    elevation_difference=next_pipe.elevation_difference,
-                    specific_gravity=next_pipe_fluid.specific_gravity,
-                    temperature=next_pipe_fluid.temperature,
-                    compressibility_factor=next_pipe_fluid.compressibility_factor,
-                    density=next_pipe_fluid.density,
-                    viscosity=next_pipe_fluid.viscosity,
-                    flow_rate=current_pipe.flow_rate,
-                    flow_equation=next_pipe_flow_equation,
-                )
-                logger.debug(
-                    f"Next pipe pressure drop: {pressure_drop.to('kilopascal'):.2f} kPa"
-                )
-                next_pipe_downstream_pressure = next_pipe.upstream_pressure.to(
-                    "psi"
-                ) - pressure_drop.to("psi")
-                logger.debug(
-                    f"Next pipe downstream pressure: {next_pipe_downstream_pressure.to('kilopascal'):.2f} kPa"
-                )
-                next_pipe.set_downstream_pressure(
-                    pressure=next_pipe_downstream_pressure,
-                    check=False,
-                    update=False,
-                )
-                # Next pipe flow rate is same as current pipe flow rate
-                next_pipe.set_flow_rate(flow_rate=current_pipe.flow_rate)
-                continue
+            raise RuntimeError("Pipeline solver did not converge.")
 
-            current_pipe_fluid = current_pipe.fluid
-            next_pipe_fluid = next_pipe.fluid
-            if current_pipe_fluid is None or next_pipe_fluid is None:
-                raise ValueError(
-                    "Both pipes must have fluid properties defined to update flow rates."
-                )
-
-            mass_rate = current_pipe.mass_rate.to("lb/s")
-            elbow_to_next_connected = current_pipe.direction != next_pipe.direction
-            # For elbow connectors, there are two arms each of length, `connector_length`
-            connector_length = (
-                2 * self.connector_length
-                if elbow_to_next_connected
-                else self.connector_length
-            )
-
-            # Calculate the pressure drop across the connector due to diameter change
-            connector_pressure_drop = compute_tapered_pipe_pressure_drop(
-                flow_rate=current_pipe.flow_rate,
-                pipe_inlet_diameter=current_pipe.internal_diameter,
-                pipe_outlet_diameter=next_pipe.internal_diameter,
-                pipe_length=connector_length,
-                fluid_density=current_pipe_fluid.density,
-                fluid_dynamic_viscosity=current_pipe_fluid.viscosity,
-                pipe_relative_roughness=0.0001,  # Assume very smooth connector
-            )
-
-            logger.debug(
-                f"Connector pressure drop: {connector_pressure_drop.to('kilopascal'):.2f} kPa"
-            )
-            connector_upstream_pressure = current_pipe.downstream_pressure
-            logger.debug(
-                f"Connector upstream pressure: {connector_upstream_pressure.to('kilopascal'):.2f} kPa"
-            )
-            connector_downstream_pressure = connector_upstream_pressure.to(
-                "psi"
-            ) - connector_pressure_drop.to("psi")
-            logger.debug(
-                f"Connector downstream pressure: {connector_downstream_pressure.to('kilopascal'):.2f} kPa"
-            )
-
-            is_compressible_flow = (
-                self._flow_type == FlowType.COMPRESSIBLE
-                or current_pipe_fluid.compressibility_factor > 0.0
-            )
-            # mass rate and volumetric rate is constant for short connector,
-            # for both compressible and incompressible flow. However, for compressible flow,
-            # fluid density changes
-            if is_compressible_flow:
-                next_pipe_fluid = Fluid.from_coolprop(
-                    fluid_name=current_pipe_fluid.name,
-                    phase=current_pipe_fluid.phase,
-                    temperature=current_pipe_fluid.temperature,
-                    pressure=connector_downstream_pressure,
-                    molecular_weight=current_pipe_fluid.molecular_weight,
-                )
-                next_pipe.set_fluid(next_pipe_fluid)
-
-            # Since mass rate is constant, across the pipeline, the estimated volumetric rate in the next pipe will be
-            estimated_volumetric_rate_in_next_pipe = (
-                mass_rate / next_pipe_fluid.density.to("lb/ft^3")
-            ).to("ft^3/s")
-            next_pipe_upstream_pressure = connector_downstream_pressure
-            next_pipe_flow_equation = next_pipe.flow_equation
-            if next_pipe_flow_equation is None:
-                raise ValueError(
-                    "Next pipe must have a flow equation defined to update flow rates."
-                )
-
-            # Compute the pressure drop across the length of the next pipe with the outlet volumetric flow rate
-            pressure_drop_in_next_pipe = compute_pipe_pressure_drop(
-                upstream_pressure=next_pipe_upstream_pressure,
-                length=next_pipe.length,
-                internal_diameter=next_pipe.internal_diameter,
-                relative_roughness=next_pipe.relative_roughness,
-                efficiency=next_pipe.efficiency,
-                elevation_difference=next_pipe.elevation_difference,
-                specific_gravity=next_pipe_fluid.specific_gravity,
-                temperature=next_pipe_fluid.temperature,
-                compressibility_factor=next_pipe_fluid.compressibility_factor,
-                density=next_pipe_fluid.density,
-                viscosity=next_pipe_fluid.viscosity,
-                flow_rate=estimated_volumetric_rate_in_next_pipe,
-                flow_equation=FlowEquation.WEYMOUTH,
-            )
-            next_pipe_downstream_pressure = next_pipe_upstream_pressure.to(
-                "psi"
-            ) - pressure_drop_in_next_pipe.to("psi")
-
-            logger.debug(
-                f"Current pipe volumetric rate: {current_pipe.flow_rate.to('ft^3/s'):.3f} ft³/s"
-            )
-            logger.debug(
-                f"Next pipe volumetric rate: {estimated_volumetric_rate_in_next_pipe.to('ft^3/s'):.3f} ft³/s"
-            )
-            logger.debug(
-                f"Current pipe fluid density: {current_pipe_fluid.density.to('lb/ft^3'):.3f} lb/ft³"
-            )
-            logger.debug(
-                f"Next pipe fluid density: {next_pipe_fluid.density.to('lb/ft^3'):.3f} lb/ft³"
-            )
-            logger.debug(
-                f"Pressure drop in next pipe: {pressure_drop_in_next_pipe.to('kilopascal'):.2f} kPa"
-            )
-            logger.debug(
-                f"Next pipe upstream pressure: {next_pipe_upstream_pressure.to('kilopascal'):.2f} kPa"
-            )
-            logger.debug(
-                f"Next pipe downstream pressure: {next_pipe_downstream_pressure.to('kilopascal'):.2f} kPa"
-            )
-            next_pipe.set_upstream_pressure(
-                pressure=next_pipe_upstream_pressure,
-                check=False,
-                update=False,
-            )
-            next_pipe.set_downstream_pressure(
-                pressure=next_pipe_downstream_pressure,
-                check=False,
-                update=False,
-            )
-            # Update the next pipe's flow rate after pressure changes
-            next_pipe.set_flow_rate(estimated_volumetric_rate_in_next_pipe)
-            logger.info(
-                f"Completed pipe connection processing for {current_pipe.name} -> {next_pipe.name}"
-            )
-
+        actual_mass_flow_rate = Quantity(solution.root, "kg/s")
+        logger.info("Actual Mass Flow Rate: %s", actual_mass_flow_rate)
+        logger.info(f"System solved! Mass Flow Rate: {actual_mass_flow_rate:.4f}")
+        # Now you can run the calculation one last time with the correct flow rate
+        # to update all the intermediate pressures in your pipe objects.
+        computed_downstream_pressure = self._compute_outlet_pressure(
+            actual_mass_flow_rate, set_pressures=True
+        )
+        logger.info("Computed Downstream Pressure: %s", computed_downstream_pressure)
+        assert (
+            abs((computed_downstream_pressure - target_downstream_pressure).magnitude)
+            < 1e-3
+        ), "Final computed downstream pressure does not match target within tolerance."
         return self
 
     def connect(self, other: typing.Union[Pipe, "Pipeline"]) -> Self:

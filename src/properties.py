@@ -2,6 +2,7 @@ import enum
 import typing
 import attrs
 import math
+import functools
 from pint.facets.plain import PlainQuantity
 from CoolProp.CoolProp import PropsSI
 
@@ -44,13 +45,12 @@ class Fluid:
         """
         The specific gravity of the fluid.
         """
+        density_at_stp = compute_fluid_density(
+            Quantity(101325, "Pa"), Quantity(273.15 + 15, "K"), self.name
+        ).to("kg/m^3")
         if self.phase == "gas":
-            return (
-                self.density.to("kg/m^3").magnitude / AIR_DENSITY.to("kg/m^3").magnitude
-            )
-        return (
-            self.density.to("kg/m^3").magnitude / WATER_DENSITY.to("kg/m^3").magnitude
-        )
+            return density_at_stp.magnitude / AIR_DENSITY.to("kg/m^3").magnitude
+        return density_at_stp.magnitude / WATER_DENSITY.to("kg/m^3").magnitude
 
     @classmethod
     def from_coolprop(
@@ -93,6 +93,7 @@ class Fluid:
         )
 
 
+@functools.lru_cache(maxsize=128)
 def compute_fluid_density(
     pressure: PlainQuantity[float],
     temperature: PlainQuantity[float],
@@ -219,7 +220,7 @@ def compute_darcy_weisbach_friction_factor(
     param relative_roughness: Pipe relative roughness (epsilon / D), default is 0 for smooth pipes.
     return: Darcy-Weisbach friction factor (dimensionless).
     """
-    if reynolds_number < 2000:
+    if int(reynolds_number) < 2000:
         # Laminar flow
         return 64.0 / reynolds_number
 
@@ -1403,3 +1404,4 @@ def compute_tapered_pipe_pressure_drop(
 #     # Convert to psi
 #     total_pressure_drop_psi = total_pressure_drop_pa.to("psi")  # type: ignore
 #     return total_pressure_drop_psi
+

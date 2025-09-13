@@ -5,7 +5,8 @@ Main Entry Point for SCADA Pipeline Management System Application.
 import logging
 from nicegui import ui, app
 
-from src.ui.manage import (
+from src.properties import FlowType
+from src.ui.manager import (
     PipelineManagerUI,
     PipelineManager,
     UpstreamStationFactory,
@@ -49,7 +50,7 @@ def build_application(min_width: int = 800, max_width: int = 1440):
             )
 
         # Main content area with the pipeline builder
-        content_area = ui.column().classes("flex-1 w-full overflow-auto p-4")
+        content_area = ui.column().classes("flex-1 w-full overflow-auto p-1")
 
         with content_area:
             welcome_card = ui.card().classes(
@@ -79,6 +80,10 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                     fluid=initial_fluid,
                     name="Main Pipeline",
                     max_flow_rate=Quantity(1e6, "MSCF/day"),
+                    flow_type=FlowType.COMPRESSIBLE,
+                    scale_factor=0.1,
+                    connector_length=Quantity(0.1, "m"),
+                    alert_errors=True,
                 )
 
                 upstream_config = FlowStationConfig(
@@ -92,7 +97,7 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                         units="PSI",
                         max_value=2000.0,
                         height="180px",
-                        precision=1,
+                        precision=3,
                     ),
                     temperature_config=MeterConfig(
                         label="Upstream Temperature",
@@ -101,14 +106,14 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                         max_value=200.0,
                         width="160px",
                         height="240px",
-                        precision=1,
+                        precision=2,
                     ),
                     flow_config=MeterConfig(
                         label="Upstream Flow",
                         units="MSCF/DAY",
                         max_value=1e9,
                         height="220px",
-                        precision=0,
+                        precision=4,
                     ),
                     pressure_regulator_config=RegulatorConfig(
                         label="Upstream Pressure Control",
@@ -121,7 +126,7 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                         units="°F",
                         min_value=-40.0,
                         max_value=200.0,
-                        precision=1,
+                        precision=2,
                     ),
                 )
 
@@ -136,7 +141,7 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                         units="PSI",
                         max_value=2000.0,
                         height="180px",
-                        precision=1,
+                        precision=3,
                     ),
                     temperature_config=MeterConfig(
                         label="Downstream Temperature",
@@ -145,14 +150,20 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                         max_value=200.0,
                         width="160px",
                         height="240px",
-                        precision=1,
+                        precision=2,
                     ),
                     flow_config=MeterConfig(
                         label="Downstream Flow",
                         units="MSCF/DAY",
                         max_value=1e9,
                         height="220px",
-                        precision=0,
+                        precision=4,
+                    ),
+                    pressure_regulator_config=RegulatorConfig(
+                        label="Downstream Pressure Control",
+                        units="PSI",
+                        max_value=2000.0,
+                        precision=3,
                     ),
                 )
 
@@ -163,7 +174,7 @@ def build_application(min_width: int = 800, max_width: int = 1440):
                     flow_station_factories=[upstream_factory, downstream_factory],
                 )
                 manager_ui = PipelineManagerUI(manager)
-                manager_ui.show(theme_color="green")
+                manager_ui.show(theme_color="green", max_width="95%")
 
     return main_container
 
@@ -172,11 +183,10 @@ def main():
     """Main application entry point."""
     logger.info("Starting SCADA Pipeline Management System")
 
-    # Configure NiceGUI application
     try:
         app.add_static_files("/static", "static")  # Add static file serving if needed
     except Exception:
-        pass  # Static files directory might not exist, that's OK
+        pass  # Static files directory might not exist
 
     build_application()
 

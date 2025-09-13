@@ -9,4 +9,5 @@ dependencies = [
     "coolprop>=7.0.0",
     "nicegui>=2.22.2",
     "pint>=0.25",
+    "scipy>=1.16.2",
 ]

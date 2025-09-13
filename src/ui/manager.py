@@ -12,8 +12,6 @@ from functools import partial
 from nicegui import ui
 from pint.facets.plain import PlainQuantity
 from src.ui.piping import PipeDirection
-from src.config.manager import config_manager
-from src.config.ui import config_ui
 from src.ui.components import (
     Pipe,
     Pipeline,
