@@ -4,15 +4,12 @@ Pipeline Management UI
 
 import typing
 import logging
-from enum import Enum
 import copy
-import attrs
+from attrs import evolve
 from functools import partial
-
 from nicegui import ui
-from pint.facets.plain import PlainQuantity
 
-from src.config.manage import ConfigurationManager, PipelineConfig
+from src.config.manage import ConfigurationManager, ConfigurationState
 from src.config.ui import ConfigurationUI
 from src.ui.piping import PipeDirection
 from src.ui.components import (
@@ -24,17 +21,15 @@ from src.ui.components import (
     PressureGauge,
     TemperatureGauge,
     FlowMeter,
-    FlowType,
-    Fluid,
 )
-from src.units import (
-    Quantity,
-    QuantityUnit,
-    QuantityUnitT,
-    Unit,
-    UnitSystem,
-    IMPERIAL,
-    SI,
+from src.flow import Fluid
+from src.units import Quantity, QuantityUnit, QuantityUnitT, UnitSystem, IMPERIAL, SI
+from src.types import (
+    PipelineEvent,
+    PipeConfig,
+    FluidConfig,
+    FlowStationConfig,
+    FlowType,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,89 +37,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PipelineManager",
     "PipelineManagerUI",
-    "PipeConfig",
-    "FluidConfig",
-    "PipelineEvent",
-    "MeterConfig",
-    "RegulatorConfig",
-    "FlowStationConfig",
     "UpstreamStationFactory",
     "DownstreamStationFactory",
     "validate_pipe_configs",
 ]
-
-
-class PipelineEvent(Enum):
-    """Events that can occur during pipeline construction."""
-
-    PIPE_ADDED = "pipe_added"
-    """Sent when a pipe is added to the pipeline."""
-    PIPE_REMOVED = "pipe_removed"
-    """Sent when a pipe is removed from the pipeline."""
-    PIPE_MOVED = "pipe_moved"
-    """Sent when a pipe is moved within the pipeline."""
-    PROPERTIES_UPDATED = "properties_updated"
-    """Sent when the properties of a pipe are updated."""
-    VALIDATION_CHANGED = "validation_changed"
-    """Sent when the validation state of a pipe changes."""
-    METERS_UPDATED = "meters_updated"
-    """Sent when the meters associated with a pipe are updated."""
-
-
-@attrs.define
-class PipeConfig:
-    """Configuration for a single pipe component."""
-
-    name: str
-    """Name of the pipe"""
-    length: PlainQuantity[float]
-    """Length of the pipe"""
-    internal_diameter: PlainQuantity[float]
-    """Internal diameter of the pipe"""
-    upstream_pressure: PlainQuantity[float]
-    """Upstream pressure of the pipe"""
-    downstream_pressure: PlainQuantity[float]
-    """Downstream pressure of the pipe"""
-    material: str = "Steel"
-    """Material of the pipe"""
-    roughness: PlainQuantity[float] = attrs.field(factory=lambda: Quantity(0.0001, "m"))
-    """Roughness of the pipe material"""
-    efficiency: float = 1.0
-    """Efficiency of the pipe (0 < efficiency <= 1)"""
-    elevation_difference: PlainQuantity[float] = attrs.field(
-        factory=lambda: Quantity(0, "m")
-    )
-    """Elevation difference between upstream and downstream"""
-    direction: PipeDirection = PipeDirection.EAST
-    """Direction of flow in the pipe"""
-    scale_factor: float = 0.1
-    """Scale factor for visual representation"""
-    max_flow_rate: PlainQuantity[float] = attrs.field(
-        factory=lambda: Quantity(10.0, "ft^3/s")
-    )
-    """Maximum flow rate through the pipe"""
-    flow_type: FlowType = FlowType.COMPRESSIBLE
-    """Type of flow in the pipe (incompressible or compressible)"""
-
-
-@attrs.define
-class FluidConfig:
-    """Configuration for fluid properties."""
-
-    name: str = "Methane"
-    """Name of the fluid supported by CoolProp"""
-    phase: typing.Literal["gas", "liquid"] = "gas"
-    """Phase of the fluid - gas or liquid"""
-    temperature: PlainQuantity[float] = attrs.field(
-        factory=lambda: Quantity(60, "degF")
-    )
-    """Temperature of the fluid"""
-    pressure: PlainQuantity[float] = attrs.field(factory=lambda: Quantity(100, "psi"))
-    """Pressure of the fluid"""
-    molecular_weight: PlainQuantity[float] = attrs.field(
-        factory=lambda: Quantity(16.04, "g/mol")
-    )
-    """Molecular weight of the fluid"""
 
 
 PipelineT = typing.TypeVar("PipelineT", bound=Pipeline)
@@ -140,7 +56,6 @@ def validate_pipe_configs(
     errors = []
 
     if not pipeline_config:
-        errors.append("Pipeline must contain at least one pipe")
         return errors
 
     for i, pipe_config in enumerate(pipeline_config):
@@ -188,139 +103,6 @@ def validate_pipe_configs(
     return errors
 
 
-@attrs.define
-class MeterConfig:
-    """Configuration for all meter types (PressureGauge, TemperatureGauge, FlowMeter)"""
-
-    min_value: float = 0.0
-    """Minimum value for the meter"""
-    max_value: float = 100.0
-    """Maximum value for the meter"""
-    units: str = ""
-    """Display units for the meter"""
-    label: str = "Meter"
-    """Label for the meter"""
-    width: str = "200px"
-    """Width of the meter"""
-    height: str = "200px"
-    """Height of the meter"""
-    precision: int = 2
-    """Precision for the meter"""
-    alarm_high: typing.Optional[float] = None
-    """High alarm threshold"""
-    alarm_low: typing.Optional[float] = None
-    """Low alarm threshold"""
-    animation_speed: float = 5.0
-    """Speed of the animation for value changes"""
-    animation_interval: float = 0.1
-    """Interval for animation updates"""
-    update_func: typing.Optional[typing.Callable[[], typing.Optional[float]]] = None
-    """Function to call to get the current value"""
-    update_interval: float = 1.0
-    """Interval in seconds to call the update function"""
-    alert_errors: bool = True
-    """Whether to alert on errors"""
-    flow_direction: typing.Literal["east", "west", "north", "south"] = "east"
-    """Direction of flow for FlowMeter (east, west, north, south)"""
-
-
-@attrs.define
-class RegulatorConfig:
-    """Configuration for regulator components"""
-
-    min_value: float = 0.0
-    """Minimum allowable value"""
-    max_value: float = 100.0
-    """Maximum allowable value"""
-    step: float = 0.1
-    """Increment step for adjustments"""
-    units: str = ""
-    """Display units for the regulator"""
-    label: str = "Regulator"
-    """Label for the regulator"""
-    width: str = "280px"
-    """Width of the regulator"""
-    height: str = "220px"
-    """Height of the regulator"""
-    precision: int = 3
-    """Precision for the regulator"""
-    setter_func: typing.Optional[typing.Callable[[float], None]] = None
-    """Function to call when the regulator value changes"""
-    alarm_high: typing.Optional[float] = None
-    """High alarm threshold"""
-    alarm_low: typing.Optional[float] = None
-    """Low alarm threshold"""
-    alert_errors: bool = True
-    """Whether to alert on errors"""
-
-
-@attrs.define
-class FlowStationConfig:
-    """Configuration for complete flow station setup"""
-
-    station_name: str = "Flow Station"
-    """Name of the flow station"""
-    station_type: typing.Literal["upstream", "downstream"] = "upstream"
-    """Type of station - upstream (with regulators) or downstream (meters only)"""
-    pressure_unit: typing.Union[str, Unit] = attrs.field(default="psi", converter=Unit)
-    """Pressure unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
-    temperature_unit: typing.Union[str, Unit] = attrs.field(
-        default="degF", converter=Unit
-    )
-    """Temperature unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
-    flow_unit: typing.Union[str, Unit] = attrs.field(default="ft^3/sec", converter=Unit)
-    """Flow rate unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
-    pressure_config: MeterConfig = attrs.field(
-        factory=lambda: MeterConfig(
-            label="Pressure", units="PSI", max_value=500.0, height="180px"
-        )
-    )
-    """Configuration for the pressure meter"""
-    temperature_config: MeterConfig = attrs.field(
-        factory=lambda: MeterConfig(
-            label="Temperature",
-            units="°C",
-            max_value=150.0,
-            width="160px",
-            height="240px",
-            precision=1,
-        )
-    )
-    """Configuration for the temperature meter"""
-    flow_config: MeterConfig = attrs.field(
-        factory=lambda: MeterConfig(
-            label="Flow Rate",
-            units="ft³/sec",
-            max_value=200.0,
-            height="220px",
-            flow_direction="east",
-        )
-    )
-    """Configuration for the flow meter"""
-    pressure_regulator_config: RegulatorConfig = attrs.field(
-        factory=lambda: RegulatorConfig(
-            label="Pressure Control", units="PSI", max_value=500.0
-        )
-    )
-    """Configuration for the pressure regulator (mostly upstream only)"""
-    flow_regulator_config: RegulatorConfig = attrs.field(
-        factory=lambda: RegulatorConfig(
-            label="Flow Control", units="ft³/sec", max_value=200.0
-        )
-    )
-    """Configuration for the flow regulator (mostly upstream only)"""
-    temperature_regulator_config: RegulatorConfig = attrs.field(
-        factory=lambda: RegulatorConfig(
-            label="Temperature Control",
-            units="°F",
-            min_value=-40.0,
-            max_value=200.0,
-            precision=1,
-        )
-    )
-    """Configuration for the temperature regulator (mostly upstream only)"""
-
-
 class UpstreamStationFactory(typing.Generic[PipelineT]):
     """Factory to create an upstream flow station."""
 
@@ -330,6 +112,10 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
 
         :param config: `FlowStationConfig` object containing all meter and regulator configurations
         """
+        self.config = config
+
+    def set_config(self, config: FlowStationConfig) -> None:
+        """Update the factory configuration."""
         self.config = config
 
     def build_meters(self, manager: "PipelineManager[PipelineT]") -> typing.List[Meter]:
@@ -379,7 +165,10 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         flow_meter = FlowMeter(
             value=pipeline.inlet_flow_rate.to(cfg.flow_unit).magnitude,
             min_value=cfg.flow_config.min_value,
-            max_value=cfg.flow_config.max_value,
+            max_value=max(
+                cfg.flow_config.max_value,
+                pipeline.max_flow_rate.to(cfg.flow_unit).magnitude,
+            ),
             units=cfg.flow_config.units,
             label=cfg.flow_config.label,
             width=cfg.flow_config.width,
@@ -389,7 +178,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.flow_config.alarm_low,
             animation_speed=cfg.flow_config.animation_speed,
             animation_interval=cfg.flow_config.animation_interval,
-            flow_direction=cfg.flow_config.flow_direction,
+            flow_direction=str(pipeline.pipes[0].direction)
+            if pipeline.pipes
+            else "east",  # type: ignore
             update_func=lambda: pipeline.inlet_flow_rate.to(cfg.flow_unit).magnitude,
             update_interval=cfg.flow_config.update_interval,
         )
@@ -458,6 +249,19 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             regulators=regulators,
         )
 
+    def on_config_change(self, config_state: ConfigurationState):
+        """Update internal config if the configuration state changes."""
+        flow_station_config = config_state.flow_station
+        self.set_config(
+            evolve(
+                flow_station_config,
+                station_name=flow_station_config.station_name + " (Upstream)"
+                if "upstream" not in flow_station_config.station_name.lower()
+                else flow_station_config.station_name,
+                station_type="upstream",
+            )
+        )
+
 
 class DownstreamStationFactory(typing.Generic[PipelineT]):
     """Factory to create a downstream flow station."""
@@ -468,6 +272,10 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
 
         :param config: `FlowStationConfig` object containing all meter configurations
         """
+        self.config = config
+
+    def set_config(self, config: FlowStationConfig) -> None:
+        """Update the factory configuration."""
         self.config = config
 
     def build_meters(self, manager: "PipelineManager[PipelineT]") -> typing.List[Meter]:
@@ -517,7 +325,10 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         flow_meter = FlowMeter(
             value=pipeline.outlet_flow_rate.to(cfg.flow_unit).magnitude,
             min_value=cfg.flow_config.min_value,
-            max_value=cfg.flow_config.max_value,
+            max_value=max(
+                cfg.flow_config.max_value,
+                pipeline.max_flow_rate.to(cfg.flow_unit).magnitude,
+            ),
             units=cfg.flow_config.units,
             label=cfg.flow_config.label,
             width=cfg.flow_config.width,
@@ -527,7 +338,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.flow_config.alarm_low,
             animation_speed=cfg.flow_config.animation_speed,
             animation_interval=cfg.flow_config.animation_interval,
-            flow_direction=cfg.flow_config.flow_direction,
+            flow_direction=str(pipeline.pipes[-1].direction)
+            if pipeline.pipes
+            else "east",  # type: ignore
             update_func=lambda: pipeline.outlet_flow_rate.to(cfg.flow_unit).magnitude,
             update_interval=cfg.flow_config.update_interval,
         )
@@ -571,6 +384,19 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             regulators=regulators,
         )
 
+    def on_config_change(self, config_state: ConfigurationState):
+        """Update internal config if the configuration state changes."""
+        flow_station_config = config_state.flow_station
+        self.set_config(
+            evolve(
+                flow_station_config,
+                station_name=flow_station_config.station_name + " (Downstream)"
+                if "downstream" not in flow_station_config.station_name.lower()
+                else flow_station_config.station_name,
+                station_type="downstream",
+            )
+        )
+
 
 class PipelineManager(typing.Generic[PipelineT]):
     """Manages a Pipeline instance."""
@@ -609,42 +435,36 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         if self._pipeline.fluid:
             self._fluid_config = FluidConfig(
-                name=getattr(self._pipeline.fluid, "name", "Unknown"),
-                phase=getattr(self._pipeline.fluid, "phase", "gas"),
-                temperature=getattr(
-                    self._pipeline.fluid, "temperature", Quantity(60, "degF")
-                ),
-                pressure=getattr(
-                    self._pipeline.fluid, "pressure", Quantity(100, "psi")
-                ),
-                molecular_weight=getattr(
-                    self._pipeline.fluid, "molecular_weight", Quantity(16.04, "g/mol")
-                ),
+                name=self._pipeline.fluid.name,
+                phase=self._pipeline.fluid.phase,
+                temperature=self._pipeline.fluid.temperature,  # type: ignore
+                pressure=self._pipeline.upstream_pressure,  # type: ignore
+                molecular_weight=self._pipeline.fluid.molecular_weight,  # type: ignore
             )
 
-        for i, pipe in enumerate(self._pipeline.pipes):
+        for i, pipe in enumerate(self._pipeline):
             pipe_config = PipeConfig(
                 name=pipe.name or f"Pipe-{i + 1}",
-                length=pipe.length,
-                internal_diameter=pipe.internal_diameter,
-                upstream_pressure=pipe.upstream_pressure,
-                downstream_pressure=pipe.downstream_pressure,
-                material=getattr(pipe, "material", "Steel"),
-                roughness=getattr(pipe, "roughness", Quantity(0.0001, "m")),
-                efficiency=getattr(pipe, "efficiency", 1.0),
-                elevation_difference=getattr(
-                    pipe, "elevation_difference", Quantity(0, "m")
-                ),
+                length=pipe.length,  # type: ignore
+                internal_diameter=pipe.internal_diameter,  # type: ignore
+                upstream_pressure=pipe.upstream_pressure,  # type: ignore
+                downstream_pressure=pipe.downstream_pressure,  # type: ignore
+                material=pipe.material,
+                roughness=pipe.roughness,  # type: ignore
+                efficiency=pipe.efficiency,
+                elevation_difference=pipe.elevation_difference,  # type: ignore
                 direction=pipe.direction,
-                scale_factor=getattr(pipe, "scale_factor", 0.1),
-                max_flow_rate=getattr(pipe, "max_flow_rate", Quantity(10.0, "ft^3/s")),
-                flow_type=getattr(pipe, "flow_type", FlowType.COMPRESSIBLE),
+                scale_factor=pipe.scale_factor,
+                max_flow_rate=pipe.max_flow_rate,  # type: ignore
+                flow_type=pipe.flow_type,  # type: ignore
             )
             self._pipe_configs.append(pipe_config)
+        return self
 
     def add_observer(self, observer: PipelineObserver):
         """Add an observer for pipeline events."""
-        self._observers.append(observer)
+        if observer not in self._observers:
+            self._observers.append(observer)
 
     def remove_observer(self, observer: PipelineObserver):
         """Remove an observer."""
@@ -657,26 +477,28 @@ class PipelineManager(typing.Generic[PipelineT]):
             try:
                 observer(event, data)
             except Exception as e:
-                logger.error(f"Error notifying observer: {e}", exc_info=True)
+                logger.error(f"Error notifying pipeline observer: {e}", exc_info=True)
 
-    def add_pipe(
-        self, pipe_config: PipeConfig, index: typing.Optional[int] = None
-    ) -> "PipelineManager":
-        """Add a pipe at the specified index (or at the end)."""
-        if index is None:
-            index = len(self._pipe_configs)
-
-        fluid = self.build_fluid(self._fluid_config)
-        pipe = self.build_pipe(pipe_config, fluid)
-        self._pipeline.add_pipe(pipe, index)
-
+    def on_config_change(self, config_state: ConfigurationState) -> None:
+        """Updates the pipeline based on configuration changes."""
+        pipeline_config = config_state.pipeline
+        self._pipeline.name = pipeline_config.name
+        self._pipeline.alert_errors = pipeline_config.alert_errors
+        self._pipeline.set_flow_type(FlowType(pipeline_config.flow_type), update=False)
+        self._pipeline.set_max_flow_rate(
+            pipeline_config.max_flow_rate, update_viz=False
+        )
+        self._pipeline.set_scale_factor(pipeline_config.scale_factor, update_viz=False)
+        self._pipeline.set_connector_length(
+            pipeline_config.connector_length, update=False
+        )
+        # Update the visualization after all changes
+        self._pipeline.update_properties().update_viz()
         self.sync()
         self.validate()
         self.notify_observers(
-            PipelineEvent.PIPE_ADDED, {"pipe_config": pipe_config, "index": index}
+            PipelineEvent.PROPERTIES_UPDATED, {"pipeline_config": pipeline_config}
         )
-        logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
-        return self
 
     def build_fluid(self, fluid_config: FluidConfig) -> Fluid:
         """Build a Fluid instance from the current fluid config."""
@@ -688,7 +510,9 @@ class PipelineManager(typing.Generic[PipelineT]):
             molecular_weight=fluid_config.molecular_weight,
         )
 
-    def build_pipe(self, pipe_config: PipeConfig, fluid: Fluid) -> Pipe:
+    def build_pipe(
+        self, pipe_config: PipeConfig, fluid: typing.Optional[Fluid] = None
+    ) -> Pipe:
         """Build a Pipe instance from a pipe config."""
         return Pipe(
             length=pipe_config.length,
@@ -707,6 +531,24 @@ class PipelineManager(typing.Generic[PipelineT]):
             flow_type=pipe_config.flow_type,
         )
 
+    def add_pipe(
+        self, pipe_config: PipeConfig, index: typing.Optional[int] = None
+    ) -> "PipelineManager":
+        """Add a pipe at the specified index (or at the end)."""
+        if index is None:
+            index = len(self._pipe_configs)
+
+        pipe = self.build_pipe(pipe_config)
+        self._pipeline.add_pipe(pipe, index, update=True)
+
+        self.sync()
+        self.validate()
+        self.notify_observers(
+            PipelineEvent.PIPE_ADDED, {"pipe_config": pipe_config, "index": index}
+        )
+        logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
+        return self
+
     def remove_pipe(self, index: int) -> "PipelineManager":
         """Remove a pipe at the specified index."""
         if len(self._pipe_configs) <= 1:
@@ -714,7 +556,7 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         if 0 <= index < len(self._pipe_configs):
             # Remove from pipeline using its remove_pipe method
-            self._pipeline.remove_pipe(index)
+            self._pipeline.remove_pipe(index, update=True)
 
             self.sync()
             self.validate()
@@ -727,17 +569,28 @@ class PipelineManager(typing.Generic[PipelineT]):
 
     def move_pipe(self, from_index: int, to_index: int) -> "PipelineManager[PipelineT]":
         """Move a pipe from one position to another."""
+        if len(self._pipe_configs) < 3:
+            # Do not move pipes when the number of pipes is less than 3, because the
+            # upstream and downstream pressure will become invalid and unphysical
+            raise ValueError("Cannot move pipes when number of pipes is less than 3")
+
         if 0 <= from_index < len(self._pipe_configs) and 0 <= to_index < len(
             self._pipe_configs
         ):
             # Remove and re-add the pipe
             pipe_config = self._pipe_configs[from_index]
-            self._pipeline.remove_pipe(from_index)
-
-            # Build a new pipe and add it at new position
-            fluid = self.build_fluid(self._fluid_config)
-            pipe = self.build_pipe(pipe_config, fluid)
-            self._pipeline.add_pipe(pipe, to_index)
+            removed = False
+            try:
+                self._pipeline.remove_pipe(from_index, update=True)
+                removed = True
+                # Build a new pipe and add it at new position
+                pipe = self.build_pipe(pipe_config)
+                self._pipeline.add_pipe(pipe, to_index, update=True)
+            except Exception:
+                if removed:
+                    pipe = self.build_pipe(pipe_config)
+                    self._pipeline.add_pipe(pipe, from_index, update=True)
+                raise
 
             self.sync()
             self.validate()
@@ -754,12 +607,11 @@ class PipelineManager(typing.Generic[PipelineT]):
         """Update a pipe configuration at the specified index."""
         if 0 <= index < len(self._pipe_configs):
             # Remove old pipe and add updated one
-            self._pipeline.remove_pipe(index)
+            self._pipeline.remove_pipe(index, update=True)
 
             # Create new pipe with updated config
-            fluid = self.build_fluid(self._fluid_config)
-            pipe = self.build_pipe(pipe_config, fluid)
-            self._pipeline.add_pipe(pipe, index)
+            pipe = self.build_pipe(pipe_config)
+            self._pipeline.add_pipe(pipe, index, update=True)
 
             self.sync()
             self.validate()
@@ -774,14 +626,13 @@ class PipelineManager(typing.Generic[PipelineT]):
         self, fluid_config: FluidConfig
     ) -> "PipelineManager[PipelineT]":
         """Set the fluid configuration."""
-        self._fluid_config = fluid_config
-
         try:
             fluid = self.build_fluid(self._fluid_config)
-            self._pipeline.set_fluid(fluid)
+            self._pipeline.set_fluid(fluid, update=True)
         except Exception as e:
             logger.error(f"Error updating pipeline fluid: {e}")
 
+        # Sync to update internal fluid config state from pipeline
         self.sync()
         self.validate()
         self.notify_observers(
@@ -816,7 +667,7 @@ class PipelineManager(typing.Generic[PipelineT]):
 
     def get_fluid_config(self) -> FluidConfig:
         """Get the current fluid configuration."""
-        return copy.deepcopy(self._fluid_config)
+        return self._fluid_config
 
     def get_pipeline(self) -> PipelineT:
         """Get the managed pipeline instance."""
@@ -862,11 +713,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.add_pipe_button = None
         self.config_menu_button = None
         self.main_container = None
+        self.unit_controls_container = None
         self.pipes_container = None
         self.validation_container = None
         self.pipeline_preview = None
         self.flow_station_container = None
         self.properties_panel = None
+        self.pipe_form_container = None
+        self.fluid_form_container = None
 
         # Current state
         self.selected_pipe_index: typing.Optional[int] = None
@@ -897,119 +751,61 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def on_pipeline_event(self, event: PipelineEvent, data: typing.Any):
         """Handle pipeline events and update UI accordingly."""
-        try:
-            if event == PipelineEvent.PIPE_ADDED:
-                self.refresh_pipes_list()
-                self.refresh_pipeline_preview()
-                # Refresh flow station to get meters/regulators for new pipe
-                self.refresh_flow_stations()
-            elif event == PipelineEvent.PIPE_REMOVED:
-                self.refresh_pipes_list()
-                self.refresh_pipeline_preview()
-                # Refresh flow station to remove meters/regulators for removed pipe
-                self.refresh_flow_stations()
-                if (
-                    self.selected_pipe_index is not None
-                    and self.selected_pipe_index >= len(self.manager.get_pipe_configs())
-                ):
-                    self.selected_pipe_index = None
-                    self.refresh_properties_panel()
-            elif event == PipelineEvent.PIPE_MOVED:
-                self.refresh_pipes_list()
-                self.refresh_pipeline_preview()
-                # Refresh flow station to update pipe indices in meters/regulators
-                self.refresh_flow_stations()
-            elif event == PipelineEvent.PROPERTIES_UPDATED:
-                self.refresh_pipes_list()
-                self.refresh_pipeline_preview()
-                # Refresh flow station to update meters/regulators with new property values
-                self.refresh_flow_stations()
-            elif event == PipelineEvent.VALIDATION_CHANGED:
-                self.refresh_validation_display()
-                # Only refresh flow station if validation is now valid
-                if self.manager.is_valid():
-                    self.refresh_flow_stations()
-            # Remove METERS_UPDATED handling to prevent recursion
-        except Exception as e:
-            logger.error(f"Error handling pipeline event {event}: {e}")
-
-    def on_config_change(self, config_state):
-        """Handle configuration changes and update UI accordingly."""
-        try:
-            # Update theme color if it changed
-            new_theme_color = config_state.global_config.theme_color
-            if new_theme_color != self.theme_color:
-                self.set_theme_color(new_theme_color)
-
-            # Update unit system if it changed
-            unit_system_name = config_state.global_config.unit_system_name
-            if unit_system_name == "imperial" and self.unit_system != IMPERIAL:
-                self.unit_system = IMPERIAL
-                logger.info("Unit system updated to Imperial")
-            elif unit_system_name == "si" and self.unit_system != SI:
-                self.unit_system = SI
-                logger.info("Unit system updated to SI")
-            elif unit_system_name not in ["imperial", "si"]:
-                # Handle custom unit system
-                custom_systems = config_state.global_config.custom_unit_systems
-                if unit_system_name in custom_systems:
-                    # TODO: Create custom unit system from configuration
-                    # This would need unit system creation logic based on custom_systems[unit_system_name]
-                    logger.info(f"Custom unit system '{unit_system_name}' selected")
-
-            # Refresh UI components that depend on configuration
-            if hasattr(self, "unit_controls_container"):
-                self.refresh_unit_system_controls()
-
-            # Refresh properties panel to reflect new defaults
-            self.refresh_properties_panel()
-
-            # Refresh pipes list to show updated units
+        if event == PipelineEvent.PIPE_ADDED:
             self.refresh_pipes_list()
-
-            # Refresh flow stations to use new configuration
+            self.refresh_pipeline_preview()
             self.refresh_flow_stations()
+        elif event == PipelineEvent.PIPE_REMOVED:
+            self.refresh_pipes_list()
+            self.refresh_pipeline_preview()
+            self.refresh_flow_stations()
+            if self.selected_pipe_index is not None and self.selected_pipe_index >= len(
+                self.manager.get_pipe_configs()
+            ):
+                self.selected_pipe_index = None
+                self.refresh_properties_panel()
+        elif event == PipelineEvent.PIPE_MOVED:
+            self.refresh_pipes_list()
+            self.refresh_pipeline_preview()
+            self.refresh_flow_stations()
+        elif event == PipelineEvent.PROPERTIES_UPDATED:
+            self.refresh_pipes_list()
+            self.refresh_pipeline_preview()
+            self.refresh_flow_stations()
+        elif event == PipelineEvent.VALIDATION_CHANGED:
+            self.refresh_validation_display()
+            # Only refresh flow station if validation is now valid
+            if self.manager.is_valid():
+                self.refresh_flow_stations()
 
-            # Apply new pipeline configuration defaults if no pipes exist yet
-            pipe_configs = self.manager.get_pipe_configs()
-            if not pipe_configs:
-                # Apply default fluid configuration if no fluid is configured yet
-                current_fluid = self.manager.get_fluid_config()
-                if (
-                    current_fluid.name == "Unknown"
-                    or current_fluid.name
-                    != config_state.pipeline_config.default_fluid_name
-                ):
-                    self._apply_default_fluid_config(config_state.pipeline_config)
+    def on_config_change(self, config_state: ConfigurationState):
+        """Handle configuration changes and update UI accordingly."""
+        # Update theme color if it changed
+        new_theme_color = config_state.global_.theme_color
+        if new_theme_color != self.theme_color:
+            self.set_theme_color(new_theme_color)
 
-        except Exception as e:
-            logger.error(f"Error handling configuration change: {e}", exc_info=True)
+        # Update unit system if it changed
+        unit_system_name = config_state.global_.unit_system_name
+        if unit_system_name == "imperial" and self.unit_system != IMPERIAL:
+            self.unit_system = IMPERIAL
+            logger.info("Unit system updated to Imperial")
+        elif unit_system_name == "si" and self.unit_system != SI:
+            self.unit_system = SI
+            logger.info("Unit system updated to SI")
+        elif unit_system_name not in ["imperial", "si"]:
+            # Handle custom unit system
+            custom_systems = config_state.global_.custom_unit_systems
+            if unit_system_name in custom_systems:
+                # TODO: Create custom unit system from configuration
+                # This would need unit system creation logic based on custom_systems[unit_system_name]
+                logger.info(f"Custom unit system '{unit_system_name}' selected")
 
-    def _apply_default_fluid_config(self, pipeline_config: PipelineConfig):
-        """Apply default fluid configuration from pipeline config."""
-        try:
-            default_fluid_config = FluidConfig(
-                name=pipeline_config.default_fluid_name,
-                phase="liquid"
-                if pipeline_config.default_fluid_phase == "liquid"
-                else "gas",
-                temperature=Quantity(
-                    pipeline_config.initial_temperature,
-                    pipeline_config.initial_temperature_unit,
-                ),
-                pressure=Quantity(
-                    pipeline_config.initial_pressure,
-                    pipeline_config.initial_pressure_unit,
-                ),
-                molecular_weight=Quantity(
-                    pipeline_config.molecular_weight,
-                    pipeline_config.molecular_weight_unit,
-                ),
-            )
-            self.manager.set_fluid_config(default_fluid_config)
-            logger.info("Applied default fluid configuration from config")
-        except Exception as e:
-            logger.error(f"Error applying default fluid configuration: {e}")
+        # Refresh UI components that depend on configuration
+        self.refresh_unit_system_controls()
+        self.refresh_properties_panel()
+        self.refresh_pipes_list()
+        self.refresh_flow_stations()
 
     def cleanup(self):
         """Clean up resources and remove observers."""
@@ -1019,43 +815,26 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.config.remove_observer(self.on_config_change)
             logger.info("Pipeline Manager UI cleaned up successfully")
         except Exception as e:
-            logger.error(f"Error during Pipeline Manager UI cleanup: {e}")
+            logger.error(
+                f"Error during Pipeline Manager UI cleanup: {e}", exc_info=True
+            )
 
     def set_theme_color(self, color: str):
         """Set a new theme color and update UI elements."""
         self.theme_color = color
-        # Update the config UI's theme color too
         self.config_ui.set_theme_color(color)
-        # Update button colors
         self.update_button_themes()
         logger.info(f"Theme color updated to: {color}")
 
     def update_button_themes(self):
         """Update all button colors to match current theme."""
-        try:
-            # Update Add Pipe button
-            if self.add_pipe_button:
-                self.add_pipe_button.props(f'color="{self.theme_color}"')
+        # Update Add Pipe button
+        if self.add_pipe_button is not None:
+            self.add_pipe_button.props(f'color="{self.theme_color}"')
 
-            # Update Config Menu button
-            if self.config_menu_button:
-                self.config_menu_button.props(f'color="{self.theme_color}"')
-
-            # # Refresh unit system controls to update their theme
-            # if (
-            #     hasattr(self, "unit_controls_container")
-            #     and self.unit_controls_container
-            # ):
-            #     self.refresh_unit_system_controls()
-
-            # # Refresh pipes list to update button themes there
-            # self.refresh_pipes_list()
-
-            # # Refresh properties panel to update button themes there
-            # self.refresh_properties_panel()
-
-        except Exception as e:
-            logger.error(f"Error updating button themes: {e}")
+        # Update Config Menu button
+        if self.config_menu_button is not None:
+            self.config_menu_button.props(f'color="{self.theme_color}"')
 
     def show(
         self,
@@ -1141,7 +920,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.config_menu_button = (
                 ui.button(
                     icon="settings",
-                    on_click=lambda: self.config_ui.show(max_width="600px"),
+                    on_click=lambda: self.config_ui.show(max_width="720px"),
                     color=self.theme_color,
                 )
                 .props("outline")
@@ -1152,7 +931,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     def show_construction_panel(self):
         """Create the pipeline construction panel."""
         construction_card = ui.card().classes("w-full p-2 sm:p-4")
-
         with construction_card:
             ui.label("Pipeline Construction").classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
@@ -1175,7 +953,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     def show_properties_panel(self):
         """Create the properties panel."""
         properties_card = ui.card().classes("w-full p-2 sm:p-4")
-
         with properties_card:
             ui.label("Properties").classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
@@ -1211,13 +988,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             .classes("w-full p-2 sm:p-4")
             .style("max-height: 800px; overflow-y: auto;")
         )
-
         with preview_card:
             ui.label(pipeline_label).classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
             )
             self.pipeline_preview = ui.column().classes("w-full overflow-x-auto")
-
         self.refresh_pipeline_preview()
 
     def show_flow_station_panel(
@@ -1225,7 +1000,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     ):
         """Create the flow station panel."""
         flow_station_card = ui.card().classes("w-full p-2 sm:p-4")
-
         with flow_station_card:
             ui.label(flow_station_label).classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
@@ -1238,167 +1012,201 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def refresh_pipes_list(self):
         """Refresh the pipes list display."""
-        if self.pipes_container:
-            self.pipes_container.clear()
+        if self.pipes_container is None:
+            return
 
-            with self.pipes_container:
-                pipe_configs = self.manager.get_pipe_configs()
+        self.pipes_container.clear()
+        with self.pipes_container:
+            pipe_configs = self.manager.get_pipe_configs()
+            pipe_count = len(pipe_configs)
+            for i, pipe_config in enumerate(pipe_configs):
+                pipe_row = ui.row().classes(
+                    "w-full items-center gap-2 p-2 sm:p-3 border rounded-lg hover:shadow-md transition-shadow flex-wrap sm:flex-nowrap"
+                )
 
-                for i, pipe_config in enumerate(pipe_configs):
-                    pipe_row = ui.row().classes(
-                        "w-full items-center gap-2 p-2 sm:p-3 border rounded-lg hover:shadow-md transition-shadow flex-wrap sm:flex-nowrap"
-                    )
+                with pipe_row:
+                    # Pipe info
+                    pipe_info = ui.column().classes("flex-1 min-w-0")
+                    with pipe_info:
+                        ui.label(f"{pipe_config.name}").classes(
+                            "font-medium text-sm sm:text-base truncate"
+                        )
 
-                    with pipe_row:
-                        # Pipe info
-                        pipe_info = ui.column().classes("flex-1 min-w-0")
-                        with pipe_info:
-                            ui.label(f"{pipe_config.name}").classes(
-                                "font-medium text-sm sm:text-base truncate"
+                        # Display length, diameter, pressures, and flow rates in current unit system
+                        length_unit = self.unit_system["length"]
+                        diameter_unit = self.unit_system["diameter"]
+                        pressure_unit = self.unit_system["pressure"]
+                        flow_unit = self.unit_system["flow_rate"]
+
+                        length_val = pipe_config.length.to(length_unit.unit)
+                        diameter_val = pipe_config.internal_diameter.to(
+                            diameter_unit.unit
+                        )
+                        upstream_pressure_val = pipe_config.upstream_pressure.to(
+                            pressure_unit.unit
+                        )
+                        downstream_pressure_val = pipe_config.downstream_pressure.to(
+                            pressure_unit.unit
+                        )
+
+                        # Try to get flow rates if available (may require pipeline context)
+                        flow_val = None
+                        pipeline = self.manager.get_pipeline()
+                        if pipeline and i < len(pipeline.pipes):
+                            pipe = pipeline.pipes[i]
+                            flow_val = pipe.flow_rate.to(flow_unit.unit)
+                        flow_str = (
+                            f"{flow_val.magnitude:.2f} {flow_unit}"
+                            if flow_val is not None
+                            else "N/A"
+                        )
+
+                        ui.label(
+                            f"L: {length_val.magnitude:.2f} {length_unit}, "
+                            f"D: {diameter_val.magnitude:.2f} {diameter_unit}, "
+                            f"P₁: {upstream_pressure_val.magnitude:.2f} {pressure_unit}, "
+                            f"P₂: {downstream_pressure_val.magnitude:.2f} {pressure_unit}, "
+                            f"Flow: {flow_str}"
+                        ).classes("text-xs sm:text-sm text-gray-600")
+
+                    # Action buttons
+                    actions = ui.row().classes("gap-1 flex-wrap sm:flex-nowrap")
+                    with actions:
+                        ui.button(
+                            "Edit",
+                            on_click=partial(self.select_pipe, i),
+                            color=self.theme_color,
+                        ).classes(
+                            self.get_primary_button_classes(
+                                "text-xs sm:text-sm px-2 py-1"
                             )
-
-                            # Display length and diameter in current unit system
-                            length_unit_obj = self.unit_system["length"]
-                            diameter_unit_obj = self.unit_system["diameter"]
-                            length_val = pipe_config.length.to(length_unit_obj.unit)
-                            diameter_val = pipe_config.internal_diameter.to(
-                                diameter_unit_obj.unit
+                        )
+                        ui.button(
+                            "↑",
+                            on_click=partial(self.move_pipe_up, i),
+                            color=self.theme_color,
+                        ).classes(
+                            self.get_secondary_button_classes(
+                                "text-xs sm:text-sm px-2 py-1"
                             )
-
-                            ui.label(
-                                f"L: {length_val.magnitude:.1f} {length_unit_obj}, D: {diameter_val.magnitude:.1f} {diameter_unit_obj}"
-                            ).classes("text-xs sm:text-sm text-gray-600")
-
-                        # Action buttons
-                        actions = ui.row().classes("gap-1 flex-wrap sm:flex-nowrap")
-                        with actions:
-                            ui.button(
-                                "Edit",
-                                on_click=partial(self.select_pipe, i),
-                                color=self.theme_color,
-                            ).classes(
-                                self.get_primary_button_classes(
-                                    "text-xs sm:text-sm px-2 py-1"
-                                )
+                        ).props("disabled" if i == 0 or (pipe_count < 3) else "")
+                        ui.button(
+                            "↓",
+                            on_click=partial(self.move_pipe_down, i),
+                            color=self.theme_color,
+                        ).classes(
+                            self.get_secondary_button_classes(
+                                "text-xs sm:text-sm px-2 py-1"
                             )
-                            ui.button(
-                                "↑",
-                                on_click=partial(self.move_pipe_up, i),
-                                color=self.theme_color,
-                            ).classes(
-                                self.get_secondary_button_classes(
-                                    "text-xs sm:text-sm px-2 py-1"
-                                )
-                            ).props("disabled" if i == 0 else "")
-                            ui.button(
-                                "↓",
-                                on_click=partial(self.move_pipe_down, i),
-                                color=self.theme_color,
-                            ).classes(
-                                self.get_secondary_button_classes(
-                                    "text-xs sm:text-sm px-2 py-1"
-                                )
-                            ).props("disabled" if i == len(pipe_configs) - 1 else "")
-                            ui.button(
-                                "✕", on_click=partial(self.remove_pipe, i), color="red"
-                            ).classes(
-                                self.get_danger_button_classes(
-                                    "text-xs sm:text-sm px-2 py-1"
-                                )
-                            ).props("disabled" if len(pipe_configs) <= 1 else "")
+                        ).props(
+                            "disabled"
+                            if (i == pipe_count - 1) or (pipe_count < 3)
+                            else ""
+                        )
+                        ui.button(
+                            "✕", on_click=partial(self.remove_pipe, i), color="red"
+                        ).classes(
+                            self.get_danger_button_classes(
+                                "text-xs sm:text-sm px-2 py-1"
+                            )
+                        ).props("disabled" if pipe_count <= 1 else "")
 
     def refresh_validation_display(self):
         """Refresh the validation display."""
-        if self.validation_container:
-            self.validation_container.clear()
+        if self.validation_container is None:
+            return
 
-            with self.validation_container:
-                errors = self.manager.get_errors()
+        self.validation_container.clear()
+        with self.validation_container:
+            errors = self.manager.get_errors()
 
-                if errors:
-                    ui.label("Validation Errors:").classes("font-medium text-red-600")
-                    for error in errors:
-                        ui.label(f"• {error}").classes("text-sm text-red-600 ml-4")
-                else:
-                    ui.label("✓ Pipeline configuration is valid").classes(
-                        "text-green-600 font-medium"
-                    )
+            if errors:
+                ui.label("Validation Errors:").classes("font-medium text-red-600")
+                for error in errors:
+                    ui.label(f"• {error}").classes("text-sm text-red-600 ml-4")
+            else:
+                ui.label("✓ Pipeline configuration is valid").classes(
+                    "text-green-600 font-medium"
+                )
 
     def refresh_properties_panel(self):
         """Refresh the properties panel."""
-        if hasattr(self, "pipe_form_container") and hasattr(
-            self, "fluid_form_container"
-        ):
-            # Clear both containers
-            self.pipe_form_container.clear()
-            self.fluid_form_container.clear()
+        if self.fluid_form_container is None:
+            return
 
-            # Always show fluid properties in the right container
-            with self.fluid_form_container:
-                self.show_fluid_properties_form()
+        self.fluid_form_container.clear()
+        # Always show fluid properties in the right container
+        with self.fluid_form_container:
+            self.show_fluid_properties_form()
 
-            # Show pipe properties in the left container if a pipe is selected
-            with self.pipe_form_container:
-                if self.selected_pipe_index is not None:
-                    pipe_configs = self.manager.get_pipe_configs()
-                    if self.selected_pipe_index < len(pipe_configs):
-                        self.show_pipe_properties_form(
-                            pipe_configs[self.selected_pipe_index]
-                        )
-                else:
-                    # Show placeholder when no pipe is selected
-                    placeholder_card = ui.card().classes(
-                        "w-full p-4 border-2 border-dashed border-gray-300"
+        if self.pipe_form_container is None:
+            return
+
+        self.pipe_form_container.clear()
+        # Show pipe properties in the left container if a pipe is selected
+        with self.pipe_form_container:
+            if self.selected_pipe_index is not None:
+                pipe_configs = self.manager.get_pipe_configs()
+                if self.selected_pipe_index < len(pipe_configs):
+                    self.show_pipe_properties_form(
+                        pipe_configs[self.selected_pipe_index]
                     )
-                    with placeholder_card:
-                        placeholder_column = ui.column().classes(
-                            "items-center justify-center gap-2"
+            else:
+                # Show placeholder when no pipe is selected
+                placeholder_card = ui.card().classes(
+                    "w-full p-4 border-2 border-dashed border-gray-300"
+                )
+                with placeholder_card:
+                    placeholder_column = ui.column().classes(
+                        "items-center justify-center gap-2"
+                    )
+                    with placeholder_column:
+                        ui.icon("edit", size="2rem").classes("text-gray-400")
+                        ui.label("Select a pipe to edit").classes(
+                            "text-gray-500 text-center"
                         )
-                        with placeholder_column:
-                            ui.icon("edit", size="2rem").classes("text-gray-400")
-                            ui.label("Select a pipe to edit").classes(
-                                "text-gray-500 text-center"
-                            )
-                            ui.label("Click 'Edit' button on any pipe").classes(
-                                "text-xs text-gray-400 text-center"
-                            )
+                        ui.label("Click 'Edit' button on any pipe").classes(
+                            "text-xs text-gray-400 text-center"
+                        )
 
     def refresh_pipeline_preview(self):
         """Refresh the pipeline preview."""
-        if self.pipeline_preview:
-            self.pipeline_preview.clear()
+        if self.pipeline_preview is None:
+            return
 
-            with self.pipeline_preview:
-                if self.manager.is_valid():
-                    pipeline = self.manager.get_pipeline()
-                    self.current_pipeline = pipeline
-                    pipeline.show()
-                else:
-                    ui.label("Fix validation errors to see preview").classes(
-                        "text-gray-500 italic"
-                    )
+        self.pipeline_preview.clear()
+        with self.pipeline_preview:
+            if self.manager.is_valid():
+                pipeline = self.manager.get_pipeline()
+                self.current_pipeline = pipeline
+                pipeline.show()
+            else:
+                ui.label("Fix validation errors to see preview").classes(
+                    "text-gray-500 italic"
+                )
 
     def refresh_flow_stations(self):
         """Refresh the flow station display."""
-        if self.flow_station_container:
-            self.flow_station_container.clear()
+        if self.flow_station_container is None:
+            return
 
-            with self.flow_station_container:
-                if self.manager.is_valid() and self.manager.get_pipe_configs():
-                    flow_stations = self.manager.build_flow_stations()
-                    self.current_flow_stations = flow_stations
-                    if flow_stations:
-                        for station in flow_stations:
-                            station.show()
-                    else:
-                        # Create a simple station if no factories are registered
-                        ui.label(
-                            "Flow stations will appear here when configured"
-                        ).classes("text-gray-500 italic text-center p-4")
+        self.flow_station_container.clear()
+        with self.flow_station_container:
+            if self.manager.is_valid() and self.manager.get_pipe_configs():
+                flow_stations = self.manager.build_flow_stations()
+                self.current_flow_stations = flow_stations
+                if flow_stations:
+                    for station in flow_stations:
+                        station.show()
                 else:
-                    ui.label(
-                        "Configure valid pipeline to see meters and regulators"
-                    ).classes("text-gray-500 italic")
+                    # Create a simple station if no factories are registered
+                    ui.label("Flow stations will appear here when configured").classes(
+                        "text-gray-500 italic text-center p-4"
+                    )
+            else:
+                ui.label(
+                    "Configure valid pipeline to see meters and regulators"
+                ).classes("text-gray-500 italic")
 
     def show_pipe_dialog(self):
         """Show dialog to add a new pipe."""
@@ -1408,9 +1216,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         ):
             ui.label("Add New Pipe").classes("text-lg font-semibold mb-3")
 
-            # Form inputs - responsive
+            # Form inputs
             form_container = ui.column().classes("w-full gap-2 sm:gap-3")
-
             with form_container:
                 name_input = ui.input(
                     "Pipe Name",
@@ -1427,10 +1234,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                     # Use configuration defaults if available, otherwise use unit system defaults
                     config_state = self.config.get_config()
-                    pipeline_config = config_state.pipeline_config
+                    pipe_config = config_state.pipeline.pipe
 
-                    length_default = pipeline_config.default_pipe_length
-                    diameter_default = pipeline_config.default_pipe_diameter
+                    length_default = pipe_config.length.to(length_unit.unit).magnitude
+                    diameter_default = pipe_config.internal_diameter.to(
+                        diameter_unit.unit
+                    ).magnitude
 
                     length_input = ui.number(
                         f"Length ({length_unit})",
@@ -1452,13 +1261,17 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                     upstream_pressure_input = ui.number(
                         f"Upstream Pressure ({pressure_unit})",
-                        value=pipeline_config.default_upstream_pressure,
+                        value=pipe_config.upstream_pressure.to(
+                            pressure_unit.unit
+                        ).magnitude,
                         min=0,
                         step=1,
                     ).classes("flex-1 min-w-0")
                     downstream_pressure_input = ui.number(
                         f"Downstream Pressure ({pressure_unit})",
-                        value=pipeline_config.default_downstream_pressure,
+                        value=pipe_config.downstream_pressure.to(
+                            pressure_unit.unit
+                        ).magnitude,
                         min=0,
                         step=1,
                     ).classes("flex-1 min-w-0")
@@ -1469,7 +1282,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 )
                 with material_dir_row:
                     material_input = ui.input(
-                        "Material", value=pipeline_config.default_pipe_material
+                        "Material", value=pipe_config.material
                     ).classes("flex-1 min-w-0")
                     direction_select = ui.select(
                         options=[d.value for d in PipeDirection],
@@ -1487,20 +1300,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                     roughness_input = ui.number(
                         f"Roughness ({roughness_unit})",
-                        value=pipeline_config.default_pipe_roughness,
+                        value=pipe_config.roughness.to(roughness_unit.unit).magnitude,
                         min=0.0001,
                         step=0.0001,
                     ).classes("flex-1 min-w-0")
                     elevation_input = ui.number(
                         f"Elevation Difference ({elevation_unit})",
-                        value=0.0,  # Default elevation difference
+                        value=pipe_config.elevation_difference.to(
+                            elevation_unit.unit
+                        ).magnitude,
                         step=0.1,
                     ).classes("flex-1 min-w-0")
 
                 # Efficiency row
                 efficiency_input = ui.number(
                     "Efficiency",
-                    value=pipeline_config.default_efficiency,
+                    value=pipe_config.efficiency,
                     min=0.1,
                     max=1.0,
                     step=0.01,
@@ -1584,18 +1399,20 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             pipe_config = PipeConfig(
                 name=name_input.value
                 or f"Pipe-{len(self.manager.get_pipe_configs()) + 1}",
-                length=Quantity(length_input.value, length_unit),
-                internal_diameter=Quantity(diameter_input.value, diameter_unit),
+                length=Quantity(length_input.value, length_unit),  # type: ignore
+                internal_diameter=Quantity(diameter_input.value, diameter_unit),  # type: ignore
                 upstream_pressure=Quantity(
-                    upstream_pressure_input.value, pressure_unit
+                    upstream_pressure_input.value,
+                    pressure_unit,  # type: ignore
                 ),
                 downstream_pressure=Quantity(
-                    downstream_pressure_input.value, pressure_unit
+                    downstream_pressure_input.value,
+                    pressure_unit,  # type: ignore
                 ),
                 direction=PipeDirection(direction_select.value),
                 material=material_input.value or "Steel",
-                roughness=Quantity(roughness_input.value, roughness_unit),
-                elevation_difference=Quantity(elevation_input.value, elevation_unit),
+                roughness=Quantity(roughness_input.value, roughness_unit),  # type: ignore
+                elevation_difference=Quantity(elevation_input.value, elevation_unit),  # type: ignore
                 efficiency=efficiency_input.value,
             )
 
@@ -1644,7 +1461,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def show_pipe_properties_form(self, pipe_config: PipeConfig):
         """Create form for editing pipe properties."""
-        # Header with better styling
         pipe_header = ui.card().classes(
             f"w-full mb-3 bg-gradient-to-r from-{self.theme_color}-50 to-{self.theme_color}-100 border-l-4 border-{self.theme_color}-500"
         )
@@ -1653,9 +1469,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 f"font-semibold text-{self.theme_color}-800 p-2"
             )
 
-        # Form container with responsive inputs
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
-
         with form_container:
             # Basic properties
             name_input = ui.input("Name", value=pipe_config.name).classes("w-full")
@@ -1663,44 +1477,48 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Dimensions row - side by side on larger screens
             dimensions_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with dimensions_row:
-                length_unit_obj = self.unit_system["length"]
-                diameter_unit_obj = self.unit_system["diameter"]
+                length_unit = self.unit_system["length"]
+                diameter_unit = self.unit_system["diameter"]
 
                 length_input = ui.number(
-                    f"Length ({length_unit_obj})",
-                    value=pipe_config.length.to(length_unit_obj.unit).magnitude,
+                    f"Length ({length_unit})",
+                    value=pipe_config.length.to(length_unit.unit).magnitude,
                     min=0.1,
                     step=0.1,
+                    precision=4,
                 ).classes("flex-1 min-w-0")
                 diameter_input = ui.number(
-                    f"Diameter ({diameter_unit_obj})",
+                    f"Diameter ({diameter_unit})",
                     value=pipe_config.internal_diameter.to(
-                        diameter_unit_obj.unit
+                        diameter_unit.unit
                     ).magnitude,
                     min=0.1,
                     step=0.1,
+                    precision=4,
                 ).classes("flex-1 min-w-0")
 
             # Pressure row - side by side on larger screens
             pressure_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with pressure_row:
-                pressure_unit_obj = self.unit_system["pressure"]
+                pressure_unit = self.unit_system["pressure"]
 
                 upstream_pressure_input = ui.number(
-                    f"Upstream Pressure ({pressure_unit_obj})",
+                    f"Upstream Pressure ({pressure_unit})",
                     value=pipe_config.upstream_pressure.to(
-                        pressure_unit_obj.unit
+                        pressure_unit.unit
                     ).magnitude,
                     min=0,
                     step=1,
+                    precision=4,
                 ).classes("flex-1 min-w-0")
                 downstream_pressure_input = ui.number(
-                    f"Downstream Pressure ({pressure_unit_obj})",
+                    f"Downstream Pressure ({pressure_unit})",
                     value=pipe_config.downstream_pressure.to(
-                        pressure_unit_obj.unit
+                        pressure_unit.unit
                     ).magnitude,
                     min=0,
                     step=1,
+                    precision=4,
                 ).classes("flex-1 min-w-0")
 
             # Material and direction row
@@ -1722,25 +1540,23 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 "w-full gap-2 flex-wrap sm:flex-nowrap"
             )
             with roughness_elevation_row:
-                roughness_unit_obj = self.unit_system["roughness"]
-                elevation_unit_obj = self.unit_system["elevation"]
+                roughness_unit = self.unit_system["roughness"]
+                elevation_unit = self.unit_system["elevation"]
 
                 roughness_input = ui.number(
-                    f"Roughness ({roughness_unit_obj})",
-                    value=pipe_config.roughness.to(roughness_unit_obj.unit).magnitude
-                    if pipe_config.roughness
-                    else 0,
+                    f"Roughness ({roughness_unit})",
+                    value=pipe_config.roughness.to(roughness_unit.unit).magnitude,
                     min=0,
                     step=0.0001,
+                    precision=6,
                 ).classes("flex-1 min-w-0")
                 elevation_input = ui.number(
-                    f"Elevation Difference ({elevation_unit_obj})",
+                    f"Elevation Difference ({elevation_unit})",
                     value=pipe_config.elevation_difference.to(
-                        elevation_unit_obj.unit
-                    ).magnitude
-                    if pipe_config.elevation_difference
-                    else 0,
+                        elevation_unit.unit
+                    ).magnitude,
                     step=0.1,
+                    precision=3,
                 ).classes("flex-1 min-w-0")
 
             # Efficiency
@@ -1791,9 +1607,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         fluid_config = self.manager.get_fluid_config()
 
-        # Form container with responsive inputs
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
-
         with form_container:
             # Name and phase row
             name_phase_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
@@ -1810,33 +1624,36 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 "w-full gap-2 flex-wrap sm:flex-nowrap"
             )
             with temp_pressure_row:
-                temp_unit_obj = self.unit_system["temperature"]
-                pressure_unit_obj = self.unit_system["pressure"]
+                temp_unit = self.unit_system["temperature"]
+                pressure_unit = self.unit_system["pressure"]
 
                 temperature_input = ui.number(
-                    f"Temperature ({temp_unit_obj})",
-                    value=fluid_config.temperature.to(temp_unit_obj.unit).magnitude,
+                    f"Temperature ({temp_unit})",
+                    value=fluid_config.temperature.to(temp_unit.unit).magnitude,
                     step=1,
+                    precision=2,
                 ).classes("flex-1 min-w-0")
                 pressure_input = ui.number(
-                    f"Pressure ({pressure_unit_obj})",
-                    value=fluid_config.pressure.to(pressure_unit_obj.unit).magnitude,
+                    f"Pressure ({pressure_unit})",
+                    value=fluid_config.pressure.to(pressure_unit.unit).magnitude,
                     min=0,
                     step=1,
+                    precision=4,
                 ).classes("flex-1 min-w-0")
 
             # Molecular weight and specific gravity row
             mol_gravity_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with mol_gravity_row:
-                mol_weight_unit_obj = self.unit_system["molecular_weight"]
+                mol_weight_unit = self.unit_system["molecular_weight"]
 
                 molecular_weight_input = ui.number(
-                    f"Molecular Weight ({mol_weight_unit_obj})",
+                    f"Molecular Weight ({mol_weight_unit})",
                     value=fluid_config.molecular_weight.to(
-                        mol_weight_unit_obj.unit
+                        mol_weight_unit.unit
                     ).magnitude,
                     min=0.1,
                     step=0.1,
+                    precision=4,
                 ).classes("flex-1 min-w-0")
 
             # Update button - responsive
@@ -1878,20 +1695,20 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                 updated_config = PipeConfig(
                     name=name_input.value,
-                    length=Quantity(length_input.value, length_unit),
-                    internal_diameter=Quantity(diameter_input.value, diameter_unit),
+                    length=Quantity(length_input.value, length_unit),  # type: ignore
+                    internal_diameter=Quantity(diameter_input.value, diameter_unit),  # type: ignore
                     upstream_pressure=Quantity(
                         upstream_pressure_input.value, pressure_unit
-                    ),
+                    ),  # type: ignore
                     downstream_pressure=Quantity(
                         downstream_pressure_input.value, pressure_unit
-                    ),
+                    ),  # type: ignore
                     direction=PipeDirection(direction_select.value),
                     material=material_input.value,
-                    roughness=Quantity(roughness_input.value, roughness_unit),
+                    roughness=Quantity(roughness_input.value, roughness_unit),  # type: ignore
                     elevation_difference=Quantity(
                         elevation_input.value, elevation_unit
-                    ),
+                    ),  # type: ignore
                     efficiency=efficiency_input.value,
                 )
 
@@ -1919,13 +1736,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             updated_config = FluidConfig(
                 name=name_input.value,
                 phase=phase_select.value,
-                temperature=Quantity(temperature_input.value, temp_unit),
-                pressure=Quantity(pressure_input.value, pressure_unit),
+                temperature=Quantity(temperature_input.value, temp_unit),  # type: ignore
+                pressure=Quantity(pressure_input.value, pressure_unit),  # type: ignore
                 molecular_weight=Quantity(
-                    molecular_weight_input.value, mol_weight_unit
+                    molecular_weight_input.value,
+                    mol_weight_unit,  # type: ignore
                 ),
             )
-
             self.manager.set_fluid_config(updated_config)
             ui.notify("Fluid properties updated successfully", type="positive")
 
@@ -2024,85 +1841,85 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def refresh_unit_system_controls(self):
         """Refresh the unit system controls to update active state."""
-        if hasattr(self, "unit_controls_container") and self.unit_controls_container:
-            self.unit_controls_container.clear()
-            with self.unit_controls_container:
-                # Recreate the controls without calling the full method to avoid recursion
-                ui.label("Unit System:").classes("text-sm font-medium")
+        if self.unit_controls_container is None:
+            return
 
-                def update_unit_system(system_name: str, custom_system=None):
-                    """Update the current unit system."""
-                    if custom_system:
-                        self.unit_system = custom_system
-                    elif system_name == "imperial":
-                        self.unit_system = IMPERIAL
-                    elif system_name == "si":
-                        self.unit_system = SI
+        self.unit_controls_container.clear()
+        with self.unit_controls_container:
+            # Recreate the controls without calling the full method to avoid recursion
+            ui.label("Unit System:").classes("text-sm font-medium")
 
-                    # Refresh all UI components to reflect new units
-                    self.refresh_properties_panel()
-                    self.refresh_pipes_list()
+            def update_unit_system(system_name: str, custom_system=None):
+                """Update the current unit system."""
+                if custom_system:
+                    self.unit_system = custom_system
+                elif system_name == "imperial":
+                    self.unit_system = IMPERIAL
+                elif system_name == "si":
+                    self.unit_system = SI
 
-                    # Refresh unit system controls to update active state
-                    self.refresh_unit_system_controls()
+                # Refresh all UI components to reflect new units
+                self.refresh_properties_panel()
+                self.refresh_pipes_list()
 
-                    system_display_name = (
-                        system_name.upper() if not custom_system else "Custom"
-                    )
-                    ui.notify(
-                        f"Switched to {system_display_name} unit system", type="info"
-                    )
+                # Refresh unit system controls to update active state
+                self.refresh_unit_system_controls()
 
-                # Imperial button - active styling with opacity
-                imperial_is_active = self.unit_system == IMPERIAL
-                imperial_button = ui.button(
-                    "Imperial",
-                    on_click=lambda: update_unit_system("imperial"),
-                    color=self.theme_color,
-                ).classes(
-                    self.get_primary_button_classes("text-sm px-3 py-1")
-                    if imperial_is_active
-                    else self.get_secondary_button_classes(
-                        "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                    )
+                system_display_name = (
+                    system_name.upper() if not custom_system else "Custom"
                 )
+                ui.notify(f"Switched to {system_display_name} unit system", type="info")
 
-                if imperial_is_active:
-                    imperial_button.classes("ring-2 ring-gray-300 shadow-lg")
-
-                # SI button - active styling with opacity
-                si_is_active = self.unit_system == SI
-                si_button = ui.button(
-                    "SI",
-                    on_click=lambda: update_unit_system("si"),
-                    color=self.theme_color,
-                ).classes(
-                    self.get_primary_button_classes("text-sm px-3 py-1")
-                    if si_is_active
-                    else self.get_secondary_button_classes(
-                        "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                    )
+            # Imperial button - active styling with opacity
+            imperial_is_active = self.unit_system == IMPERIAL
+            imperial_button = ui.button(
+                "Imperial",
+                on_click=lambda: update_unit_system("imperial"),
+                color=self.theme_color,
+            ).classes(
+                self.get_primary_button_classes("text-sm px-3 py-1")
+                if imperial_is_active
+                else self.get_secondary_button_classes(
+                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
                 )
+            )
 
-                if si_is_active:
-                    si_button.classes("ring-2 ring-gray-300 shadow-lg")
+            if imperial_is_active:
+                imperial_button.classes("ring-2 ring-gray-300 shadow-lg")
 
-                # Custom button
-                custom_is_active = self.unit_system not in [IMPERIAL, SI]
-                custom_button = ui.button(
-                    "Custom",
-                    on_click=self.show_custom_unit_system_dialog,
-                    color=self.theme_color,
-                ).classes(
-                    self.get_primary_button_classes("text-sm px-3 py-1")
-                    if custom_is_active
-                    else self.get_accent_button_classes(
-                        "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                    )
+            # SI button - active styling with opacity
+            si_is_active = self.unit_system == SI
+            si_button = ui.button(
+                "SI",
+                on_click=lambda: update_unit_system("si"),
+                color=self.theme_color,
+            ).classes(
+                self.get_primary_button_classes("text-sm px-3 py-1")
+                if si_is_active
+                else self.get_secondary_button_classes(
+                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
                 )
+            )
 
-                if custom_is_active:
-                    custom_button.classes("ring-2 ring-green-300 shadow-lg")
+            if si_is_active:
+                si_button.classes("ring-2 ring-gray-300 shadow-lg")
+
+            # Custom button
+            custom_is_active = self.unit_system not in [IMPERIAL, SI]
+            custom_button = ui.button(
+                "Custom",
+                on_click=self.show_custom_unit_system_dialog,
+                color=self.theme_color,
+            ).classes(
+                self.get_primary_button_classes("text-sm px-3 py-1")
+                if custom_is_active
+                else self.get_accent_button_classes(
+                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
+                )
+            )
+
+            if custom_is_active:
+                custom_button.classes("ring-2 ring-green-300 shadow-lg")
 
     def show_custom_unit_system_dialog(self):
         """Show dialog to create a custom unit system."""

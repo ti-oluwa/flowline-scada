@@ -1,0 +1,148 @@
+import typing
+import orjson
+import logging
+from pathlib import Path
+from nicegui import App
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["InMemoryStorage", "SessionStorage", "JSONFileStorage"]
+
+
+class InMemoryStorage:
+    """In-memory storage backend for configurations"""
+
+    def __init__(self, defaults: typing.Optional[dict] = None):
+        self._store: typing.Dict[str, dict] = defaults or {}
+
+    def read(self, id: str) -> typing.Optional[dict]:
+        """Read configuration by id"""
+        return self._store.get(id)
+
+    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
+        if id not in self._store:
+            raise KeyError(f"Configuration with id '{id}' does not exist.")
+        if overwrite:
+            self._store[id] = data
+        else:
+            self._store[id].update(data)
+
+    def create(self, id: str, data: dict) -> None:
+        if id in self._store:
+            raise KeyError(f"Configuration with id '{id}' already exists.")
+        self._store[id] = data
+
+    def delete(self, id: str) -> None:
+        if id in self._store:
+            del self._store[id]
+        else:
+            raise KeyError(f"Configuration with id '{id}' does not exist.")
+
+
+class SessionStorage:
+    """Session storage backend for configurations using NiceGUI's app storage"""
+
+    def __init__(self, app: App, session_key: str = "pipeline-scada"):
+        self.app = app
+        self.session_key = session_key
+        if not hasattr(app, "storage"):
+            raise ValueError("App does not support storage backend.")
+        self.app.storage.user[self.session_key] = {}
+
+    def read(self, id: str) -> typing.Optional[dict]:
+        try:
+            return self.app.storage.user[self.session_key].get(id)
+        except Exception as e:
+            logger.error(f"Failed to read session storage for id '{id}': {e}")
+            return None
+
+    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
+        try:
+            if id not in self.app.storage.user[self.session_key]:
+                raise KeyError(f"Configuration with id '{id}' does not exist.")
+            if overwrite:
+                self.app.storage.user[self.session_key][id] = data
+            else:
+                self.app.storage.user[self.session_key][id].update(data)
+        except Exception as e:
+            logger.error(f"Failed to update session storage for id '{id}': {e}")
+            raise
+
+    def create(self, id: str, data: dict) -> None:
+        try:
+            if id in self.app.storage.user[self.session_key]:
+                raise KeyError(f"Configuration with id '{id}' already exists.")
+            self.app.storage.user[self.session_key][id] = data
+        except Exception as e:
+            logger.error(f"Failed to create session storage for id '{id}': {e}")
+            raise
+
+    def delete(self, id: str) -> None:
+        try:
+            if id in self.app.storage.user[self.session_key]:
+                del self.app.storage.user[self.session_key][id]
+            else:
+                raise KeyError(f"Configuration with id '{id}' does not exist.")
+        except Exception as e:
+            logger.error(f"Failed to delete session storage for id '{id}': {e}")
+            raise
+
+
+class JSONFileStorage:
+    """JSON file storage backend for configurations"""
+
+    def __init__(self, config_dir: Path):
+        self.config_dir = config_dir
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_file_path(self, id: str) -> Path:
+        return self.config_dir / f"{id}_config.json"
+
+    def read(self, id: str) -> typing.Optional[dict]:
+        file_path = self._get_file_path(id)
+        if not file_path.exists():
+            return None
+        try:
+            with open(file_path, "rb") as f:
+                return orjson.loads(f.read())
+        except Exception as e:
+            logger.error(f"Failed to read configuration file '{file_path}': {e}")
+            return None
+
+    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
+        file_path = self._get_file_path(id)
+        if not file_path.exists():
+            raise KeyError(f"Configuration with id '{id}' does not exist.")
+        try:
+            if overwrite:
+                with open(file_path, "wb") as f:
+                    f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
+            else:
+                existing_data = self.read(id) or {}
+                existing_data.update(data)
+                with open(file_path, "wb") as f:
+                    f.write(orjson.dumps(existing_data, option=orjson.OPT_INDENT_2))
+        except Exception as e:
+            logger.error(f"Failed to update configuration file '{file_path}': {e}")
+            raise
+
+    def create(self, id: str, data: dict) -> None:
+        file_path = self._get_file_path(id)
+        if file_path.exists():
+            raise KeyError(f"Configuration with id '{id}' already exists.")
+        try:
+            with open(file_path, "wb") as f:
+                f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
+        except Exception as e:
+            logger.error(f"Failed to create configuration file '{file_path}': {e}")
+            raise
+
+    def delete(self, id: str) -> None:
+        file_path = self._get_file_path(id)
+        if not file_path.exists():
+            raise KeyError(f"Configuration with id '{id}' does not exist.")
+        try:
+            file_path.unlink()
+        except Exception as e:
+            logger.error(f"Failed to delete configuration file '{file_path}': {e}")
+            raise

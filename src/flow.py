@@ -1,4 +1,3 @@
-import enum
 import typing
 import attrs
 import math
@@ -7,7 +6,7 @@ from pint.facets.plain import PlainQuantity
 from CoolProp.CoolProp import PropsSI
 
 from src.units import ureg, Quantity
-
+from src.types import FlowEquation, FlowType
 
 WATER_DENSITY = Quantity(
     999.1, "kg/m^3"
@@ -943,24 +942,6 @@ def compute_modified_panhandle_B_pressure_drop(
     return pressure_drop * ureg.psi
 
 
-class FlowEquation(str, enum.Enum):
-    """Enumeration of supported flow equations."""
-
-    DARCY_WEISBACH = "Darcy-Weisbach"
-    WEYMOUTH = "Weymouth"
-    MODIFIED_PANHANDLE_A = "Modified Panhandle A"
-    MODIFIED_PANHANDLE_B = "Modified Panhandle B"
-
-
-class FlowType(str, enum.Enum):
-    """Enumeration of flow types for pipes."""
-
-    COMPRESSIBLE = "compressible"
-    """Compressible flow (e.g., gases). With the flow type, the volumetric rate in pipes will vary with pressure and temperature."""
-    INCOMPRESSIBLE = "incompressible"
-    """Incompressible flow (e.g., liquids). The volumetric rate in pipes remains constant regardless of pressure changes."""
-
-
 def determine_pipe_flow_equation(
     pressure_drop: PlainQuantity[float],
     upstream_pressure: PlainQuantity[float],
@@ -991,9 +972,9 @@ def determine_pipe_flow_equation(
     if flow_type == FlowType.INCOMPRESSIBLE or fluid_phase.lower() == "liquid":
         return FlowEquation.DARCY_WEISBACH
 
-    # Gas: compressible flow
-    if pressure_drop_ratio <= 0.1 and length_miles <= 10:
-        return FlowEquation.DARCY_WEISBACH  # small ΔP → treat as incompressible
+    # # Gas: compressible flow
+    # if pressure_drop_ratio <= 0.1 and length_miles <= 10:
+    #     return FlowEquation.DARCY_WEISBACH  # small ΔP → treat as incompressible
 
     # Long pipelines: > 20 miles
     if length_miles > 20:
@@ -1404,4 +1385,3 @@ def compute_tapered_pipe_pressure_drop(
 #     # Convert to psi
 #     total_pressure_drop_psi = total_pressure_drop_pa.to("psi")  # type: ignore
 #     return total_pressure_drop_psi
-

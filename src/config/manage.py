@@ -2,333 +2,16 @@
 Configuration Management System with Session Persistence
 """
 
-import json
+import orjson
 import typing
 import logging
-from pathlib import Path
-import attrs
 from datetime import datetime
 import copy
 
-from nicegui import App
 from src.units import UnitSystem, IMPERIAL, SI, QuantityUnit
+from src.types import converter, ConfigStorage, ConfigurationState
 
 logger = logging.getLogger(__name__)
-
-
-@attrs.define
-class GlobalConfig:
-    """Global application configuration"""
-
-    theme_color: str = "blue"
-    """Primary theme color for the application"""
-    unit_system_name: str = "imperial"
-    """Name of the active unit system"""
-    custom_unit_systems: typing.Dict[str, dict] = attrs.field(factory=dict)
-    """Custom unit systems defined by user"""
-    auto_save: bool = True
-    """Whether to auto-save configurations"""
-    show_tooltips: bool = True
-    """Whether to show tooltips in UI"""
-    animation_enabled: bool = True
-    """Whether animations are enabled"""
-    dark_mode: bool = False
-    """Dark mode preference"""
-
-
-@attrs.define
-class PipelineConfig:
-    """Pipeline-specific configuration"""
-
-    # Pipeline properties
-    pipeline_name: str = "Main Pipeline"
-    """Default name for new pipelines"""
-    max_flow_rate: float = 1e6
-    """Default maximum flow rate"""
-    max_flow_rate_unit: str = "MMscf/day"
-    """Unit for maximum flow rate"""
-    flow_type: str = "compressible"
-    """Default flow type: 'compressible' or 'incompressible'"""
-    
-    # Fluid properties
-    default_fluid_name: str = "Methane"
-    """Default fluid name"""
-    default_fluid_phase: str = "gas"
-    """Default fluid phase: 'liquid' or 'gas'"""
-    initial_temperature: float = 60.0
-    """Default initial temperature"""
-    initial_temperature_unit: str = "degF"
-    """Unit for initial temperature"""
-    initial_pressure: float = 100.0
-    """Default initial pressure"""
-    initial_pressure_unit: str = "psi"
-    """Unit for initial pressure"""
-    molecular_weight: float = 16.04
-    """Default molecular weight"""
-    molecular_weight_unit: str = "g/mol"
-    """Unit for molecular weight"""
-
-    # Pipe defaults
-    default_pipe_material: str = "Steel"
-    """Default material for new pipes"""
-    default_pipe_length: float = 100.0
-    """Default length for new pipes"""
-    default_pipe_diameter: float = 12.0
-    """Default diameter for new pipes"""
-    default_pipe_roughness: float = 0.0018
-    """Default roughness for new pipes"""
-    default_upstream_pressure: float = 1000.0
-    """Default upstream pressure"""
-    default_downstream_pressure: float = 500.0
-    """Default downstream pressure"""
-    default_efficiency: float = 0.85
-    """Default pipe efficiency"""
-    
-    # Pipeline visualization
-    connector_length: float = 0.1
-    """Length of connectors between pipes in meters"""
-    scale_factor: float = 0.1
-    """Scale factor for visualization"""
-    alert_errors: bool = True
-    """Whether to show error alerts"""
-
-
-@attrs.define
-class DefaultMeterConfig:
-    """Default meter configuration template"""
-
-    width: str = "200px"
-    height: str = "200px"
-    precision: int = 2
-    animation_speed: float = 5.0
-    animation_interval: float = 0.1
-    update_interval: float = 1.0
-    alert_errors: bool = True
-
-    # Pressure meter defaults
-    pressure_max_value: float = 2000.0
-    pressure_units: str = "PSI"
-    pressure_height: str = "180px"
-
-    # Temperature meter defaults
-    temperature_min_value: float = -40.0
-    temperature_max_value: float = 200.0
-    temperature_units: str = "°F"
-    temperature_width: str = "160px"
-    temperature_height: str = "240px"
-    temperature_precision: int = 1
-
-    # Flow meter defaults
-    flow_max_value: float = 1e9
-    flow_units: str = "MMscf/DAY"
-    flow_height: str = "220px"
-    flow_precision: int = 4
-    flow_direction: typing.Literal["east", "west", "north", "south"] = "east"
-
-
-@attrs.define
-class DefaultRegulatorConfig:
-    """Default regulator configuration template"""
-
-    width: str = "280px"
-    height: str = "220px"
-    precision: int = 3
-    step: float = 0.1
-    alert_errors: bool = True
-
-    # Pressure regulator defaults
-    pressure_max_value: float = 2000.0
-    pressure_units: str = "PSI"
-
-    # Temperature regulator defaults
-    temperature_min_value: float = -40.0
-    temperature_max_value: float = 200.0
-    temperature_units: str = "°F"
-
-
-@attrs.define
-class FlowStationDefaults:
-    """Default flow station configuration"""
-
-    # Station units
-    pressure_unit: str = "psi"
-    """Default pressure unit for flow stations"""
-    temperature_unit: str = "degF"
-    """Default temperature unit for flow stations"""
-    flow_unit: str = "MMscf/day"
-    """Default flow unit for flow stations"""
-    
-    # Station naming
-    upstream_station_name: str = "Upstream Station"
-    """Default name for upstream stations"""
-    downstream_station_name: str = "Downstream Station"
-    """Default name for downstream stations"""
-
-
-@attrs.define
-class ConfigurationState:
-    """Complete configuration state"""
-
-    global_config: GlobalConfig = attrs.field(factory=GlobalConfig)
-    pipeline_config: PipelineConfig = attrs.field(factory=PipelineConfig)
-    default_meter_config: DefaultMeterConfig = attrs.field(factory=DefaultMeterConfig)
-    default_regulator_config: DefaultRegulatorConfig = attrs.field(
-        factory=DefaultRegulatorConfig
-    )
-    flow_station_defaults: FlowStationDefaults = attrs.field(
-        factory=FlowStationDefaults
-    )
-    last_updated: str = attrs.field(factory=lambda: datetime.now().isoformat())
-    version: str = "1.0"
-
-
-class ConfigStorage(typing.Protocol):
-    """Protocol for configuration storage backend"""
-
-    def read(self, id: str) -> typing.Optional[dict]: ...
-
-    def update(self, id: str, data: dict, overwrite: bool = ...) -> None: ...
-
-    def create(self, id: str, data: dict) -> None: ...
-
-    def delete(self, id: str) -> None: ...
-
-
-class InMemoryStorage:
-    """In-memory storage backend for configurations"""
-
-    def __init__(self, defaults: typing.Optional[dict] = None):
-        self._store: typing.Dict[str, dict] = defaults or {}
-
-    def read(self, id: str) -> typing.Optional[dict]:
-        """Read configuration by id"""
-        return self._store.get(id)
-
-    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
-        if id not in self._store:
-            raise KeyError(f"Configuration with id '{id}' does not exist.")
-        if overwrite:
-            self._store[id] = data
-        else:
-            self._store[id].update(data)
-
-    def create(self, id: str, data: dict) -> None:
-        if id in self._store:
-            raise KeyError(f"Configuration with id '{id}' already exists.")
-        self._store[id] = data
-
-    def delete(self, id: str) -> None:
-        if id in self._store:
-            del self._store[id]
-        else:
-            raise KeyError(f"Configuration with id '{id}' does not exist.")
-
-
-class SessionStorage:
-    def __init__(self, app: App, session_key: str = "pipeline-scada"):
-        self.app = app
-        self.session_key = session_key
-        if not hasattr(app, "storage"):
-            raise ValueError("App does not support storage backend.")
-        self.app.storage.user[self.session_key] = {}
-
-    def read(self, id: str) -> typing.Optional[dict]:
-        try:
-            return self.app.storage.user[self.session_key].get(id)
-        except Exception as e:
-            logger.error(f"Failed to read session storage for id '{id}': {e}")
-            return None
-
-    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
-        try:
-            if id not in self.app.storage.user[self.session_key]:
-                raise KeyError(f"Configuration with id '{id}' does not exist.")
-            if overwrite:
-                self.app.storage.user[self.session_key][id] = data
-            else:
-                self.app.storage.user[self.session_key][id].update(data)
-        except Exception as e:
-            logger.error(f"Failed to update session storage for id '{id}': {e}")
-            raise
-
-    def create(self, id: str, data: dict) -> None:
-        try:
-            if id in self.app.storage.user[self.session_key]:
-                raise KeyError(f"Configuration with id '{id}' already exists.")
-            self.app.storage.user[self.session_key][id] = data
-        except Exception as e:
-            logger.error(f"Failed to create session storage for id '{id}': {e}")
-            raise
-
-    def delete(self, id: str) -> None:
-        try:
-            if id in self.app.storage.user[self.session_key]:
-                del self.app.storage.user[self.session_key][id]
-            else:
-                raise KeyError(f"Configuration with id '{id}' does not exist.")
-        except Exception as e:
-            logger.error(f"Failed to delete session storage for id '{id}': {e}")
-            raise
-
-
-class JSONFileStorage:
-    """JSON file storage backend for configurations"""
-
-    def __init__(self, config_dir: Path):
-        self.config_dir = config_dir
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-
-    def _get_file_path(self, id: str) -> Path:
-        return self.config_dir / f"{id}_config.json"
-
-    def read(self, id: str) -> typing.Optional[dict]:
-        file_path = self._get_file_path(id)
-        if not file_path.exists():
-            return None
-        try:
-            with open(file_path, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read configuration file '{file_path}': {e}")
-            return None
-
-    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
-        file_path = self._get_file_path(id)
-        if not file_path.exists():
-            raise KeyError(f"Configuration with id '{id}' does not exist.")
-        try:
-            if overwrite:
-                with open(file_path, "w") as f:
-                    json.dump(data, f, indent=2)
-            else:
-                existing_data = self.read(id) or {}
-                existing_data.update(data)
-                with open(file_path, "w") as f:
-                    json.dump(existing_data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to update configuration file '{file_path}': {e}")
-            raise
-
-    def create(self, id: str, data: dict) -> None:
-        file_path = self._get_file_path(id)
-        if file_path.exists():
-            raise KeyError(f"Configuration with id '{id}' already exists.")
-        try:
-            with open(file_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.error(f"Failed to create configuration file '{file_path}': {e}")
-            raise
-
-    def delete(self, id: str) -> None:
-        file_path = self._get_file_path(id)
-        if not file_path.exists():
-            raise KeyError(f"Configuration with id '{id}' does not exist.")
-        try:
-            file_path.unlink()
-        except Exception as e:
-            logger.error(f"Failed to delete configuration file '{file_path}': {e}")
-            raise
 
 
 class ConfigurationManager:
@@ -357,7 +40,8 @@ class ConfigurationManager:
 
     def add_observer(self, observer: typing.Callable[[ConfigurationState], None]):
         """Add configuration change observer"""
-        self._observers.append(observer)
+        if observer not in self._observers:
+            self._observers.append(observer)
 
     def remove_observer(self, observer: typing.Callable[[ConfigurationState], None]):
         """Remove configuration change observer"""
@@ -379,51 +63,65 @@ class ConfigurationManager:
     def update_global_config(self, **kwargs: typing.Any):
         """Update global configuration"""
         for key, value in kwargs.items():
-            if hasattr(self._config_state.global_config, key):
-                setattr(self._config_state.global_config, key, value)
+            if hasattr(self._config_state.global_, key):
+                setattr(self._config_state.global_, key, value)
         self._config_state.last_updated = datetime.now().isoformat()
-        self.save_configuration()
+        if self._config_state.global_.auto_save:
+            self.save_configuration()
         self.notify_observers()
 
     def update_pipeline_config(self, **kwargs: typing.Any):
         """Update pipeline configuration"""
         for key, value in kwargs.items():
-            if hasattr(self._config_state.pipeline_config, key):
-                setattr(self._config_state.pipeline_config, key, value)
+            if hasattr(self._config_state.pipeline, key):
+                setattr(self._config_state.pipeline, key, value)
         self._config_state.last_updated = datetime.now().isoformat()
-        self.save_configuration()
+        if self._config_state.global_.auto_save:
+            self.save_configuration()
         self.notify_observers()
 
-    def update_meter_config(self, **kwargs: typing.Any):
-        """Update default meter configuration"""
+    def update_flow_station_config(self, **kwargs: typing.Any):
+        """Update flow station configuration"""
         for key, value in kwargs.items():
-            if hasattr(self._config_state.default_meter_config, key):
-                setattr(self._config_state.default_meter_config, key, value)
+            if hasattr(self._config_state.flow_station, key):
+                setattr(self._config_state.flow_station, key, value)
         self._config_state.last_updated = datetime.now().isoformat()
-        self.save_configuration()
+        if self._config_state.global_.auto_save:
+            self.save_configuration()
         self.notify_observers()
 
-    def update_regulator_config(self, **kwargs: typing.Any):
-        """Update default regulator configuration"""
-        for key, value in kwargs.items():
-            if hasattr(self._config_state.default_regulator_config, key):
-                setattr(self._config_state.default_regulator_config, key, value)
-        self._config_state.last_updated = datetime.now().isoformat()
-        self.save_configuration()
-        self.notify_observers()
+    def update_nested_config(self, path: str, **kwargs: typing.Any):
+        """
+        Update nested configuration using dot notation (e.g., 'pipeline.fluid.name')
 
-    def update_flow_station_defaults(self, **kwargs: typing.Any):
-        """Update flow station defaults configuration"""
+        :param path: Dot notation path to the nested configuration object
+        :param kwargs: Attributes to update on the nested object
+        """
+        parts = path.split(".")
+        obj = self._config_state
+
+        # Navigate to the nested object
+        for part in parts:
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+            else:
+                raise ValueError(f"Invalid configuration path: {path}")
+
+        # Update the attributes on the final object
         for key, value in kwargs.items():
-            if hasattr(self._config_state.flow_station_defaults, key):
-                setattr(self._config_state.flow_station_defaults, key, value)
+            if hasattr(obj, key):
+                setattr(obj, key, value)
+            else:
+                raise ValueError(f"Invalid attribute {key} on object at path {path}")
+
         self._config_state.last_updated = datetime.now().isoformat()
-        self.save_configuration()
+        if self._config_state.global_.auto_save:
+            self.save_configuration()
         self.notify_observers()
 
     def get_unit_system(self) -> UnitSystem:
         """Get current unit system"""
-        config = self._config_state.global_config
+        config = self._config_state.global_
 
         # Check if it's a custom unit system
         if config.unit_system_name in config.custom_unit_systems:
@@ -450,7 +148,7 @@ class ConfigurationManager:
                 "default": unit_obj.default,
             }
 
-        self._config_state.global_config.custom_unit_systems[name] = unit_data
+        self._config_state.global_.custom_unit_systems[name] = unit_data
         self._config_state.last_updated = datetime.now().isoformat()
         self.save_configuration()
         self.notify_observers()
@@ -458,8 +156,74 @@ class ConfigurationManager:
     def get_available_unit_systems(self) -> typing.List[str]:
         """Get list of available unit system names"""
         systems = ["imperial", "si"]
-        systems.extend(self._config_state.global_config.custom_unit_systems.keys())
+        systems.extend(self._config_state.global_.custom_unit_systems.keys())
         return systems
+
+    def get_nested_config(self, path: str) -> typing.Any:
+        """Get nested configuration using dot notation (e.g., 'pipeline.fluid.name')"""
+        parts = path.split(".")
+        obj = self._config_state
+
+        for part in parts:
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+            else:
+                raise ValueError(f"Invalid configuration path: {path}")
+
+        return obj
+
+    def get_all_configs_flat(self) -> typing.Dict[str, typing.Any]:
+        """Get all configurations as a flat dictionary with dot notation keys"""
+        import attrs
+
+        def _flatten_dict(obj, parent_key="", sep="."):
+            """Recursively flatten a nested dictionary or object"""
+            items = []
+
+            # Check if it's an attrs class
+            if attrs.has(obj):
+                # Use attrs.asdict to get field values
+                for field in attrs.fields(type(obj)):
+                    k = field.name
+                    v = getattr(obj, k)
+                    new_key = f"{parent_key}{sep}{k}" if parent_key else k
+
+                    # Skip special attributes and functions
+                    if k.startswith("_") or callable(v):
+                        continue
+
+                    # For basic types, add directly
+                    if isinstance(v, (str, int, float, bool, type(None))):
+                        items.append((new_key, v))
+                    # For Quantity objects, show both magnitude and units
+                    elif hasattr(v, "magnitude") and hasattr(v, "units"):
+                        items.append((f"{new_key}.magnitude", v.magnitude))
+                        items.append((f"{new_key}.units", str(v.units)))
+                    # For Unit objects, show as string
+                    elif hasattr(v, "__str__") and str(type(v)).find("Unit") > -1:
+                        items.append((new_key, str(v)))
+                    # For enum values, show the value
+                    elif hasattr(v, "value"):
+                        items.append((new_key, v.value))
+                    # For nested attrs objects, recurse
+                    elif attrs.has(v):
+                        items.extend(_flatten_dict(v, new_key, sep=sep).items())
+                    else:
+                        items.append((new_key, str(v)))
+
+            elif isinstance(obj, dict):
+                for k, v in obj.items():
+                    new_key = f"{parent_key}{sep}{k}" if parent_key else k
+                    if isinstance(v, dict):
+                        items.extend(_flatten_dict(v, new_key, sep=sep).items())
+                    else:
+                        items.append((new_key, v))
+            else:
+                items.append((parent_key, obj))
+
+            return dict(items)
+
+        return _flatten_dict(self._config_state)
 
     def load_configuration(self):
         """
@@ -471,26 +235,7 @@ class ConfigurationManager:
             data = storage.read(self.id)
             if data:
                 try:
-                    # Convert dict data back to attrs classes
-                    global_config = GlobalConfig(**data.get("global_config", {}))
-                    pipeline_config = PipelineConfig(**data.get("pipeline_config", {}))
-                    meter_config = DefaultMeterConfig(
-                        **data.get("default_meter_config", {})
-                    )
-                    regulator_config = DefaultRegulatorConfig(
-                        **data.get("default_regulator_config", {})
-                    )
-
-                    self._config_state = ConfigurationState(
-                        global_config=global_config,
-                        pipeline_config=pipeline_config,
-                        default_meter_config=meter_config,
-                        default_regulator_config=regulator_config,
-                        last_updated=data.get(
-                            "last_updated", datetime.now().isoformat()
-                        ),
-                        version=data.get("version", "1.0"),
-                    )
+                    self._config_state = converter.structure(data, ConfigurationState)
                     logger.debug(
                         f"Loaded configuration from storage: {type(storage).__name__}"
                     )
@@ -501,7 +246,7 @@ class ConfigurationManager:
 
     def save_configuration(self):
         """Save current configuration to all storages"""
-        data = attrs.asdict(self._config_state)
+        data = converter.unstructure(self._config_state)
         for storage in self.storages:
             try:
                 if storage.read(self.id):
@@ -514,6 +259,33 @@ class ConfigurationManager:
             except Exception as e:
                 logger.error(f"Failed to save configuration to storage: {e}")
 
+    def manual_save(self):
+        """Manually save configuration (bypasses auto-save check)"""
+        self.save_configuration()
+        logger.info("Configuration manually saved")
+
+    def has_unsaved_changes(self) -> bool:
+        """Check if there are unsaved changes (only meaningful when auto-save is disabled)"""
+        if self._config_state.global_.auto_save:
+            return False  # Auto-save enabled, so no unsaved changes
+
+        # Check if the current config differs from what's stored
+        try:
+            stored_data = None
+            for storage in self.storages:
+                stored_data = storage.read(self.id)
+                if stored_data:
+                    break
+
+            if not stored_data:
+                return True  # No saved config exists, so changes are unsaved
+
+            current_data = converter.unstructure(self._config_state)
+            return stored_data != current_data
+        except Exception as e:
+            logger.warning(f"Failed to check for unsaved changes: {e}")
+            return False
+
     def reset_to_defaults(self):
         """Reset configuration to defaults"""
         self._config_state = ConfigurationState()
@@ -523,33 +295,18 @@ class ConfigurationManager:
 
     def export_configuration(self) -> str:
         """Export configuration as JSON string"""
-        return json.dumps(attrs.asdict(self._config_state), indent=2)
+        data = converter.unstructure(self._config_state)
+        return orjson.dumps(data, option=orjson.OPT_INDENT_2).decode()
 
     def import_configuration(self, json_str: str):
         """Import configuration from JSON string"""
         try:
-            data = json.loads(json_str)
+            data = orjson.loads(json_str)
+            self._config_state = converter.structure(data, ConfigurationState)
 
-            # Convert dict data back to attrs classes
-            global_config = GlobalConfig(**data.get("global_config", {}))
-            pipeline_config = PipelineConfig(**data.get("pipeline_config", {}))
-            meter_config = DefaultMeterConfig(**data.get("default_meter_config", {}))
-            regulator_config = DefaultRegulatorConfig(
-                **data.get("default_regulator_config", {})
-            )
-
-            self._config_state = ConfigurationState(
-                global_config=global_config,
-                pipeline_config=pipeline_config,
-                default_meter_config=meter_config,
-                default_regulator_config=regulator_config,
-                last_updated=datetime.now().isoformat(),
-                version=data.get("version", "1.0"),
-            )
-
-            self.save_configuration()
+            # Notify observers
             self.notify_observers()
-            logger.info("Configuration imported successfully")
+            self.save_configuration()
+
         except Exception as e:
-            logger.error(f"Failed to import configuration: {e}")
-            raise ValueError(f"Invalid configuration format: {e}")
+            raise ValueError(f"Failed to import configuration: {e}")

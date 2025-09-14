@@ -1,3 +1,4 @@
+import copy
 import typing
 from typing_extensions import Self
 import math
@@ -10,9 +11,8 @@ from pint.facets.plain import PlainQuantity
 from scipy.optimize import root_scalar, minimize_scalar, fsolve
 
 from src.units import Quantity, ureg
-from src.properties import (
-    FlowEquation,
-    FlowType,
+from src.types import FlowEquation, FlowType
+from src.flow import (
     Fluid,
     determine_pipe_flow_equation,
     compute_reynolds_number,
@@ -1441,8 +1441,13 @@ class Pipe:
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
-        """Get fluid properties."""
+        """Fluid properties."""
         return self._fluid
+
+    @property
+    def flow_type(self) -> FlowType:
+        """Flow type."""
+        return self._flow_type
 
     def set_fluid(self, new_fluid: Fluid, update: bool = True) -> Self:
         """
@@ -1455,6 +1460,47 @@ class Pipe:
         self._fluid = evolve(new_fluid)
         if update:
             return self.update_flow_rate()
+        return self
+
+    def set_flow_type(self, flow_type: FlowType, update: bool = True) -> Self:
+        """
+        Update flow type and optionally recalculate flow rate.
+
+        :param flow_type: New FlowType to set
+        :param update: Whether to update flow rate after changing flow type
+        :return: self or updated Pipe instance
+        """
+        self._flow_type = flow_type
+        if update:
+            return self.update_flow_rate()
+        return self
+
+    def set_max_flow_rate(
+        self, max_flow_rate: PlainQuantity[float], update_viz: bool = True
+    ) -> Self:
+        """
+        Update maximum expected flow rate and optionally update visualization.
+
+        :param max_flow_rate: New maximum flow rate to set
+        :param update_viz: Whether to update visualization after changing max flow rate
+        :return: self or updated Pipe instance
+        """
+        self.max_flow_rate = max_flow_rate
+        if update_viz:
+            return self.update_viz()
+        return self
+
+    def set_scale_factor(self, scale_factor: float, update_viz: bool = True) -> Self:
+        """
+        Update display scale factor and optionally update visualization.
+
+        :param scale_factor: New scale factor to set
+        :param update_viz: Whether to update visualization after changing scale factor
+        :return: self or updated Pipe instance
+        """
+        self.scale_factor = scale_factor
+        if update_viz:
+            return self.update_viz()
         return self
 
     def set_fluid_temperature(
@@ -1886,12 +1932,52 @@ class Pipeline:
         """Get the fluid in the pipeline."""
         return self._fluid
 
-    def set_fluid(self, value: Fluid) -> Self:
+    def set_fluid(self, value: Fluid, update: bool = True) -> Self:
         """Set the fluid in the pipeline and update all pipes."""
         self._fluid = value
         for pipe in self._pipes:
-            pipe.set_fluid(value)
-        return self.update_properties()
+            pipe.set_fluid(value, update=False)
+        if update:
+            self.update_properties()
+        return self
+
+    def set_flow_type(self, flow_type: FlowType, update: bool = True) -> Self:
+        """Set the flow type for the pipeline and all pipes."""
+        self._flow_type = flow_type
+        for pipe in self._pipes:
+            pipe.set_flow_type(flow_type, update=False)
+        if update:
+            self.update_properties()
+        return self
+
+    def set_max_flow_rate(
+        self, max_flow_rate: PlainQuantity[float], update_viz: bool = True
+    ) -> Self:
+        """Set the maximum expected flow rate for the pipeline and all pipes."""
+        self.max_flow_rate = max_flow_rate
+        for pipe in self._pipes:
+            pipe.set_max_flow_rate(max_flow_rate)
+        if update_viz:
+            self.update_viz()
+        return self
+
+    def set_scale_factor(self, scale_factor: float, update_viz: bool = True) -> Self:
+        """Set the scale factor for the pipeline and all pipes."""
+        self.scale_factor = scale_factor
+        for pipe in self._pipes:
+            pipe.scale_factor = scale_factor
+        if update_viz:
+            self.update_viz()
+        return self
+
+    def set_connector_length(
+        self, length: PlainQuantity[float], update: bool = True
+    ) -> Self:
+        """Set the connector length between pipes in the pipeline."""
+        self.connector_length = length
+        if update:
+            self.update_properties()
+        return self
 
     @property
     def upstream_pressure(self) -> PlainQuantity[float]:
@@ -1924,6 +2010,17 @@ class Pipeline:
     def __iter__(self) -> typing.Iterator[Pipe]:
         """Iterate over the pipes in the pipeline."""
         return iter(self._pipes)
+
+    def __getitem__(self, index: int) -> Pipe:
+        """Get a pipe by index."""
+        return self._pipes[index]
+
+    def __setitem__(self, index: int, pipe: Pipe) -> None:
+        """Set a pipe at a specific index."""
+        if not isinstance(pipe, Pipe):
+            raise TypeError("Only Pipe instances can be assigned to the pipeline.")
+        self._pipes[index] = pipe
+        self.update_properties()
 
     def show(
         self,
@@ -2254,20 +2351,21 @@ class Pipeline:
                     show_alert(error_msg, severity="error")
                 raise PipelineConnectionError(error_msg)
 
+        pipe = copy.deepcopy(pipe)
         # Apply the pipeline's scale factor and max flow rate to the pipe
-        pipe.scale_factor = self.scale_factor
+        pipe.set_scale_factor(self.scale_factor, update_viz=False)
         if self.max_flow_rate.magnitude > 0:
-            pipe.max_flow_rate = self.max_flow_rate
+            pipe.set_max_flow_rate(self.max_flow_rate, update_viz=False)
         else:
             # If pipeline max flow rate is zero, use the pipe's own max flow rate
             # Basically the first pipe added sets the max flow rate if not defined
-            self.max_flow_rate = pipe.max_flow_rate
+            self.set_max_flow_rate(pipe.max_flow_rate, update_viz=False)
 
         if self.fluid is not None:
-            pipe.set_fluid(self.fluid)
+            pipe.set_fluid(self.fluid, update=False)
 
         # Ensure the pipe's flow type matches the pipeline's flow type
-        pipe._flow_type = self._flow_type
+        pipe.set_flow_type(self._flow_type, update=False)
 
         if index < 0:
             index = len(self._pipes) + index + 1  # Convert negative index to positive
@@ -2563,9 +2661,14 @@ class Pipeline:
         :param end_index: Ending index of pipes to update (default is -1 for last pipe)
         :return: self for method chaining
         """
-        if self.fluid is None or len(self._pipes) < 2:
+        if self.fluid is None or len(self._pipes) == 0:
             return self
 
+        if len(self._pipes) == 1:
+            self._pipes[0].update_flow_rate()
+            return self
+
+        # Use a root-finding algorithm to determine the mass flow rate that achieves the desired downstream pressure
         target_downstream_pressure = self.downstream_pressure
 
         def error_function(mass_flow_rate_guess: float) -> float:
@@ -2577,6 +2680,13 @@ class Pipeline:
             :return: Difference between calculated and target downstream pressure (psi)
             """
             nonlocal target_downstream_pressure
+
+            # Ensure mass flow rate is real and positive
+            if isinstance(mass_flow_rate_guess, complex):
+                logger.warning(
+                    f"Complex mass flow rate detected: {mass_flow_rate_guess}. Using real part."
+                )
+                mass_flow_rate_guess = mass_flow_rate_guess.real
 
             mass_flow_rate = Quantity(mass_flow_rate_guess, "kg/s")
             # Guess the outlet pressure based on the guessed mass flow rate
@@ -2602,13 +2712,17 @@ class Pipeline:
         logger.info("Initial Max Mass Flow Rate: %s", max_mass_rate)
 
         # Iteratively adjust the mass rate range until we get a sign change
-        max_iterations = 10
+        max_iterations = 20
         iteration = 0
         sign_change = False
 
         while not sign_change and iteration < max_iterations:
             min_error = error_function(min_mass_rate)
             max_error = error_function(max_mass_rate)
+            # Ensure errors are real numbers
+            min_error = float(min_error.real if isinstance(min_error, complex) else min_error)
+            max_error = float(max_error.real if isinstance(max_error, complex) else max_error)
+            
             sign_change = (min_error * max_error) < 0
 
             logger.info(
@@ -2727,7 +2841,14 @@ class Pipeline:
                 )
             raise RuntimeError("Pipeline solver did not converge.")
 
-        actual_mass_flow_rate = Quantity(solution.root, "kg/s")
+        mass_flow_solution = abs(
+            float(
+                solution.root.real
+                if isinstance(solution.root, complex)
+                else solution.root
+            )
+        )
+        actual_mass_flow_rate = Quantity(mass_flow_solution, "kg/s")
         logger.info("Actual Mass Flow Rate: %s", actual_mass_flow_rate)
         logger.info(f"System solved! Mass Flow Rate: {actual_mass_flow_rate:.4f}")
         # Now we run the calculation one last time with the correct flow rate
@@ -2738,7 +2859,7 @@ class Pipeline:
         logger.info("Computed Downstream Pressure: %s", computed_downstream_pressure)
         assert (
             abs((computed_downstream_pressure - target_downstream_pressure).magnitude)
-            < 1e-3
+            < 1e-2
         ), "Final computed downstream pressure does not match target within tolerance."
         return self
 

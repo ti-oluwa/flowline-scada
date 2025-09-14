@@ -40,13 +40,16 @@ class UnitSystem(defaultdict[str, QuantityUnitT]):
     Users can create custom unit systems by subclassing or instantiation.
 
     Example:
-        imperial = UnitSystem()
-        imperial['pressure'] = QuantityUnit(unit='psi', default=14.7)
-        imperial['temperature'] = QuantityUnit(unit='degF', default=60.0)
 
-        # Access units
-        pressure_unit = imperial['pressure'].unit  # 'psi'
-        default_pressure = imperial['pressure'].default  # 14.7
+    ```python
+    imperial = UnitSystem()
+    imperial['pressure'] = QuantityUnit(unit='psi', default=14.7)
+    imperial['temperature'] = QuantityUnit(unit='degF', default=60.0)
+
+    # Access units
+    pressure_unit = imperial['pressure'].unit  # 'psi'
+    default_pressure = imperial['pressure'].default  # 14.7
+    ```
     """
 
     def __init__(
@@ -71,8 +74,7 @@ class UnitSystem(defaultdict[str, QuantityUnitT]):
         return self.default_factory()  # type: ignore
 
 
-IMPERIAL = UnitSystem()
-IMPERIAL.update(
+IMPERIAL = UnitSystem(
     {
         "length": QuantityUnit(unit="ft", display="ft", default=None),
         "diameter": QuantityUnit(unit="inch", display="in", default=None),
@@ -94,8 +96,7 @@ IMPERIAL.update(
     }
 )
 
-SI = UnitSystem()
-SI.update(
+SI = UnitSystem(
     {
         "length": QuantityUnit(unit="m", display="m", default=None),
         "diameter": QuantityUnit(unit="mm", display="mm", default=None),
@@ -106,7 +107,7 @@ SI.update(
         "flow_rate": QuantityUnit(unit="m^3/s", display="m³/s", default=None),
         "flow_volume": QuantityUnit(unit="m^3", display="m³", default=None),
         "molecular_weight": QuantityUnit(
-            unit="g/mol", display="g/mol", default=16.0
+            unit="g/mol", display="g/mol", default=16.04
         ),  # Methane MW
         "roughness": QuantityUnit(unit="mm", display="mm", default=None),
         "elevation": QuantityUnit(unit="m", display="m", default=0.0),  # Sea level

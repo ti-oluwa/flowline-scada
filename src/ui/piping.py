@@ -8,14 +8,12 @@ with proper connection interfaces and decoupled SVG generation.
 import typing
 import copy
 import attrs
-from enum import Enum
 from pint.facets.plain import PlainQuantity
 
 from src.units import Quantity
-
+from src.types import PipeDirection
 
 __all__ = [
-    "PipeDirection",
     "ConnectionPoint",
     "SVGComponent",
     "PipeComponent",
@@ -24,15 +22,6 @@ __all__ = [
     "StraightConnector",
     "Pipeline",
 ]
-
-
-class PipeDirection(str, Enum):
-    """Enumeration for pipe flow directions."""
-
-    NORTH = "north"
-    SOUTH = "south"
-    EAST = "east"
-    WEST = "west"
 
 
 @attrs.define

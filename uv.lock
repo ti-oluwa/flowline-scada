@@ -143,6 +143,19 @@ wheels = [
 ]
 
 [[package]]
+name = "cattrs"
+version = "25.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e3/42/988b3a667967e9d2d32346e7ed7edee540ef1cee829b53ef80aa8d4a0222/cattrs-25.2.0.tar.gz", hash = "sha256:f46c918e955db0177be6aa559068390f71988e877c603ae2e56c71827165cc06", size = 506531, upload-time = "2025-08-31T20:41:59.301Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/20/a5/b3771ac30b590026b9d721187110194ade05bfbea3d98b423a9cafd80959/cattrs-25.2.0-py3-none-any.whl", hash = "sha256:539d7eedee7d2f0706e4e109182ad096d608ba84633c32c75ef3458f1d11e8f1", size = 70040, upload-time = "2025-08-31T20:41:57.543Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2025.8.3"
 source = { registry = "https://pypi.org/simple" }
@@ -442,8 +455,10 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "attrs" },
+    { name = "cattrs" },
     { name = "coolprop" },
     { name = "nicegui" },
+    { name = "orjson" },
     { name = "pint" },
     { name = "scipy" },
 ]
@@ -451,8 +466,10 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "attrs", specifier = ">=25.3.0" },
+    { name = "cattrs", specifier = ">=25.2.0" },
     { name = "coolprop", specifier = ">=7.0.0" },
     { name = "nicegui", specifier = ">=2.22.2" },
+    { name = "orjson", specifier = ">=3.11.2" },
     { name = "pint", specifier = ">=0.25" },
     { name = "scipy", specifier = ">=1.16.2" },
 ]

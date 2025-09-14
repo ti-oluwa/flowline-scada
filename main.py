@@ -4,28 +4,24 @@ Main Entry Point for SCADA Pipeline Management System Application.
 
 import logging
 import os
-import uuid
+from attrs import evolve
+import hashlib
 from pathlib import Path
-from nicegui import ui, app, context
+from nicegui import ui, app, Client
 
-from src.properties import FlowType
+from src.flow import FlowType
+
+# Configuration types no longer needed - using direct flow station config
 from src.ui.manage import (
     PipelineManagerUI,
     PipelineManager,
     UpstreamStationFactory,
     DownstreamStationFactory,
-    FlowStationConfig,
-    MeterConfig,
-    RegulatorConfig,
 )
-from src.ui.components import Pipeline, Fluid
-from src.units import Quantity
-from src.config.manage import (
-    ConfigurationManager,
-    ConfigurationState,
-    JSONFileStorage,
-    SessionStorage,
-)
+from src.flow import Fluid
+from src.ui.components import Pipeline
+from src.config.manage import ConfigurationManager, ConfigurationState
+from src.config.storages import JSONFileStorage, SessionStorage
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,19 +32,17 @@ logger = logging.getLogger(__name__)
 
 
 @ui.page("/", title="SCADA Pipeline Management System")
-def main_page():
+def root(client: Client) -> ui.element:
     """Create the main SCADA Pipeline Management System application."""
-
-    # Get unique session ID for this user
-    # Option 1: Use client ID from context (if available)
-    try:
-        session_id = context.client.id
-    except (AttributeError, RuntimeError):
-        # Option 2: Generate or retrieve from storage
-        if "session_id" not in app.storage.user:
-            app.storage.user["session_id"] = str(uuid.uuid4())
-        session_id = app.storage.user["session_id"]
-
+    request = client.request
+    assert request is not None
+    logger.info("Client connected to root page")
+    user_agent = request.headers.get("user-agent", "unknown")
+    client_ip = request.headers.get(
+        "x-forwarded-for", request.headers.get("host", "unknown")
+    )
+    logger.info(f"Client IP: {client_ip}, User Agent: {user_agent}")
+    session_id = hashlib.sha256(f"client-{user_agent}-{client_ip}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
     session_storage = SessionStorage(app, session_key="pipeline-scada")
@@ -58,7 +52,7 @@ def main_page():
     )
     # Get current configuration
     config = config_manager.get_config()
-    theme_color = config.global_config.theme_color
+    theme_color = config.global_.theme_color
 
     # Main layout container
     main_container = (
@@ -83,7 +77,7 @@ def main_page():
             """Handle theme color changes."""
             nonlocal theme_color
 
-            new_theme = config.global_config.theme_color
+            new_theme = config.global_.theme_color
             header.classes(remove=f"bg-{theme_color}-600")
             header.classes(add=f"bg-{new_theme}-600")
             theme_color = new_theme
@@ -91,154 +85,67 @@ def main_page():
 
         config_manager.add_observer(on_theme_change)
 
-        # Main content area with the pipeline builder
-        content_area = ui.column().classes("flex-1 w-full overflow-auto p-1")
+        # Pipeline manager interface
+        pipeline_manager_container = ui.column().classes("w-full")
+        with pipeline_manager_container:
+            pipeline_config = config.pipeline
+            flow_station_config = config.flow_station
 
-        with content_area:
-            # Pipeline manager interface
-            pipeline_manager_container = ui.column().classes("w-full")
-            with pipeline_manager_container:
-                pipeline_config = config.pipeline_config
-                flow_station_defaults = config.flow_station_defaults
+            # Use fluid configuration from pipeline.fluid
+            fluid_config = pipeline_config.fluid
+            initial_fluid = Fluid.from_coolprop(
+                fluid_name=fluid_config.name,
+                phase=fluid_config.phase,
+                temperature=fluid_config.temperature,
+                pressure=fluid_config.pressure,
+                molecular_weight=fluid_config.molecular_weight,
+            )
 
-                fluid_phase = (
-                    "gas" if pipeline_config.default_fluid_phase == "gas" else "liquid"
-                )
+            flow_type = FlowType(pipeline_config.flow_type)
+            pipeline = Pipeline(
+                pipes=[],
+                fluid=initial_fluid,
+                name=pipeline_config.name,
+                max_flow_rate=pipeline_config.max_flow_rate,
+                flow_type=flow_type,
+                scale_factor=pipeline_config.scale_factor,
+                connector_length=pipeline_config.connector_length,
+                alert_errors=pipeline_config.alert_errors,
+            )
 
-                initial_fluid = Fluid.from_coolprop(
-                    fluid_name=pipeline_config.default_fluid_name,
-                    phase=fluid_phase,
-                    temperature=Quantity(
-                        pipeline_config.initial_temperature,
-                        pipeline_config.initial_temperature_unit,
-                    ),
-                    pressure=Quantity(
-                        pipeline_config.initial_pressure,
-                        pipeline_config.initial_pressure_unit,
-                    ),
-                    molecular_weight=Quantity(
-                        pipeline_config.molecular_weight,
-                        pipeline_config.molecular_weight_unit,
-                    ),
-                )
+            # Build flow station factories
+            upstream_config = evolve(
+                flow_station_config,
+                station_type="upstream",
+                station_name="Upstream Station",
+            )
+            downstream_config = evolve(
+                flow_station_config,
+                station_type="downstream",
+                station_name="Downstream Station",
+            )
+            upstream_factory = UpstreamStationFactory(upstream_config)
+            downstream_factory = DownstreamStationFactory(downstream_config)
+            config_manager.add_observer(upstream_factory.on_config_change)
+            config_manager.add_observer(downstream_factory.on_config_change)
 
-                flow_type = FlowType(pipeline_config.flow_type)
-                pipeline = Pipeline(
-                    pipes=[],
-                    fluid=initial_fluid,
-                    name=pipeline_config.pipeline_name,
-                    max_flow_rate=Quantity(
-                        pipeline_config.max_flow_rate,
-                        pipeline_config.max_flow_rate_unit,
-                    ),
-                    flow_type=flow_type,
-                    scale_factor=pipeline_config.scale_factor,
-                    connector_length=Quantity(pipeline_config.connector_length, "m"),
-                    alert_errors=pipeline_config.alert_errors,
-                )
+            # Build pipeline manager
+            pipeline_manager = PipelineManager(
+                pipeline,
+                flow_station_factories=[upstream_factory, downstream_factory],
+            )
+            config_manager.add_observer(pipeline_manager.on_config_change)
 
-                # Get configuration defaults
-                meter_config = config.default_meter_config
-                regulator_config = config.default_regulator_config
-
-                upstream_config = FlowStationConfig(
-                    station_name=flow_station_defaults.upstream_station_name,
-                    station_type="upstream",
-                    pressure_unit=flow_station_defaults.pressure_unit,
-                    temperature_unit=flow_station_defaults.temperature_unit,
-                    flow_unit=flow_station_defaults.flow_unit,
-                    pressure_config=MeterConfig(
-                        label="Upstream Pressure",
-                        units=meter_config.pressure_units,
-                        max_value=meter_config.pressure_max_value,
-                        height=meter_config.pressure_height,
-                        precision=meter_config.precision,
-                    ),
-                    temperature_config=MeterConfig(
-                        label="Upstream Temperature",
-                        units=meter_config.temperature_units,
-                        min_value=meter_config.temperature_min_value,
-                        max_value=meter_config.temperature_max_value,
-                        width=meter_config.temperature_width,
-                        height=meter_config.temperature_height,
-                        precision=meter_config.temperature_precision,
-                    ),
-                    flow_config=MeterConfig(
-                        label="Upstream Flow",
-                        units=meter_config.flow_units,
-                        max_value=meter_config.flow_max_value,
-                        height=meter_config.flow_height,
-                        precision=meter_config.flow_precision,
-                    ),
-                    pressure_regulator_config=RegulatorConfig(
-                        label="Upstream Pressure Control",
-                        units=regulator_config.pressure_units,
-                        max_value=regulator_config.pressure_max_value,
-                        precision=regulator_config.precision,
-                    ),
-                    temperature_regulator_config=RegulatorConfig(
-                        label="Upstream Temperature Control",
-                        units=regulator_config.temperature_units,
-                        min_value=regulator_config.temperature_min_value,
-                        max_value=regulator_config.temperature_max_value,
-                        precision=regulator_config.precision,
-                    ),
-                )
-
-                downstream_config = FlowStationConfig(
-                    station_name=flow_station_defaults.downstream_station_name,
-                    station_type="downstream",
-                    pressure_unit=flow_station_defaults.pressure_unit,
-                    temperature_unit=flow_station_defaults.temperature_unit,
-                    flow_unit=flow_station_defaults.flow_unit,
-                    pressure_config=MeterConfig(
-                        label="Downstream Pressure",
-                        units=meter_config.pressure_units,
-                        max_value=meter_config.pressure_max_value,
-                        height=meter_config.pressure_height,
-                        precision=meter_config.precision,
-                    ),
-                    temperature_config=MeterConfig(
-                        label="Downstream Temperature",
-                        units=meter_config.temperature_units,
-                        min_value=meter_config.temperature_min_value,
-                        max_value=meter_config.temperature_max_value,
-                        width=meter_config.temperature_width,
-                        height=meter_config.temperature_height,
-                        precision=meter_config.temperature_precision,
-                    ),
-                    flow_config=MeterConfig(
-                        label="Downstream Flow",
-                        units=meter_config.flow_units,
-                        max_value=meter_config.flow_max_value,
-                        height=meter_config.flow_height,
-                        precision=meter_config.flow_precision,
-                    ),
-                    pressure_regulator_config=RegulatorConfig(
-                        label="Downstream Pressure Control",
-                        units=regulator_config.pressure_units,
-                        max_value=regulator_config.pressure_max_value,
-                        precision=regulator_config.precision,
-                    ),
-                )
-
-                upstream_factory = UpstreamStationFactory(upstream_config)
-                downstream_factory = DownstreamStationFactory(downstream_config)
-                pipeline_manager = PipelineManager(
-                    pipeline,
-                    flow_station_factories=[upstream_factory, downstream_factory],
-                )
-
-                # Get the active unit system
-                unit_system_name = config.global_config.unit_system_name
-                logger.info(f"Using unit system: {unit_system_name}")
-                manager_ui = PipelineManagerUI(
-                    manager=pipeline_manager,
-                    config=config_manager,
-                    theme_color=theme_color,
-                    unit_system=config_manager.get_unit_system(),
-                )
-                manager_ui.show(ui_label="Pipeline Builder", max_width="95%")
+            # Get the active unit system
+            unit_system_name = config.global_.unit_system_name
+            logger.info(f"Using unit system: {unit_system_name}")
+            manager_ui = PipelineManagerUI(
+                manager=pipeline_manager,
+                config=config_manager,
+                theme_color=theme_color,
+                unit_system=config_manager.get_unit_system(),
+            )
+            manager_ui.show(ui_label="Pipeline Builder", max_width="95%")
 
     return main_container
 
@@ -250,7 +157,7 @@ def main():
         title="SCADA Pipeline Management System",
         port=8080,
         host="0.0.0.0",
-        reload=True,
+        reload=os.getenv("DEBUG", "False").lower() in ("t", "true", "yes", "on"),
         show=True,
         favicon="🔧",
         dark=False,
