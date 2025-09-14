@@ -44,7 +44,7 @@ def root(client: Client) -> ui.element:
         "x-forwarded-for", request.headers.get("host", "unknown")
     )
     logger.info(f"Client IP: {client_ip}, User Agent: {user_agent}")
-    session_id = hashlib.sha256(f"client-{user_agent}-{client_ip}".encode()).hexdigest()
+    session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
     session_storage = SessionStorage(app, session_key="pipeline-scada")

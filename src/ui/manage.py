@@ -481,7 +481,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             pipeline_config.connector_length, sync=False
         )
         # Update the visualization after all changes
-        self._pipeline.update_properties().update_viz()
+        self._pipeline.sync().update_viz()
         self.sync()
         self.validate()
         self.notify_observers(
