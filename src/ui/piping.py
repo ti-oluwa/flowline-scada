@@ -24,7 +24,7 @@ __all__ = [
 ]
 
 
-@attrs.define
+@attrs.define(slots=True)
 class ConnectionPoint:
     """Connection point information for joining components."""
 
@@ -42,7 +42,7 @@ class ConnectionPoint:
     """Flow rate through this connection point."""
 
 
-@attrs.define
+@attrs.define(slots=True)
 class SVGComponent:
     """Container for SVG content and connection information."""
 
@@ -148,7 +148,7 @@ def physical_to_display_unit(
     return display_value
 
 
-@attrs.define
+@attrs.define(slots=True)
 class HorizontalPipe(PipeComponent):
     """Horizontal pipe component."""
 
@@ -361,7 +361,7 @@ class HorizontalPipe(PipeComponent):
         return Pipeline([self, other])
 
 
-@attrs.define
+@attrs.define(slots=True)
 class VerticalPipe(PipeComponent):
     """Vertical pipe component."""
 
@@ -536,7 +536,7 @@ class VerticalPipe(PipeComponent):
         # Generate complete SVG
         viewbox = f"0 0 {self.canvas_width} {self.canvas_height}"
         main_svg = f'''
-        <svg viewBox="{viewbox}" class="mx-auto" style="width: 100%; height: auto; max-width: 100%;">
+        <svg viewBox="{viewbox}" class="mx-auto" style="width: 100%; max-width: 100%; height: 100%;">
             <defs>
                 <linearGradient id="pipeGradV_{unique_id}" x1="0%" y1="0%" x2="100%" y2="0%">
                     <stop offset="0%" style="stop-color:{color};stop-opacity:0.3" />
@@ -579,7 +579,7 @@ class VerticalPipe(PipeComponent):
         return Pipeline([self, other])
 
 
-@attrs.define
+@attrs.define(slots=True)
 class StraightConnector(PipeComponent):
     """Straight connector between pipes of same direction."""
 
@@ -825,7 +825,7 @@ class StraightConnector(PipeComponent):
         return Pipeline([self, other])
 
 
-@attrs.define
+@attrs.define(slots=True)
 class ElbowConnector(PipeComponent):
     """Elbow connector for direction changes."""
 

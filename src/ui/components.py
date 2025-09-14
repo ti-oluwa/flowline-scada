@@ -1,34 +1,35 @@
 import copy
-import typing
-from typing_extensions import Self
-import math
 import logging
+import math
+import typing
+
 from attrs import evolve
 from nicegui import ui
 from nicegui.elements.html import Html
 from nicegui.elements.row import Row
 from pint.facets.plain import PlainQuantity
-from scipy.optimize import root_scalar, minimize_scalar, fsolve
+from scipy.optimize import fsolve, minimize_scalar, root_scalar
+from typing_extensions import Self
 
-from src.units import Quantity, ureg
-from src.types import FlowEquation, FlowType
 from src.flow import (
     Fluid,
-    determine_pipe_flow_equation,
-    compute_reynolds_number,
     compute_pipe_flow_rate,
     compute_pipe_pressure_drop,
+    compute_reynolds_number,
     compute_tapered_pipe_pressure_drop,
+    determine_pipe_flow_equation,
 )
+from src.types import FlowEquation, FlowType
 from src.ui.piping import (
     PipeComponent,
     PipeDirection,
-    build_horizontal_pipe,
-    build_vertical_pipe,
-    build_straight_connector,
-    build_elbow_connector,
     Pipeline as PipelineComponent,
+    build_elbow_connector,
+    build_horizontal_pipe,
+    build_straight_connector,
+    build_vertical_pipe,
 )
+from src.units import Quantity, ureg
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ class Meter:
         self.label = label
         self.width = width
         self.height = height
-        self.precision = precision
+        self.precision = int(precision)
         self.alarm_high = alarm_high
         self.alarm_low = alarm_low
         self._target_value = value
@@ -997,7 +998,7 @@ class Regulator:
         self.setter_func = setter_func
         self.alarm_high = alarm_high
         self.alarm_low = alarm_low
-        self.precision = precision
+        self.precision = int(precision)
 
         # UI elements
         self.container = None
@@ -1391,7 +1392,7 @@ class Pipe:
         self.flow_rate = Quantity(0.0, "ft^3/s")
         self.max_flow_rate = max_flow_rate
         self.pipe_viz = None  # Placeholder for pipe visualization element
-        self.update_flow_rate()
+        self.sync()
 
     @property
     def pressure_drop(self) -> PlainQuantity[float]:
@@ -1449,30 +1450,30 @@ class Pipe:
         """Flow type."""
         return self._flow_type
 
-    def set_fluid(self, new_fluid: Fluid, update: bool = True) -> Self:
+    def set_fluid(self, new_fluid: Fluid, sync: bool = True) -> Self:
         """
         Update pipe fluid and optionally recalculate flow rate.
 
         :param new_fluid: New Fluid instance to set
-        :param update: Whether to update flow rate after changing fluid
+        :param sync: Whether to synchronize pipe properties after changing fluid
         :return: self or updated Pipe instance
         """
         self._fluid = evolve(new_fluid)
-        if update:
-            return self.update_flow_rate()
+        if sync:
+            return self.sync()
         return self
 
-    def set_flow_type(self, flow_type: FlowType, update: bool = True) -> Self:
+    def set_flow_type(self, flow_type: FlowType, sync: bool = True) -> Self:
         """
         Update flow type and optionally recalculate flow rate.
 
         :param flow_type: New FlowType to set
-        :param update: Whether to update flow rate after changing flow type
+        :param sync: Whether to synchronize pipe properties after changing flow type
         :return: self or updated Pipe instance
         """
         self._flow_type = flow_type
-        if update:
-            return self.update_flow_rate()
+        if sync:
+            return self.sync()
         return self
 
     def set_max_flow_rate(
@@ -1504,19 +1505,19 @@ class Pipe:
         return self
 
     def set_fluid_temperature(
-        self, temperature: PlainQuantity[float], update: bool = True
+        self, temperature: PlainQuantity[float], sync: bool = True
     ) -> Self:
         """
         Update pipe fluid temperature and optionally recalculate flow rate.
 
         :param temperature: New temperature to set
-        :param update: Whether to update flow rate after changing temperature
+        :param sync: Whether to update flow rate after changing temperature
         :return: self or updated Pipe instance
         """
         if self.fluid is not None:
             self._fluid = evolve(self.fluid, temperature=temperature)
-        if update:
-            return self.update_flow_rate()
+        if sync:
+            return self.sync()
         return self
 
     @property
@@ -1666,8 +1667,8 @@ class Pipe:
         self.flow_rate = flow_rate_q
         return self
 
-    def update_flow_rate(self) -> Self:
-        """Update flow rate based on current properties and fluid."""
+    def sync(self) -> Self:
+        """Synchronize the pipe properties based on current fluid and pressures."""
         flow_equation = self.flow_equation
         fluid = self.fluid
         if flow_equation is None or fluid is None:
@@ -1720,20 +1721,21 @@ class Pipe:
                 f"Error calculating flow rate in pipe - {self.name!r}.", exc_info=True
             )
             raise
-        return self.set_flow_rate(flow_rate)
+        self.set_flow_rate(flow_rate)
+        return self
 
     def set_upstream_pressure(
         self,
         pressure: typing.Union[PlainQuantity[float], float],
         check: bool = True,
-        update: bool = False,
+        sync: bool = False,
     ) -> Self:
         """
-        Set upstream pressure and update flow rate.
+        Set upstream pressure and synchronize pipe properties as needed.
 
         :param pressure: Upstream pressure as Quantity or float (assumed psi if float)
         :param check: Whether to check pressure constraints (default is True)
-        :param update: Whether to update flow rate after setting pressure (default is False)
+        :param sync: Whether to synchronize pipe properties after setting pressure (default is False)
         :return: self for method chaining
         """
         if isinstance(pressure, Quantity):
@@ -1764,23 +1766,24 @@ class Pipe:
             raise ValueError(
                 "Upstream pressure cannot be less than downstream pressure. Flow cannot occur against the pressure gradient."
             )
+
         self.upstream_pressure = pressure_q
-        if update:
-            return self.update_flow_rate()
+        if sync:
+            return self.sync()
         return self
 
     def set_downstream_pressure(
         self,
         pressure: typing.Union[PlainQuantity[float], float],
         check: bool = True,
-        update: bool = False,
+        sync: bool = False,
     ) -> Self:
         """
-        Set downstream pressure and update flow rate.
+        Set downstream pressure and synchronize pipe properties.
 
         :param pressure: Downstream pressure as Quantity or float (assumed psi if float)
         :param check: Whether to check pressure constraints (default is True)
-        :param update: Whether to update flow rate after setting pressure (default is False)
+        :param sync: Whether to synchronize pipe properties after setting pressure (default is False)
         :return: self for method chaining
         """
         if isinstance(pressure, Quantity):
@@ -1811,9 +1814,10 @@ class Pipe:
             raise ValueError(
                 "Downstream pressure cannot exceed upstream pressure. Flow cannot occur against the pressure gradient."
             )
+
         self.downstream_pressure = pressure_q
-        if update:
-            return self.update_flow_rate()
+        if sync:
+            return self.sync()
         return self
 
     def get_pipeline_type(self) -> typing.Type["Pipeline"]:
@@ -1893,6 +1897,9 @@ class Pipeline:
         fluid: typing.Optional[Fluid] = None,
         name: typing.Optional[str] = None,
         scale_factor: float = 0.1,
+        upstream_pressure: typing.Optional[PlainQuantity[float]] = None,
+        downstream_pressure: typing.Optional[PlainQuantity[float]] = None,
+        upstream_temperature: typing.Optional[PlainQuantity[float]] = None,
         max_flow_rate: PlainQuantity[float] = Quantity(0.0, "ft^3/s"),
         flow_type: FlowType = FlowType.COMPRESSIBLE,
         connector_length: PlainQuantity[float] = Quantity(0.1, "m"),
@@ -1905,6 +1912,9 @@ class Pipeline:
         :param fluid: Optional Fluid instance representing the fluid in the pipeline
         :param name: Optional name for the pipeline
         :param scale_factor: Scaling factor for pipe visualization (applied to all pipes)
+        :param upstream_pressure: Upstream pressure of the pipeline
+        :param upstream_temperature: Upstream temperature of the fluid in the pipeline
+        :param downstream_pressure: Downstream pressure of the pipeline
         :param max_flow_rate: Maximum expected flow rate for intensity normalization
         :param flow_type: Flow type for the pipeline (compressible or incompressible)
         :param connector_length: Physical length of connectors between pipes (e.g., mm, cm)
@@ -1919,9 +1929,18 @@ class Pipeline:
         self.connector_length = connector_length
         self._fluid = fluid
         self.alert_errors = alert_errors
+        self._upstream_pressure = None
+        self._downstream_pressure = None
+        self._upstream_temperature = upstream_temperature
+
+        if upstream_pressure is not None:
+            self.set_upstream_pressure(upstream_pressure)
+        if downstream_pressure is not None:
+            self.set_downstream_pressure(downstream_pressure)
+
         for pipe in pipes:
             self.add_pipe(pipe, update=False)
-        self.update_properties()
+        self.sync()
 
     @property
     def pipes(self) -> typing.List[Pipe]:
@@ -1932,22 +1951,22 @@ class Pipeline:
         """Get the fluid in the pipeline."""
         return self._fluid
 
-    def set_fluid(self, value: Fluid, update: bool = True) -> Self:
+    def set_fluid(self, value: Fluid, sync: bool = True) -> Self:
         """Set the fluid in the pipeline and update all pipes."""
         self._fluid = value
         for pipe in self._pipes:
-            pipe.set_fluid(value, update=False)
-        if update:
-            self.update_properties()
+            pipe.set_fluid(value, sync=False)
+        if sync:
+            self.sync()
         return self
 
-    def set_flow_type(self, flow_type: FlowType, update: bool = True) -> Self:
+    def set_flow_type(self, flow_type: FlowType, sync: bool = True) -> Self:
         """Set the flow type for the pipeline and all pipes."""
         self._flow_type = flow_type
         for pipe in self._pipes:
-            pipe.set_flow_type(flow_type, update=False)
-        if update:
-            self.update_properties()
+            pipe.set_flow_type(flow_type, sync=False)
+        if sync:
+            self.sync()
         return self
 
     def set_max_flow_rate(
@@ -1956,7 +1975,7 @@ class Pipeline:
         """Set the maximum expected flow rate for the pipeline and all pipes."""
         self.max_flow_rate = max_flow_rate
         for pipe in self._pipes:
-            pipe.set_max_flow_rate(max_flow_rate)
+            pipe.set_max_flow_rate(max_flow_rate, update_viz=False)
         if update_viz:
             self.update_viz()
         return self
@@ -1971,27 +1990,33 @@ class Pipeline:
         return self
 
     def set_connector_length(
-        self, length: PlainQuantity[float], update: bool = True
+        self, length: PlainQuantity[float], sync: bool = True
     ) -> Self:
         """Set the connector length between pipes in the pipeline."""
         self.connector_length = length
-        if update:
-            self.update_properties()
+        if sync:
+            self.sync()
         return self
 
     @property
     def upstream_pressure(self) -> PlainQuantity[float]:
-        """The upstream pressure of the pipeline (from the first pipe)."""
-        if self._pipes:
-            return self._pipes[0].upstream_pressure.to("psi")
-        return Quantity(0, "psi")
+        """The upstream pressure of the pipeline."""
+        if self._upstream_pressure is None:
+            if self._pipes:
+                self._upstream_pressure = self._pipes[0].upstream_pressure
+            else:
+                return Quantity(0, "psi")
+        return self._upstream_pressure
 
     @property
     def downstream_pressure(self) -> PlainQuantity[float]:
-        """The downstream pressure (psi) of the pipeline (from the last pipe)."""
-        if self._pipes:
-            return self._pipes[-1].downstream_pressure.to("psi")
-        return Quantity(0, "psi")
+        """The downstream pressure (psi) of the pipeline."""
+        if self._downstream_pressure is None:
+            if self._pipes:
+                self._downstream_pressure = self._pipes[-1].downstream_pressure
+            else:
+                return Quantity(0, "psi")
+        return self._downstream_pressure
 
     @property
     def inlet_flow_rate(self) -> PlainQuantity[float]:
@@ -2020,12 +2045,13 @@ class Pipeline:
         if not isinstance(pipe, Pipe):
             raise TypeError("Only Pipe instances can be assigned to the pipeline.")
         self._pipes[index] = pipe
-        self.update_properties()
+        self.sync()
 
     def show(
         self,
-        width: str = "100%",
-        height: str = "auto",
+        min_width: str = "800px",
+        max_width: str = "100%",
+        height: str = "800px",
         label: typing.Optional[str] = None,
         show_label: bool = True,
     ) -> Row:
@@ -2041,15 +2067,22 @@ class Pipeline:
         container = (
             ui.row()
             .classes(
-                "w-full h-auto p-2 bg-white border border-gray-200 rounded-lg shadow-sm flex flex-col items-center space-y-2"
+                "w-full p-2 bg-white border border-gray-200 rounded-lg shadow-sm space-y-2"
             )
             .style(
                 f"""
-                width: {width}; 
-                min-height: {height}; 
-                overflow: auto; 
+                min-width: min({min_width}, 100%);
+                max-width: min({max_width}, 100%);
+                max-height: {height} !important;
+                min-height: 200px;
+                overflow: hidden; 
+                display: flex;
+                align-items: center;
+                justify-content: center;
                 flex-wrap: nowrap;
+                flex-direction: column;
                 scrollbar-width: thin;
+                position: relative;
                 """,
             )
         )
@@ -2063,15 +2096,16 @@ class Pipeline:
             svg_content = self.get_svg()
             self.pipeline_viz = ui.html(svg_content).style(
                 """
-                    width: 100%;
-                    height: auto;
-                    min-height: 200px; 
-                    border: 1px solid #ccc; 
-                    background: #f9f9f9;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    """
+                width: 100%;
+                height: 80%;
+                flex: 1 !important;
+                border: 1px solid #ccc; 
+                border-radius: inherit;
+                background: #f9f9f9;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                """
             )
         return container
 
@@ -2233,78 +2267,64 @@ class Pipeline:
         return direction_compatible
 
     def set_upstream_pressure(
-        self, pressure: typing.Union[PlainQuantity[float], float]
+        self, pressure: typing.Union[PlainQuantity[float], float], sync: bool = True
     ) -> Self:
         """
         Set the upstream pressure for the entire pipeline (applied to the first pipe section).
 
         :param pressure: Upstream pressure to set
+        :param sync: Whether to synchronize pipes properties after setting (default is True)
         :return: self for method chaining
         """
-        if self._pipes:
-            if isinstance(pressure, Quantity):
-                pressure = pressure.to("psi")
-            else:
-                pressure = pressure * ureg("psi")
+        if isinstance(pressure, Quantity):
+            pressure = pressure.to("psi")
+        else:
+            pressure = pressure * ureg("psi")
 
-            if pressure.magnitude < self.downstream_pressure.magnitude:
-                if self.alert_errors:
-                    show_alert(
-                        f"Upstream pressure cannot be less than downstream pressure in pipeline - {self.name!r}.",
-                        severity="error",
-                    )
-                raise ValueError(
-                    "Upstream pressure cannot be less than downstream pressure. Flow cannot occur against the pressure gradient."
+        if pressure.magnitude < self.downstream_pressure.magnitude:
+            if self.alert_errors:
+                show_alert(
+                    f"Upstream pressure cannot be less than downstream pressure in pipeline - {self.name!r}.",
+                    severity="error",
                 )
+            raise ValueError(
+                "Upstream pressure cannot be less than downstream pressure. Flow cannot occur against the pressure gradient."
+            )
 
-            first_pipe = self._pipes[0]
-            try:
-                first_pipe.set_upstream_pressure(pressure, check=False, update=False)
-            except Exception as e:
-                if self.alert_errors:
-                    show_alert(
-                        f"Failed to set upstream pressure in first pipe - {self.name!r}: {e}",
-                        severity="error",
-                    )
-                raise
-        return self.update_properties()
+        self._upstream_pressure = pressure
+        if sync:
+            self.sync()
+        return self
 
     def set_downstream_pressure(
-        self, pressure: typing.Union[PlainQuantity[float], float]
+        self, pressure: typing.Union[PlainQuantity[float], float], sync: bool = True
     ) -> Self:
         """
         Set the downstream pressure for the pipeline
 
         :param pressure: Downstream pressure to set
+        :param sync: Whether to synchronize pipes properties after setting (default is True)
         :return: self for method chaining
         """
-        if self._pipes:
-            if isinstance(pressure, Quantity):
-                pressure = pressure.to("psi")
-            else:
-                pressure = pressure * ureg("psi")
+        if isinstance(pressure, Quantity):
+            pressure = pressure.to("psi")
+        else:
+            pressure = pressure * ureg("psi")
 
-            if pressure.magnitude > self.upstream_pressure.magnitude:
-                if self.alert_errors:
-                    show_alert(
-                        f"Downstream pressure cannot exceed upstream pressure in pipeline - {self.name!r}.",
-                        severity="error",
-                    )
-                raise ValueError(
-                    "Downstream pressure cannot exceed upstream pressure. Flow cannot occur against the pressure gradient."
+        if pressure.magnitude > self.upstream_pressure.magnitude:
+            if self.alert_errors:
+                show_alert(
+                    f"Downstream pressure cannot exceed upstream pressure in pipeline - {self.name!r}.",
+                    severity="error",
                 )
+            raise ValueError(
+                "Downstream pressure cannot exceed upstream pressure. Flow cannot occur against the pressure gradient."
+            )
 
-            last_pipe = self._pipes[-1]
-            try:
-                last_pipe.set_downstream_pressure(pressure, check=False, update=False)
-            except Exception as e:
-                if self.alert_errors:
-                    show_alert(
-                        f"Failed to set downstream pressure in last pipe - {self.name!r}: {e}",
-                        severity="error",
-                    )
-                raise
-        return self.update_properties()
+        self._downstream_pressure = pressure
+        if sync:
+            self.sync()
+        return self
 
     def set_upstream_temperature(
         self, temperature: typing.Union[PlainQuantity[float], float]
@@ -2315,10 +2335,12 @@ class Pipeline:
         else:
             temperature_q = Quantity(temperature, "degF")
 
+        self._upstream_temperature = temperature_q
         if self._pipes:
-            self._fluid = evolve(self._fluid, temperature=temperature_q)
             try:
-                self._pipes[0].set_fluid_temperature(temperature_q, update=True)
+                self.set_fluid(
+                    evolve(self.fluid, temperature=temperature_q), sync=False
+                )
             except Exception as e:
                 if self.alert_errors:
                     show_alert(
@@ -2326,15 +2348,15 @@ class Pipeline:
                         severity="error",
                     )
                 raise
-        return self.update_properties()
+        return self.sync()
 
-    def add_pipe(self, pipe: Pipe, index: int = -1, update: bool = True) -> Self:
+    def add_pipe(self, pipe: Pipe, index: int = -1, sync: bool = True) -> Self:
         """
         Add a new pipe to the end of the pipeline.
 
         :param pipe: Pipe instance to add to the pipeline
         :param index: Optional index to insert the pipe at (default is -1 for appending)
-        :param update: Whether to update properties after adding (default is True)
+        :param sync: Whether to synchronize pipes properties after adding (default is True)
         :return: self for method chaining
         :raises `PipelineConnectionError`: If the new pipe cannot be connected
         """
@@ -2362,34 +2384,34 @@ class Pipeline:
             self.set_max_flow_rate(pipe.max_flow_rate, update_viz=False)
 
         if self.fluid is not None:
-            pipe.set_fluid(self.fluid, update=False)
+            pipe.set_fluid(self.fluid, sync=False)
 
         # Ensure the pipe's flow type matches the pipeline's flow type
-        pipe.set_flow_type(self._flow_type, update=False)
+        pipe.set_flow_type(self._flow_type, sync=False)
 
         if index < 0:
             index = len(self._pipes) + index + 1  # Convert negative index to positive
 
         self._pipes.insert(index, pipe)
-        if update:
+        if sync:
             try:
-                self.update_properties()
+                self.sync()
             except Exception as e:
                 self._pipes.pop(index)  # Rollback addition
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to update pipeline properties after adding pipe - {self.name!r}: {e}",
+                        f"Failed to synchronize pipeline properties after adding pipe - {self.name!r}: {e}",
                         severity="error",
                     )
                 raise
         return self
 
-    def remove_pipe(self, index: int = -1, update: bool = True) -> Self:
+    def remove_pipe(self, index: int = -1, sync: bool = True) -> Self:
         """
         Remove a pipe from the pipeline at the specified index.
 
         :param index: Index of the pipe to remove
-        :param update: Whether to update properties after removal (default is True)
+        :param sync: Whether to synchronize pipes properties after removal (default is True)
         :return: self for method chaining
         :raises PipelineConnectionError: If removing the pipe breaks pipeline continuity
         """
@@ -2417,9 +2439,9 @@ class Pipeline:
                             show_alert(error_msg, severity="error")
                         raise PipelineConnectionError(error_msg)
 
-        if update:
+        if sync:
             try:
-                self.update_properties()
+                self.sync()
             except Exception as e:
                 if removed_pipe:
                     self._pipes.insert(index, removed_pipe)  # Rollback removal
@@ -2527,11 +2549,11 @@ class Pipeline:
 
             if set_pressures:
                 current_pipe.set_upstream_pressure(
-                    current_pressure, check=False, update=False
+                    current_pressure, check=False, sync=False
                 )
                 current_pipe.set_flow_rate(volumetric_flow_rate.to("ft^3/s"))
                 current_pipe.set_downstream_pressure(
-                    downstream_pipe_pressure, check=False, update=False
+                    downstream_pipe_pressure, check=False, sync=False
                 )
 
             # Check if this is the last pipe
@@ -2541,11 +2563,10 @@ class Pipeline:
             # 2. Calculate pressure drop across the connector to the next pipe
             next_pipe = self._pipes[i + 1]
 
-            average_pressure = (current_pressure + downstream_pipe_pressure) / 2
             fluid_at_connector_inlet = Fluid.from_coolprop(
                 fluid_name=fluid.name,
                 phase=fluid.phase,
-                pressure=average_pressure,
+                pressure=downstream_pipe_pressure,
                 temperature=current_temp,
                 molecular_weight=fluid.molecular_weight,
             )
@@ -2653,19 +2674,18 @@ class Pipeline:
         max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
         return 0.001, max_mass_flow_rate.magnitude
 
-    def update_properties(self) -> Self:
+    def sync(self) -> Self:
         """
-        Update properties for all pipes in the pipeline.
+        Synchronize pipe properties based on the current pressure, fluid and flow conditions of the system.
 
-        :param start_index: Starting index of pipes to update (default is 0)
-        :param end_index: Ending index of pipes to update (default is -1 for last pipe)
         :return: self for method chaining
         """
         if self.fluid is None or len(self._pipes) == 0:
             return self
 
+        # If only one pipe, just sync that pipe directly
         if len(self._pipes) == 1:
-            self._pipes[0].update_flow_rate()
+            self._pipes[0].sync()
             return self
 
         # Use a root-finding algorithm to determine the mass flow rate that achieves the desired downstream pressure
@@ -2720,9 +2740,13 @@ class Pipeline:
             min_error = error_function(min_mass_rate)
             max_error = error_function(max_mass_rate)
             # Ensure errors are real numbers
-            min_error = float(min_error.real if isinstance(min_error, complex) else min_error)
-            max_error = float(max_error.real if isinstance(max_error, complex) else max_error)
-            
+            min_error = float(
+                min_error.real if isinstance(min_error, complex) else min_error
+            )
+            max_error = float(
+                max_error.real if isinstance(max_error, complex) else max_error
+            )
+
             sign_change = (min_error * max_error) < 0
 
             logger.info(

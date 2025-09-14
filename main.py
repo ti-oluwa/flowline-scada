@@ -1,27 +1,29 @@
 """
-Main Entry Point for SCADA Pipeline Management System Application.
+Main Entry Point for Pipeline Management System Application.
 """
 
+import hashlib
 import logging
 import os
-from attrs import evolve
-import hashlib
 from pathlib import Path
-from nicegui import ui, app, Client
 
-from src.flow import FlowType
+from attrs import evolve
+from dotenv import find_dotenv, load_dotenv
+from nicegui import Client, app, ui
 
-# Configuration types no longer needed - using direct flow station config
-from src.ui.manage import (
-    PipelineManagerUI,
-    PipelineManager,
-    UpstreamStationFactory,
-    DownstreamStationFactory,
-)
-from src.flow import Fluid
-from src.ui.components import Pipeline
 from src.config.manage import ConfigurationManager, ConfigurationState
 from src.config.storages import JSONFileStorage, SessionStorage
+from src.flow import FlowType
+from src.flow import Fluid
+from src.ui.components import Pipeline
+from src.ui.manage import (
+    DownstreamStationFactory,
+    PipelineManager,
+    PipelineManagerUI,
+    UpstreamStationFactory,
+)
+
+load_dotenv(find_dotenv(".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,9 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-@ui.page("/", title="SCADA Pipeline Management System")
+@ui.page("/", title="Pipeline Management System")
 def root(client: Client) -> ui.element:
-    """Create the main SCADA Pipeline Management System application."""
+    """Create the main Pipeline Management System application."""
     request = client.request
     assert request is not None
     logger.info("Client connected to root page")
@@ -69,7 +71,7 @@ def root(client: Client) -> ui.element:
         )
         with header:
             ui.icon("engineering").classes("text-3xl mr-3")
-            ui.label("SCADA Pipeline Management System").classes(
+            ui.label("Pipeline Management System").classes(
                 "text-2xl font-bold flex-1 sm:text-lg"
             )
 
@@ -114,27 +116,18 @@ def root(client: Client) -> ui.element:
             )
 
             # Build flow station factories
-            upstream_config = evolve(
-                flow_station_config,
-                station_type="upstream",
-                station_name="Upstream Station",
+            upstream_factory = UpstreamStationFactory(
+                "Upstream Station", config=flow_station_config
             )
-            downstream_config = evolve(
-                flow_station_config,
-                station_type="downstream",
-                station_name="Downstream Station",
+            downstream_factory = DownstreamStationFactory(
+                "Downstream Station", config=flow_station_config
             )
-            upstream_factory = UpstreamStationFactory(upstream_config)
-            downstream_factory = DownstreamStationFactory(downstream_config)
-            config_manager.add_observer(upstream_factory.on_config_change)
-            config_manager.add_observer(downstream_factory.on_config_change)
 
             # Build pipeline manager
             pipeline_manager = PipelineManager(
                 pipeline,
                 flow_station_factories=[upstream_factory, downstream_factory],
             )
-            config_manager.add_observer(pipeline_manager.on_config_change)
 
             # Get the active unit system
             unit_system_name = config.global_.unit_system_name
@@ -145,6 +138,21 @@ def root(client: Client) -> ui.element:
                 theme_color=theme_color,
                 unit_system=config_manager.get_unit_system(),
             )
+
+            config_manager.add_observer(pipeline_manager.on_config_change)
+
+            def upstream_observer(config: ConfigurationState) -> None:
+                """Handle upstream station configuration changes."""
+                upstream_factory.on_config_change(config)
+                manager_ui.refresh_flow_stations()
+
+            def downstream_observer(config: ConfigurationState) -> None:
+                """Handle downstream station configuration changes."""
+                downstream_factory.on_config_change(config)
+                manager_ui.refresh_flow_stations()
+
+            config_manager.add_observer(upstream_observer)
+            config_manager.add_observer(downstream_observer)
             manager_ui.show(ui_label="Pipeline Builder", max_width="95%")
 
     return main_container
@@ -152,9 +160,9 @@ def root(client: Client) -> ui.element:
 
 def main():
     """Main application entry point."""
-    logger.info("Starting SCADA Pipeline Management System")
+    logger.info("Starting Pipeline Management System")
     ui.run(
-        title="SCADA Pipeline Management System",
+        title="Pipeline Management System",
         port=8080,
         host="0.0.0.0",
         reload=os.getenv("DEBUG", "False").lower() in ("t", "true", "yes", "on"),

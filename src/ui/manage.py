@@ -106,12 +106,14 @@ def validate_pipe_configs(
 class UpstreamStationFactory(typing.Generic[PipelineT]):
     """Factory to create an upstream flow station."""
 
-    def __init__(self, config: FlowStationConfig) -> None:
+    def __init__(self, name: str, config: FlowStationConfig) -> None:
         """
         Initialize the upstream flow station factory.
 
+        :param name: Name of the flow station
         :param config: `FlowStationConfig` object containing all meter and regulator configurations
         """
+        self.name = name
         self.config = config
 
     def set_config(self, config: FlowStationConfig) -> None:
@@ -124,65 +126,65 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         pipeline = manager.get_pipeline()
         pressure_gauge = PressureGauge(
             value=pipeline.upstream_pressure.to(cfg.pressure_unit).magnitude,
-            min_value=cfg.pressure_config.min_value,
-            max_value=cfg.pressure_config.max_value,
-            units=cfg.pressure_config.units,
-            label=cfg.pressure_config.label,
-            width=cfg.pressure_config.width,
-            height=cfg.pressure_config.height,
-            precision=cfg.pressure_config.precision,
-            alarm_high=cfg.pressure_config.alarm_high,
-            alarm_low=cfg.pressure_config.alarm_low,
-            animation_speed=cfg.pressure_config.animation_speed,
-            animation_interval=cfg.pressure_config.animation_interval,
+            min_value=cfg.pressure_guage.min_value,
+            max_value=cfg.pressure_guage.max_value,
+            units=cfg.pressure_guage.units,
+            label=cfg.pressure_guage.label,
+            width=cfg.pressure_guage.width,
+            height=cfg.pressure_guage.height,
+            precision=cfg.pressure_guage.precision,
+            alarm_high=cfg.pressure_guage.alarm_high,
+            alarm_low=cfg.pressure_guage.alarm_low,
+            animation_speed=cfg.pressure_guage.animation_speed,
+            animation_interval=cfg.pressure_guage.animation_interval,
             update_func=lambda: pipeline.upstream_pressure.to(
                 cfg.pressure_unit
             ).magnitude,
-            update_interval=cfg.pressure_config.update_interval,
+            update_interval=cfg.pressure_guage.update_interval,
         )
         temperature_gauge = TemperatureGauge(
             value=pipeline.fluid.temperature.to(cfg.temperature_unit).magnitude
             if pipeline.fluid
             else 0,
-            min_value=cfg.temperature_config.min_value,
-            max_value=cfg.temperature_config.max_value,
-            units=cfg.temperature_config.units,
-            label=cfg.temperature_config.label,
-            width=cfg.temperature_config.width,
-            height=cfg.temperature_config.height,
-            precision=cfg.temperature_config.precision,
-            alarm_high=cfg.temperature_config.alarm_high,
-            alarm_low=cfg.temperature_config.alarm_low,
-            animation_speed=cfg.temperature_config.animation_speed,
-            animation_interval=cfg.temperature_config.animation_interval,
+            min_value=cfg.temperature_guage.min_value,
+            max_value=cfg.temperature_guage.max_value,
+            units=cfg.temperature_guage.units,
+            label=cfg.temperature_guage.label,
+            width=cfg.temperature_guage.width,
+            height=cfg.temperature_guage.height,
+            precision=cfg.temperature_guage.precision,
+            alarm_high=cfg.temperature_guage.alarm_high,
+            alarm_low=cfg.temperature_guage.alarm_low,
+            animation_speed=cfg.temperature_guage.animation_speed,
+            animation_interval=cfg.temperature_guage.animation_interval,
             update_func=lambda: pipeline.fluid.temperature.to(
                 cfg.temperature_unit
             ).magnitude
             if pipeline.fluid
             else 0,
-            update_interval=cfg.temperature_config.update_interval,
+            update_interval=cfg.temperature_guage.update_interval,
         )
         flow_meter = FlowMeter(
             value=pipeline.inlet_flow_rate.to(cfg.flow_unit).magnitude,
-            min_value=cfg.flow_config.min_value,
+            min_value=cfg.flow_meter.min_value,
             max_value=max(
-                cfg.flow_config.max_value,
+                cfg.flow_meter.max_value,
                 pipeline.max_flow_rate.to(cfg.flow_unit).magnitude,
             ),
-            units=cfg.flow_config.units,
-            label=cfg.flow_config.label,
-            width=cfg.flow_config.width,
-            height=cfg.flow_config.height,
-            precision=cfg.flow_config.precision,
-            alarm_high=cfg.flow_config.alarm_high,
-            alarm_low=cfg.flow_config.alarm_low,
-            animation_speed=cfg.flow_config.animation_speed,
-            animation_interval=cfg.flow_config.animation_interval,
+            units=cfg.flow_meter.units,
+            label=cfg.flow_meter.label,
+            width=cfg.flow_meter.width,
+            height=cfg.flow_meter.height,
+            precision=cfg.flow_meter.precision,
+            alarm_high=cfg.flow_meter.alarm_high,
+            alarm_low=cfg.flow_meter.alarm_low,
+            animation_speed=cfg.flow_meter.animation_speed,
+            animation_interval=cfg.flow_meter.animation_interval,
             flow_direction=str(pipeline.pipes[0].direction)
             if pipeline.pipes
             else "east",  # type: ignore
             update_func=lambda: pipeline.inlet_flow_rate.to(cfg.flow_unit).magnitude,
-            update_interval=cfg.flow_config.update_interval,
+            update_interval=cfg.flow_meter.update_interval,
         )
         return [pressure_gauge, temperature_gauge, flow_meter]
 
@@ -195,7 +197,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
 
         def set_pressure(value: float):
             pipeline.set_upstream_pressure(
-                Quantity(value, cfg.pressure_unit)
+                Quantity(value, cfg.pressure_unit), sync=True
             ).update_viz()
             manager.sync()
 
@@ -207,35 +209,35 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
 
         pressure_regulator = Regulator(
             value=pipeline.upstream_pressure.to(cfg.pressure_unit).magnitude,
-            min_value=cfg.pressure_regulator_config.min_value,
-            max_value=cfg.pressure_regulator_config.max_value,
-            step=cfg.pressure_regulator_config.step,
-            units=cfg.pressure_regulator_config.units,
-            label=cfg.pressure_regulator_config.label,
-            width=cfg.pressure_regulator_config.width,
-            height=cfg.pressure_regulator_config.height,
-            precision=cfg.pressure_regulator_config.precision,
+            min_value=cfg.pressure_regulator.min_value,
+            max_value=cfg.pressure_regulator.max_value,
+            step=cfg.pressure_regulator.step,
+            units=cfg.pressure_regulator.units,
+            label=cfg.pressure_regulator.label,
+            width=cfg.pressure_regulator.width,
+            height=cfg.pressure_regulator.height,
+            precision=cfg.pressure_regulator.precision,
             setter_func=set_pressure,
-            alarm_high=cfg.pressure_regulator_config.alarm_high,
-            alarm_low=cfg.pressure_regulator_config.alarm_low,
-            alert_errors=cfg.pressure_regulator_config.alert_errors,
+            alarm_high=cfg.pressure_regulator.alarm_high,
+            alarm_low=cfg.pressure_regulator.alarm_low,
+            alert_errors=cfg.pressure_regulator.alert_errors,
         )
         temperature_regulator = Regulator(
             value=pipeline.fluid.temperature.to(cfg.temperature_unit).magnitude
             if pipeline.fluid
             else 0,
-            min_value=cfg.temperature_regulator_config.min_value,
-            max_value=cfg.temperature_regulator_config.max_value,
-            step=cfg.temperature_regulator_config.step,
-            units=cfg.temperature_regulator_config.units,
-            label=cfg.temperature_regulator_config.label,
-            width=cfg.temperature_regulator_config.width,
-            height=cfg.temperature_regulator_config.height,
-            precision=cfg.temperature_regulator_config.precision,
+            min_value=cfg.temperature_regulator.min_value,
+            max_value=cfg.temperature_regulator.max_value,
+            step=cfg.temperature_regulator.step,
+            units=cfg.temperature_regulator.units,
+            label=cfg.temperature_regulator.label,
+            width=cfg.temperature_regulator.width,
+            height=cfg.temperature_regulator.height,
+            precision=cfg.temperature_regulator.precision,
             setter_func=set_temperature,
-            alarm_high=cfg.temperature_regulator_config.alarm_high,
-            alarm_low=cfg.temperature_regulator_config.alarm_low,
-            alert_errors=cfg.temperature_regulator_config.alert_errors,
+            alarm_high=cfg.temperature_regulator.alarm_high,
+            alarm_low=cfg.temperature_regulator.alarm_low,
+            alert_errors=cfg.temperature_regulator.alert_errors,
         )
         return [pressure_regulator, temperature_regulator]
 
@@ -244,7 +246,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         meters = list(self.build_meters(manager))
         regulators = list(self.build_regulators(manager))
         return FlowStation(
-            name=self.config.station_name,
+            name=self.name,
             meters=meters,
             regulators=regulators,
         )
@@ -252,26 +254,20 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
     def on_config_change(self, config_state: ConfigurationState):
         """Update internal config if the configuration state changes."""
         flow_station_config = config_state.flow_station
-        self.set_config(
-            evolve(
-                flow_station_config,
-                station_name=flow_station_config.station_name + " (Upstream)"
-                if "upstream" not in flow_station_config.station_name.lower()
-                else flow_station_config.station_name,
-                station_type="upstream",
-            )
-        )
+        self.set_config(flow_station_config)
 
 
 class DownstreamStationFactory(typing.Generic[PipelineT]):
     """Factory to create a downstream flow station."""
 
-    def __init__(self, config: FlowStationConfig) -> None:
+    def __init__(self, name: str, config: FlowStationConfig) -> None:
         """
         Initialize the downstream flow station.
 
+        :param name: Name of the flow station
         :param config: `FlowStationConfig` object containing all meter configurations
         """
+        self.name = name
         self.config = config
 
     def set_config(self, config: FlowStationConfig) -> None:
@@ -284,65 +280,65 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         pipeline = manager.get_pipeline()
         pressure_gauge = PressureGauge(
             value=pipeline.downstream_pressure.to(cfg.pressure_unit).magnitude,
-            min_value=cfg.pressure_config.min_value,
-            max_value=cfg.pressure_config.max_value,
-            units=cfg.pressure_config.units,
-            label=cfg.pressure_config.label,
-            width=cfg.pressure_config.width,
-            height=cfg.pressure_config.height,
-            precision=cfg.pressure_config.precision,
-            alarm_high=cfg.pressure_config.alarm_high,
-            alarm_low=cfg.pressure_config.alarm_low,
-            animation_speed=cfg.pressure_config.animation_speed,
-            animation_interval=cfg.pressure_config.animation_interval,
+            min_value=cfg.pressure_guage.min_value,
+            max_value=cfg.pressure_guage.max_value,
+            units=cfg.pressure_guage.units,
+            label=cfg.pressure_guage.label,
+            width=cfg.pressure_guage.width,
+            height=cfg.pressure_guage.height,
+            precision=cfg.pressure_guage.precision,
+            alarm_high=cfg.pressure_guage.alarm_high,
+            alarm_low=cfg.pressure_guage.alarm_low,
+            animation_speed=cfg.pressure_guage.animation_speed,
+            animation_interval=cfg.pressure_guage.animation_interval,
             update_func=lambda: pipeline.downstream_pressure.to(
                 cfg.pressure_unit
             ).magnitude,
-            update_interval=cfg.pressure_config.update_interval,
+            update_interval=cfg.pressure_guage.update_interval,
         )
         temperature_gauge = TemperatureGauge(
             value=pipeline.fluid.temperature.to(cfg.temperature_unit).magnitude
             if pipeline.fluid
             else 0,
-            min_value=cfg.temperature_config.min_value,
-            max_value=cfg.temperature_config.max_value,
-            units=cfg.temperature_config.units,
-            label=cfg.temperature_config.label,
-            width=cfg.temperature_config.width,
-            height=cfg.temperature_config.height,
-            precision=cfg.temperature_config.precision,
-            alarm_high=cfg.temperature_config.alarm_high,
-            alarm_low=cfg.temperature_config.alarm_low,
-            animation_speed=cfg.temperature_config.animation_speed,
-            animation_interval=cfg.temperature_config.animation_interval,
+            min_value=cfg.temperature_guage.min_value,
+            max_value=cfg.temperature_guage.max_value,
+            units=cfg.temperature_guage.units,
+            label=cfg.temperature_guage.label,
+            width=cfg.temperature_guage.width,
+            height=cfg.temperature_guage.height,
+            precision=cfg.temperature_guage.precision,
+            alarm_high=cfg.temperature_guage.alarm_high,
+            alarm_low=cfg.temperature_guage.alarm_low,
+            animation_speed=cfg.temperature_guage.animation_speed,
+            animation_interval=cfg.temperature_guage.animation_interval,
             update_func=lambda: pipeline.fluid.temperature.to(
                 cfg.temperature_unit
             ).magnitude
             if pipeline.fluid
             else 0,
-            update_interval=cfg.temperature_config.update_interval,
+            update_interval=cfg.temperature_guage.update_interval,
         )
         flow_meter = FlowMeter(
             value=pipeline.outlet_flow_rate.to(cfg.flow_unit).magnitude,
-            min_value=cfg.flow_config.min_value,
+            min_value=cfg.flow_meter.min_value,
             max_value=max(
-                cfg.flow_config.max_value,
+                cfg.flow_meter.max_value,
                 pipeline.max_flow_rate.to(cfg.flow_unit).magnitude,
             ),
-            units=cfg.flow_config.units,
-            label=cfg.flow_config.label,
-            width=cfg.flow_config.width,
-            height=cfg.flow_config.height,
-            precision=cfg.flow_config.precision,
-            alarm_high=cfg.flow_config.alarm_high,
-            alarm_low=cfg.flow_config.alarm_low,
-            animation_speed=cfg.flow_config.animation_speed,
-            animation_interval=cfg.flow_config.animation_interval,
+            units=cfg.flow_meter.units,
+            label=cfg.flow_meter.label,
+            width=cfg.flow_meter.width,
+            height=cfg.flow_meter.height,
+            precision=cfg.flow_meter.precision,
+            alarm_high=cfg.flow_meter.alarm_high,
+            alarm_low=cfg.flow_meter.alarm_low,
+            animation_speed=cfg.flow_meter.animation_speed,
+            animation_interval=cfg.flow_meter.animation_interval,
             flow_direction=str(pipeline.pipes[-1].direction)
             if pipeline.pipes
             else "east",  # type: ignore
             update_func=lambda: pipeline.outlet_flow_rate.to(cfg.flow_unit).magnitude,
-            update_interval=cfg.flow_config.update_interval,
+            update_interval=cfg.flow_meter.update_interval,
         )
         return [pressure_gauge, temperature_gauge, flow_meter]
 
@@ -355,21 +351,21 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
 
         def set_pressure(value: float):
             pipeline.set_downstream_pressure(
-                Quantity(value, cfg.pressure_unit)
+                Quantity(value, cfg.pressure_unit), sync=True
             ).update_viz()
             manager.sync()
 
         pressure_regulator = Regulator(
             value=pipeline.downstream_pressure.to(cfg.pressure_unit).magnitude,
-            min_value=cfg.pressure_regulator_config.min_value,
-            max_value=cfg.pressure_regulator_config.max_value,
-            units=cfg.pressure_regulator_config.units,
-            label=cfg.pressure_regulator_config.label,
-            width=cfg.pressure_regulator_config.width,
-            height=cfg.pressure_regulator_config.height,
-            precision=cfg.pressure_regulator_config.precision,
-            alarm_high=cfg.pressure_regulator_config.alarm_high,
-            alarm_low=cfg.pressure_regulator_config.alarm_low,
+            min_value=cfg.pressure_regulator.min_value,
+            max_value=cfg.pressure_regulator.max_value,
+            units=cfg.pressure_regulator.units,
+            label=cfg.pressure_regulator.label,
+            width=cfg.pressure_regulator.width,
+            height=cfg.pressure_regulator.height,
+            precision=cfg.pressure_regulator.precision,
+            alarm_high=cfg.pressure_regulator.alarm_high,
+            alarm_low=cfg.pressure_regulator.alarm_low,
             setter_func=set_pressure,
         )
         return [pressure_regulator]
@@ -379,7 +375,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         meters = list(self.build_meters(manager))
         regulators = list(self.build_regulators(manager))
         return FlowStation(
-            name=self.config.station_name,
+            name=self.name,
             meters=meters,
             regulators=regulators,
         )
@@ -387,15 +383,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
     def on_config_change(self, config_state: ConfigurationState):
         """Update internal config if the configuration state changes."""
         flow_station_config = config_state.flow_station
-        self.set_config(
-            evolve(
-                flow_station_config,
-                station_name=flow_station_config.station_name + " (Downstream)"
-                if "downstream" not in flow_station_config.station_name.lower()
-                else flow_station_config.station_name,
-                station_type="downstream",
-            )
-        )
+        self.set_config(flow_station_config)
 
 
 class PipelineManager(typing.Generic[PipelineT]):
@@ -484,13 +472,13 @@ class PipelineManager(typing.Generic[PipelineT]):
         pipeline_config = config_state.pipeline
         self._pipeline.name = pipeline_config.name
         self._pipeline.alert_errors = pipeline_config.alert_errors
-        self._pipeline.set_flow_type(FlowType(pipeline_config.flow_type), update=False)
+        self._pipeline.set_flow_type(FlowType(pipeline_config.flow_type), sync=False)
         self._pipeline.set_max_flow_rate(
             pipeline_config.max_flow_rate, update_viz=False
         )
         self._pipeline.set_scale_factor(pipeline_config.scale_factor, update_viz=False)
         self._pipeline.set_connector_length(
-            pipeline_config.connector_length, update=False
+            pipeline_config.connector_length, sync=False
         )
         # Update the visualization after all changes
         self._pipeline.update_properties().update_viz()
@@ -539,7 +527,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             index = len(self._pipe_configs)
 
         pipe = self.build_pipe(pipe_config)
-        self._pipeline.add_pipe(pipe, index, update=True)
+        self._pipeline.add_pipe(pipe, index, sync=True)
 
         self.sync()
         self.validate()
@@ -556,7 +544,7 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         if 0 <= index < len(self._pipe_configs):
             # Remove from pipeline using its remove_pipe method
-            self._pipeline.remove_pipe(index, update=True)
+            self._pipeline.remove_pipe(index, sync=True)
 
             self.sync()
             self.validate()
@@ -581,15 +569,15 @@ class PipelineManager(typing.Generic[PipelineT]):
             pipe_config = self._pipe_configs[from_index]
             removed = False
             try:
-                self._pipeline.remove_pipe(from_index, update=True)
+                self._pipeline.remove_pipe(from_index, sync=True)
                 removed = True
                 # Build a new pipe and add it at new position
                 pipe = self.build_pipe(pipe_config)
-                self._pipeline.add_pipe(pipe, to_index, update=True)
+                self._pipeline.add_pipe(pipe, to_index, sync=True)
             except Exception:
                 if removed:
                     pipe = self.build_pipe(pipe_config)
-                    self._pipeline.add_pipe(pipe, from_index, update=True)
+                    self._pipeline.add_pipe(pipe, from_index, sync=True)
                 raise
 
             self.sync()
@@ -607,11 +595,11 @@ class PipelineManager(typing.Generic[PipelineT]):
         """Update a pipe configuration at the specified index."""
         if 0 <= index < len(self._pipe_configs):
             # Remove old pipe and add updated one
-            self._pipeline.remove_pipe(index, update=True)
+            self._pipeline.remove_pipe(index, sync=True)
 
             # Create new pipe with updated config
             pipe = self.build_pipe(pipe_config)
-            self._pipeline.add_pipe(pipe, index, update=True)
+            self._pipeline.add_pipe(pipe, index, sync=True)
 
             self.sync()
             self.validate()
@@ -628,7 +616,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         """Set the fluid configuration."""
         try:
             fluid = self.build_fluid(self._fluid_config)
-            self._pipeline.set_fluid(fluid, update=True)
+            self._pipeline.set_fluid(fluid, sync=True)
         except Exception as e:
             logger.error(f"Error updating pipeline fluid: {e}")
 
@@ -919,12 +907,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         with ui.button_group():
             self.config_menu_button = (
                 ui.button(
-                    icon="settings",
+                    icon="more_vert",
                     on_click=lambda: self.config_ui.show(max_width="720px"),
                     color=self.theme_color,
                 )
                 .props("outline")
-                .classes("text-sm")
+                .classes("text-sm p-1 sm:p-2")
                 .tooltip("System Configuration")
             )
 
@@ -966,7 +954,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             with forms_container:
                 # Pipe properties form (left side on large screens)
                 pipe_form_container = ui.column().classes(
-                    "w-full xl:w-1/2 gap-2 sm:gap-3 min-w-0"
+                    "w-full xl:w-1/2 gap-2 sm:gap-3 min-w-0 flex flex-col align-stretch"
                 )
 
                 # Fluid properties form (right side on large screens)
@@ -1158,7 +1146,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 )
                 with placeholder_card:
                     placeholder_column = ui.column().classes(
-                        "items-center justify-center gap-2"
+                        "items-center justify-center gap-2 w-full h-24 sm:h-48"
                     )
                     with placeholder_column:
                         ui.icon("edit", size="2rem").classes("text-gray-400")
@@ -1179,7 +1167,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             if self.manager.is_valid():
                 pipeline = self.manager.get_pipeline()
                 self.current_pipeline = pipeline
-                pipeline.show()
+                pipeline.show(height="80dvh")
             else:
                 ui.label("Fix validation errors to see preview").classes(
                     "text-gray-500 italic"
@@ -1216,12 +1204,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         ):
             ui.label("Add New Pipe").classes("text-lg font-semibold mb-3")
 
+            pipe_count = len(self.manager.get_pipe_configs())
             # Form inputs
             form_container = ui.column().classes("w-full gap-2 sm:gap-3")
             with form_container:
                 name_input = ui.input(
                     "Pipe Name",
-                    value=f"Pipe-{len(self.manager.get_pipe_configs()) + 1}",
+                    value=f"Pipe-{pipe_count + 1}",
                 ).classes("w-full")
 
                 # Dimensions row
@@ -1254,27 +1243,58 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         step=0.1,
                     ).classes("flex-1 min-w-0")
 
-                # Pressure row
-                pressure_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
-                with pressure_row:
-                    pressure_unit = self.unit_system["pressure"]
-
-                    upstream_pressure_input = ui.number(
-                        f"Upstream Pressure ({pressure_unit})",
-                        value=pipe_config.upstream_pressure.to(
-                            pressure_unit.unit
-                        ).magnitude,
-                        min=0,
-                        step=1,
-                    ).classes("flex-1 min-w-0")
-                    downstream_pressure_input = ui.number(
-                        f"Downstream Pressure ({pressure_unit})",
-                        value=pipe_config.downstream_pressure.to(
-                            pressure_unit.unit
-                        ).magnitude,
-                        min=0,
-                        step=1,
-                    ).classes("flex-1 min-w-0")
+                # Only allow pipe pressure to be set if there are no pipes yet.
+                # Pipe pressures will be managed by pipeline(flow equations) and flow stations
+                pressure_unit = self.unit_system["pressure"]
+                if pipe_count == 0:
+                    # Pressure row
+                    pressure_row = ui.row().classes(
+                        "w-full gap-2 flex-wrap sm:flex-nowrap"
+                    )
+                    with pressure_row:
+                        upstream_pressure_input = ui.number(
+                            f"Upstream Pressure ({pressure_unit})",
+                            value=pipe_config.upstream_pressure.to(
+                                pressure_unit.unit
+                            ).magnitude,
+                            min=0,
+                            step=1,
+                        ).classes("flex-1 min-w-0")
+                        downstream_pressure_input = ui.number(
+                            f"Downstream Pressure ({pressure_unit})",
+                            value=pipe_config.downstream_pressure.to(
+                                pressure_unit.unit
+                            ).magnitude,
+                            min=0,
+                            step=1,
+                        ).classes("flex-1 min-w-0")
+                else:
+                    upstream_pressure_input = (
+                        ui.number(
+                            f"Upstream Pressure ({pressure_unit})",
+                            value=pipe_config.upstream_pressure.to(
+                                pressure_unit.unit
+                            ).magnitude,
+                            min=0,
+                            step=1,
+                        )
+                        .classes("flex-1 min-w-0")
+                        .props("hidden disabled")
+                        .style("display: none;")
+                    )
+                    downstream_pressure_input = (
+                        ui.number(
+                            f"Downstream Pressure ({pressure_unit})",
+                            value=pipe_config.downstream_pressure.to(
+                                pressure_unit.unit
+                            ).magnitude,
+                            min=0,
+                            step=1,
+                        )
+                        .classes("flex-1 min-w-0")
+                        .props("hidden disabled")
+                        .style("display: none;")
+                    )
 
                 # Material and direction row
                 material_dir_row = ui.row().classes(
@@ -1497,30 +1517,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     precision=4,
                 ).classes("flex-1 min-w-0")
 
-            # Pressure row - side by side on larger screens
-            pressure_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
-            with pressure_row:
-                pressure_unit = self.unit_system["pressure"]
-
-                upstream_pressure_input = ui.number(
-                    f"Upstream Pressure ({pressure_unit})",
-                    value=pipe_config.upstream_pressure.to(
-                        pressure_unit.unit
-                    ).magnitude,
-                    min=0,
-                    step=1,
-                    precision=4,
-                ).classes("flex-1 min-w-0")
-                downstream_pressure_input = ui.number(
-                    f"Downstream Pressure ({pressure_unit})",
-                    value=pipe_config.downstream_pressure.to(
-                        pressure_unit.unit
-                    ).magnitude,
-                    min=0,
-                    step=1,
-                    precision=4,
-                ).classes("flex-1 min-w-0")
-
             # Material and direction row
             material_direction_row = ui.row().classes(
                 "w-full gap-2 flex-wrap sm:flex-nowrap"
@@ -1573,8 +1569,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         name_input,
                         length_input,
                         diameter_input,
-                        upstream_pressure_input,
-                        downstream_pressure_input,
                         direction_select,
                         material_input,
                         efficiency_input,
@@ -1676,8 +1670,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         name_input,
         length_input,
         diameter_input,
-        upstream_pressure_input,
-        downstream_pressure_input,
         direction_select,
         material_input,
         efficiency_input,
@@ -1687,9 +1679,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Update pipe configuration from form inputs."""
         try:
             if self.selected_pipe_index is not None:
+                selected_pipe_config = self.manager.get_pipe_configs()[
+                    self.selected_pipe_index
+                ]
                 length_unit = self.unit_system["length"].unit
                 diameter_unit = self.unit_system["diameter"].unit
-                pressure_unit = self.unit_system["pressure"].unit
                 roughness_unit = self.unit_system["roughness"].unit
                 elevation_unit = self.unit_system["elevation"].unit
 
@@ -1697,12 +1691,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     name=name_input.value,
                     length=Quantity(length_input.value, length_unit),  # type: ignore
                     internal_diameter=Quantity(diameter_input.value, diameter_unit),  # type: ignore
-                    upstream_pressure=Quantity(
-                        upstream_pressure_input.value, pressure_unit
-                    ),  # type: ignore
-                    downstream_pressure=Quantity(
-                        downstream_pressure_input.value, pressure_unit
-                    ),  # type: ignore
+                    # Pressures remain unchanged as they manage by the pipeline and flowstations
+                    upstream_pressure=selected_pipe_config.upstream_pressure,
+                    downstream_pressure=selected_pipe_config.downstream_pressure,
                     direction=PipeDirection(direction_select.value),
                     material=material_input.value,
                     roughness=Quantity(roughness_input.value, roughness_unit),  # type: ignore

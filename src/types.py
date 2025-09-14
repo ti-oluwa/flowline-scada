@@ -210,10 +210,6 @@ class RegulatorConfig:
 class FlowStationConfig:
     """Configuration for complete flow station setup"""
 
-    station_name: str = "Flow Station"
-    """Name of the flow station"""
-    station_type: typing.Literal["upstream", "downstream"] = "upstream"
-    """Type of station - upstream (with regulators) or downstream (meters only)"""
     pressure_unit: typing.Union[str, Unit] = attrs.field(default="psi", converter=Unit)
     """Pressure unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
     temperature_unit: typing.Union[str, Unit] = attrs.field(
@@ -222,13 +218,13 @@ class FlowStationConfig:
     """Temperature unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
     flow_unit: typing.Union[str, Unit] = attrs.field(default="ft^3/sec", converter=Unit)
     """Flow rate unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
-    pressure_config: MeterConfig = attrs.field(
+    pressure_guage: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Pressure", units="PSI", max_value=5000.0, height="180px"
         )
     )
     """Configuration for the pressure meter"""
-    temperature_config: MeterConfig = attrs.field(
+    temperature_guage: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Temperature",
             units="°C",
@@ -239,7 +235,7 @@ class FlowStationConfig:
         )
     )
     """Configuration for the temperature meter"""
-    flow_config: MeterConfig = attrs.field(
+    flow_meter: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Flow Rate",
             units="ft³/sec",
@@ -249,19 +245,13 @@ class FlowStationConfig:
         )
     )
     """Configuration for the flow meter"""
-    pressure_regulator_config: RegulatorConfig = attrs.field(
+    pressure_regulator: RegulatorConfig = attrs.field(
         factory=lambda: RegulatorConfig(
             label="Pressure Control", units="PSI", max_value=5000.0
         )
     )
     """Configuration for the pressure regulator (mostly upstream only)"""
-    flow_regulator_config: RegulatorConfig = attrs.field(
-        factory=lambda: RegulatorConfig(
-            label="Flow Control", units="ft³/sec", max_value=200.0
-        )
-    )
-    """Configuration for the flow regulator (mostly upstream only)"""
-    temperature_regulator_config: RegulatorConfig = attrs.field(
+    temperature_regulator: RegulatorConfig = attrs.field(
         factory=lambda: RegulatorConfig(
             label="Temperature Control",
             units="°F",

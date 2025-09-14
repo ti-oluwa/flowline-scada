@@ -460,6 +460,7 @@ dependencies = [
     { name = "nicegui" },
     { name = "orjson" },
     { name = "pint" },
+    { name = "python-dotenv" },
     { name = "scipy" },
 ]
 
@@ -471,6 +472,7 @@ requires-dist = [
     { name = "nicegui", specifier = ">=2.22.2" },
     { name = "orjson", specifier = ">=3.11.2" },
     { name = "pint", specifier = ">=0.25" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "scipy", specifier = ">=1.16.2" },
 ]
 

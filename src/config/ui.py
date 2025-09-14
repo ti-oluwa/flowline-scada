@@ -461,24 +461,6 @@ class ConfigurationUI:
             with ui.card().classes("w-full p-4"):
                 ui.label("Flow Station Settings").classes("text-lg font-semibold mb-3")
 
-                with ui.element("div").classes("config-grid-responsive grid-cols-2"):
-                    ui.input(
-                        label="Station Name",
-                        value=config.station_name,
-                        on_change=lambda e: self.manager.update_flow_station_config(
-                            station_name=e.value
-                        ),
-                    ).classes("w-full")
-
-                    ui.select(
-                        label="Station Type",
-                        options=["upstream", "downstream"],
-                        value=config.station_type,
-                        on_change=lambda e: self.manager.update_flow_station_config(
-                            station_type=e.value
-                        ),
-                    ).classes("w-full")
-
                 with ui.element("div").classes("config-grid-responsive grid-cols-3"):
                     ui.input(
                         label="Pressure Unit",
@@ -527,17 +509,22 @@ class ConfigurationUI:
                 with ui.scroll_area().classes("h-96 w-full"):
                     config_table = ui.column().classes("w-full gap-2")
 
-                    def update_table(search_term: str = ""):
-                        config_table.clear()
-                        if search_term:
-                            configs = {
-                                k: v
-                                for k, v in flat_configs.items()
-                                if search_term.lower() in k.lower()
-                            }
-                        else:
-                            configs = flat_configs
-
+                def update_table(search_term: str = ""):
+                    nonlocal config_table
+                    logger.info(
+                        f"Updating config table with search term: '{search_term}'"
+                    )
+                    config_table.clear()
+                    configs = (
+                        {
+                            k: v
+                            for k, v in flat_configs.items()
+                            if search_term.lower() in k.lower()
+                        }
+                        if search_term
+                        else flat_configs
+                    )
+                    with config_table:
                         for config_path, value in sorted(configs.items()):
                             with ui.row().classes(
                                 "w-full p-2 border-b border-gray-200 items-center gap-4"
@@ -545,6 +532,12 @@ class ConfigurationUI:
                                 ui.label(config_path).classes(
                                     "text-sm font-mono text-blue-600 flex-1"
                                 )
+
+                                if config_path == "last_updated":
+                                    ui.label(str(value)).classes(
+                                        "text-sm text-gray-600"
+                                    )
+                                    continue
 
                                 # Show different input types based on value type
                                 if isinstance(value, bool):
@@ -589,11 +582,12 @@ class ConfigurationUI:
                                             path, e.value
                                         ),
                                     ).classes("w-64 flex-shrink-0")
+                    config_table.update()
 
-                    # Initial table load
-                    update_table()
-            # Update table on search
-            search_input.on_value_change(lambda e: update_table(e.value))
+                # Initial table load
+                update_table()
+                # Update table on search
+                search_input.on("change", lambda e: update_table(e.args), throttle=0.05)
 
     def show_import_export_panel(self):
         """Create import/export panel"""

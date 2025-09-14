@@ -52,7 +52,7 @@ class ConfigurationManager:
         """Notify all observers of configuration changes"""
         for observer in self._observers:
             try:
-                observer(self._config_state)
+                observer(self.get_config())
             except Exception as e:
                 logger.error(f"Error notifying config observer: {e}")
 

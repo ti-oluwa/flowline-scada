@@ -11,5 +11,6 @@ dependencies = [
     "nicegui>=2.22.2",
     "orjson>=3.11.2",
     "pint>=0.25",
+    "python-dotenv>=1.1.1",
     "scipy>=1.16.2",
 ]
