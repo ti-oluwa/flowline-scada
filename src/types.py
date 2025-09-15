@@ -5,7 +5,7 @@ import cattrs
 from datetime import datetime
 from pint.facets.plain import PlainQuantity
 
-from src.units import Quantity, Unit
+from src.units import Quantity, Unit, UnitSystem, QuantityUnit, IMPERIAL, SI, OIL_FIELD
 
 
 def structure_quantity(obj: typing.Any, _) -> PlainQuantity:
@@ -36,11 +36,62 @@ def unstructure_unit(obj: Unit) -> str:
     return str(obj)
 
 
+def structure_quantity_unit(
+    obj: typing.Any, _: typing.Type[QuantityUnit]
+) -> QuantityUnit:
+    """Convert a dict to a QuantityUnit."""
+    if isinstance(obj, QuantityUnit):
+        return obj
+    if isinstance(obj, dict) and "unit" in obj:
+        return QuantityUnit(
+            unit=obj["unit"],
+            display=obj.get("display"),
+            default=obj.get("default"),
+        )
+    raise ValueError(f"Cannot structure {obj} as QuantityUnit")
+
+
+def unstructure_quantity_unit(obj: QuantityUnit) -> dict:
+    """Convert a QuantityUnit to a dict."""
+    return {
+        "unit": str(obj.unit),
+        "display": obj.display,
+        "default": obj.default,
+    }
+
+
+def structure_unit_system(obj: typing.Any, _: typing.Type[UnitSystem]) -> UnitSystem:
+    """Convert a dict to a UnitSystem."""
+    if isinstance(obj, UnitSystem):
+        return obj
+    if isinstance(obj, dict):
+        return UnitSystem(
+            obj.get("name", "custom").lower(),
+            {
+                k: structure_quantity_unit(v, QuantityUnit)
+                for k, v in obj.get("quantities", {}).items()
+            },
+        )
+    raise ValueError(f"Cannot structure {obj} as UnitSystem")
+
+
+def unstructure_unit_system(obj: UnitSystem) -> dict:
+    """Convert a UnitSystem to a dict."""
+    return {
+        "name": obj.name.lower(),
+        "quantities": {k: unstructure_quantity_unit(v) for k, v in obj.items()},
+    }
+
+
 converter = cattrs.Converter()
 converter.register_structure_hook(PlainQuantity, structure_quantity)
 converter.register_unstructure_hook(PlainQuantity, unstructure_quantity)
 converter.register_structure_hook(Unit, structure_unit)
 converter.register_unstructure_hook(Unit, unstructure_unit)
+converter.register_structure_hook(QuantityUnit, structure_quantity_unit)
+converter.register_unstructure_hook(QuantityUnit, unstructure_quantity_unit)
+converter.register_structure_hook(UnitSystem, structure_unit_system)
+converter.register_unstructure_hook(UnitSystem, unstructure_unit_system)
 
 
 class FlowEquation(str, enum.Enum):
@@ -59,9 +110,9 @@ class FlowType(str, enum.Enum):
     """Enumeration of flow types for pipes."""
 
     COMPRESSIBLE = "compressible"
-    """Compressible flow (e.g., gases). With the flow type, the volumetric rate in pipes will vary with pressure and temperature."""
+    """Compressible flow (e.g., gases). With the flow type, the voluSI rate in pipes will vary with pressure and temperature."""
     INCOMPRESSIBLE = "incompressible"
-    """Incompressible flow (e.g., liquids). The volumetric rate in pipes remains constant regardless of pressure changes."""
+    """Incompressible flow (e.g., liquids). The voluSI rate in pipes remains constant regardless of pressure changes."""
 
     def __str__(self) -> str:
         return self.value
@@ -82,6 +133,8 @@ class PipeDirection(str, enum.Enum):
 class PipelineEvent(enum.Enum):
     """Events that can occur during pipeline construction."""
 
+    SYNCED = "synced"
+    """Sent when the pipeline is synchronized with the manager."""
     PIPE_ADDED = "pipe_added"
     """Sent when a pipe is added to the pipeline."""
     PIPE_REMOVED = "pipe_removed"
@@ -117,7 +170,10 @@ class PipeConfig:
     """Material of the pipe"""
     roughness: Quantity = attrs.field(factory=lambda: Quantity(0.0001, "m"))  # type: ignore
     """Roughness of the pipe material"""
-    efficiency: float = 1.0
+    efficiency: float = attrs.field(
+        default=1.0,
+        validator=attrs.validators.and_(attrs.validators.gt(0), attrs.validators.le(1)),
+    )
     """Efficiency of the pipe (0 < efficiency <= 1)"""
     elevation_difference: Quantity = attrs.field(factory=lambda: Quantity(0, "m"))  # type: ignore
     """Elevation difference between upstream and downstream"""
@@ -155,8 +211,6 @@ class MeterConfig:
     """Minimum value for the meter"""
     max_value: float = 100.0
     """Maximum value for the meter"""
-    units: str = ""
-    """Display units for the meter"""
     label: str = "Meter"
     """Label for the meter"""
     width: str = "200px"
@@ -178,6 +232,7 @@ class MeterConfig:
     alert_errors: bool = True
     """Whether to alert on errors"""
 
+
 @attrs.define(slots=True)
 class RegulatorConfig:
     """Configuration for regulator components"""
@@ -188,8 +243,6 @@ class RegulatorConfig:
     """Maximum allowable value"""
     step: float = 0.1
     """Increment step for adjustments"""
-    units: str = ""
-    """Display units for the regulator"""
     label: str = "Regulator"
     """Label for the regulator"""
     width: str = "280px"
@@ -210,24 +263,13 @@ class RegulatorConfig:
 class FlowStationConfig:
     """Configuration for complete flow station setup"""
 
-    pressure_unit: typing.Union[str, Unit] = attrs.field(default="psi", converter=Unit)
-    """Pressure unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
-    temperature_unit: typing.Union[str, Unit] = attrs.field(
-        default="degF", converter=Unit
-    )
-    """Temperature unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
-    flow_unit: typing.Union[str, Unit] = attrs.field(default="ft^3/sec", converter=Unit)
-    """Flow rate unit for unit conversions (supported by Pint). Should match meter/regulator display units."""
     pressure_guage: MeterConfig = attrs.field(
-        factory=lambda: MeterConfig(
-            label="Pressure", units="PSI", max_value=5000.0, height="180px"
-        )
+        factory=lambda: MeterConfig(label="Pressure", max_value=5000.0, height="180px")
     )
     """Configuration for the pressure meter"""
     temperature_guage: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Temperature",
-            units="°C",
             max_value=300.0,
             width="160px",
             height="240px",
@@ -238,7 +280,6 @@ class FlowStationConfig:
     flow_meter: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Flow Rate",
-            units="ft³/sec",
             max_value=200.0,
             height="220px",
             precision=3,
@@ -246,15 +287,12 @@ class FlowStationConfig:
     )
     """Configuration for the flow meter"""
     pressure_regulator: RegulatorConfig = attrs.field(
-        factory=lambda: RegulatorConfig(
-            label="Pressure Control", units="PSI", max_value=5000.0
-        )
+        factory=lambda: RegulatorConfig(label="Pressure Control", max_value=5000.0)
     )
     """Configuration for the pressure regulator (mostly upstream only)"""
     temperature_regulator: RegulatorConfig = attrs.field(
         factory=lambda: RegulatorConfig(
             label="Temperature Control",
-            units="°F",
             min_value=-40.0,
             max_value=300.0,
             precision=2,
@@ -271,7 +309,9 @@ class GlobalConfig:
     """Primary theme color for the application"""
     unit_system_name: str = "imperial"
     """Name of the active unit system"""
-    custom_unit_systems: typing.Dict[str, dict] = attrs.field(factory=dict)
+    unit_systems: typing.Dict[str, UnitSystem] = attrs.field(
+        factory=lambda: dict(imperial=IMPERIAL, si=SI, oil_field=OIL_FIELD)
+    )
     """Custom unit systems defined by user"""
     auto_save: bool = True
     """Whether to auto-save configurations"""
@@ -300,8 +340,8 @@ class PipelineConfig:
             name="Pipe Segment",
             internal_diameter=Quantity(2, "inch"),  # type: ignore
             length=Quantity(100, "m"),  # type: ignore
-            upstream_pressure=Quantity(500, "psi"),  # type: ignore
-            downstream_pressure=Quantity(400, "psi"),  # type: ignore
+            upstream_pressure=Quantity(0, "psi"),  # type: ignore
+            downstream_pressure=Quantity(0, "psi"),  # type: ignore
         )
     )
     """Default pipe properties"""

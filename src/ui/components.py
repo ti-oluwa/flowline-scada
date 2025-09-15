@@ -72,6 +72,7 @@ class Meter:
         value: float = 0.0,
         min_value: float = 0.0,
         max_value: float = 100.0,
+        theme_color: str = "blue",
         units: str = "",
         label: str = "Meter",
         width: str = "200px",
@@ -93,6 +94,7 @@ class Meter:
         :param value: Initial value
         :param min_value: Minimum value for scaling
         :param max_value: Maximum value for scaling
+        :param theme_color: Theme color for styling
         :param units: Units to display
         :param label: Label for the meter
         :param width: Width of the meter
@@ -109,6 +111,7 @@ class Meter:
         self.value = value
         self.min = min_value
         self.max = max_value
+        self.theme_color = theme_color
         self.units = units
         self.label = label
         self.width = width
@@ -162,7 +165,7 @@ class Meter:
                 min-width: {display_width}; 
                 min-height: {display_height}; 
                 background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
-                border: 2px solid #e2e8f0;
+                border: 2px dotted {self.theme_color};
                 border-radius: 16px;
                 box-shadow: 
                     0 10px 25px -5px rgba(0, 0, 0, 0.1),
@@ -426,6 +429,7 @@ class FlowMeter(Meter):
         ] = None,
         update_interval: float = 1.0,
         precision: int = 2,
+        theme_color: str = "blue",
     ) -> None:
         self.flow_direction = flow_direction
         self.flow_viz = None  # Placeholder for flow visualization element
@@ -444,6 +448,7 @@ class FlowMeter(Meter):
             update_func=update_func,
             update_interval=update_interval,
             precision=precision,
+            theme_color=theme_color,
         )
 
     def display(self) -> None:
@@ -661,6 +666,7 @@ class PressureGauge(Meter):
         ] = None,
         update_interval: float = 1.0,
         precision: int = 2,
+        theme_color: str = "blue",
     ) -> None:
         self.gauge_element = None  # Placeholder for gauge element
         super().__init__(
@@ -678,6 +684,7 @@ class PressureGauge(Meter):
             update_func=update_func,
             update_interval=update_interval,
             precision=precision,
+            theme_color=theme_color,
         )
 
     def display(self):
@@ -814,6 +821,7 @@ class TemperatureGauge(Meter):
         ] = None,
         update_interval: float = 1.0,
         precision: int = 1,
+        theme_color: str = "blue",
     ):
         self.thermo_element = None
         super().__init__(
@@ -831,6 +839,7 @@ class TemperatureGauge(Meter):
             update_func=update_func,
             update_interval=update_interval,
             precision=precision,
+            theme_color=theme_color,
         )
 
     def display(self):
@@ -969,6 +978,7 @@ class Regulator:
         alarm_low: typing.Optional[float] = None,
         precision: int = 3,
         alert_errors: bool = True,
+        theme_color: str = "blue",
     ) -> None:
         """
         Initialize the regulator.
@@ -998,6 +1008,7 @@ class Regulator:
         self.setter_func = setter_func
         self.alarm_high = alarm_high
         self.alarm_low = alarm_low
+        self.theme_color = theme_color
         self.precision = int(precision)
 
         # UI elements
@@ -1140,7 +1151,7 @@ class Regulator:
         # Slider with enhanced styling
         self.slider_element = (
             ui.slider(min=self.min, max=self.max, value=value, step=self.step)
-            .props("label-always color=primary")
+            .props(f"label-always color={self.theme_color}")
             .classes("w-full mb-1")
             .style("""
                 margin: 4px 0;
@@ -1375,7 +1386,13 @@ class Pipe:
         self.name = name or f"Pipe-{id(self)}"
         self.direction = PipeDirection(direction)
         self.length = length
+        if self.length.magnitude <= 0:
+            raise ValueError("Pipe length must be greater than zero.")
+
         self.internal_diameter = internal_diameter
+        if self.internal_diameter.magnitude <= 0:
+            raise ValueError("Pipe internal diameter must be greater than zero.")
+
         self.upstream_pressure = upstream_pressure
         self.downstream_pressure = downstream_pressure
         self.material = material
@@ -2292,6 +2309,17 @@ class Pipeline:
             )
 
         self._upstream_pressure = pressure
+        if self._pipes:
+            try:
+                self._pipes[0].set_upstream_pressure(pressure, check=False, sync=False)
+            except Exception as e:
+                if self.alert_errors:
+                    show_alert(
+                        f"Failed to set upstream pressure in first pipe - {self.name!r}: {e}",
+                        severity="error",
+                    )
+                raise
+
         if sync:
             self.sync()
         return self
@@ -2322,6 +2350,18 @@ class Pipeline:
             )
 
         self._downstream_pressure = pressure
+        if self._pipes:
+            try:
+                self._pipes[-1].set_downstream_pressure(
+                    pressure, check=False, sync=False
+                )
+            except Exception as e:
+                if self.alert_errors:
+                    show_alert(
+                        f"Failed to set downstream pressure in last pipe - {self.name!r}: {e}",
+                        severity="error",
+                    )
+                raise
         if sync:
             self.sync()
         return self
@@ -2680,7 +2720,16 @@ class Pipeline:
 
         :return: self for method chaining
         """
-        if self.fluid is None or len(self._pipes) == 0:
+        if (
+            self.fluid is None
+            or len(self._pipes) == 0
+            or self.upstream_pressure.magnitude <= 0
+            or self.downstream_pressure.magnitude <= 0
+        ):
+            logger.warning(
+                "Cannot sync pipeline %r: Ensure fluid is set, at least one pipe exists, and both upstream and downstream pressures are positive.",
+                self.name,
+            )
             return self
 
         # If only one pipe, just sync that pipe directly

@@ -124,11 +124,17 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         """Create meters for the upstream station."""
         cfg = self.config
         pipeline = manager.get_pipeline()
+        unit_system = manager.config.get_unit_system()
+        theme_color = manager.config.state.global_.theme_color
+        pressure_unit = unit_system["pressure"]
+        temperature_unit = unit_system["temperature"]
+        flow_unit = unit_system["flow_rate"]
+
         pressure_gauge = PressureGauge(
-            value=pipeline.upstream_pressure.to(cfg.pressure_unit).magnitude,
+            value=pipeline.upstream_pressure.to(pressure_unit.unit).magnitude,
             min_value=cfg.pressure_guage.min_value,
             max_value=cfg.pressure_guage.max_value,
-            units=cfg.pressure_guage.units,
+            units=pressure_unit.display,
             label=cfg.pressure_guage.label,
             width=cfg.pressure_guage.width,
             height=cfg.pressure_guage.height,
@@ -138,17 +144,18 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             animation_speed=cfg.pressure_guage.animation_speed,
             animation_interval=cfg.pressure_guage.animation_interval,
             update_func=lambda: pipeline.upstream_pressure.to(
-                cfg.pressure_unit
+                pressure_unit.unit
             ).magnitude,
             update_interval=cfg.pressure_guage.update_interval,
+            theme_color=theme_color,
         )
         temperature_gauge = TemperatureGauge(
-            value=pipeline.fluid.temperature.to(cfg.temperature_unit).magnitude
+            value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
             if pipeline.fluid
             else 0,
             min_value=cfg.temperature_guage.min_value,
             max_value=cfg.temperature_guage.max_value,
-            units=cfg.temperature_guage.units,
+            units=temperature_unit.display,
             label=cfg.temperature_guage.label,
             width=cfg.temperature_guage.width,
             height=cfg.temperature_guage.height,
@@ -158,20 +165,21 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             animation_speed=cfg.temperature_guage.animation_speed,
             animation_interval=cfg.temperature_guage.animation_interval,
             update_func=lambda: pipeline.fluid.temperature.to(
-                cfg.temperature_unit
+                temperature_unit.unit
             ).magnitude
             if pipeline.fluid
             else 0,
             update_interval=cfg.temperature_guage.update_interval,
+            theme_color=theme_color,
         )
         flow_meter = FlowMeter(
-            value=pipeline.inlet_flow_rate.to(cfg.flow_unit).magnitude,
+            value=pipeline.inlet_flow_rate.to(flow_unit.unit).magnitude,
             min_value=cfg.flow_meter.min_value,
             max_value=max(
                 cfg.flow_meter.max_value,
-                pipeline.max_flow_rate.to(cfg.flow_unit).magnitude,
+                pipeline.max_flow_rate.to(flow_unit.unit).magnitude,
             ),
-            units=cfg.flow_meter.units,
+            units=flow_unit.display,
             label=cfg.flow_meter.label,
             width=cfg.flow_meter.width,
             height=cfg.flow_meter.height,
@@ -183,8 +191,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             flow_direction=str(pipeline.pipes[0].direction)
             if pipeline.pipes
             else "east",  # type: ignore
-            update_func=lambda: pipeline.inlet_flow_rate.to(cfg.flow_unit).magnitude,
+            update_func=lambda: pipeline.inlet_flow_rate.to(flow_unit.unit).magnitude,
             update_interval=cfg.flow_meter.update_interval,
+            theme_color=theme_color,
         )
         return [pressure_gauge, temperature_gauge, flow_meter]
 
@@ -194,25 +203,29 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         """Create regulators for the upstream station."""
         cfg = self.config
         pipeline = manager.get_pipeline()
+        unit_system = manager.config.get_unit_system()
+        theme_color = manager.config.state.global_.theme_color
+        pressure_unit = unit_system["pressure"]
+        temperature_unit = unit_system["temperature"]
 
         def set_pressure(value: float):
             pipeline.set_upstream_pressure(
-                Quantity(value, cfg.pressure_unit), sync=True
+                Quantity(value, pressure_unit.unit), sync=True
             ).update_viz()
             manager.sync()
 
         def set_temperature(value: float):
             pipeline.set_upstream_temperature(
-                Quantity(value, cfg.temperature_unit)
+                Quantity(value, temperature_unit.unit)
             ).update_viz()
             manager.sync()
 
         pressure_regulator = Regulator(
-            value=pipeline.upstream_pressure.to(cfg.pressure_unit).magnitude,
+            value=pipeline.upstream_pressure.to(pressure_unit.unit).magnitude,
             min_value=cfg.pressure_regulator.min_value,
             max_value=cfg.pressure_regulator.max_value,
             step=cfg.pressure_regulator.step,
-            units=cfg.pressure_regulator.units,
+            units=pressure_unit.display,
             label=cfg.pressure_regulator.label,
             width=cfg.pressure_regulator.width,
             height=cfg.pressure_regulator.height,
@@ -221,15 +234,16 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             alarm_high=cfg.pressure_regulator.alarm_high,
             alarm_low=cfg.pressure_regulator.alarm_low,
             alert_errors=cfg.pressure_regulator.alert_errors,
+            theme_color=theme_color,
         )
         temperature_regulator = Regulator(
-            value=pipeline.fluid.temperature.to(cfg.temperature_unit).magnitude
+            value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
             if pipeline.fluid
             else 0,
             min_value=cfg.temperature_regulator.min_value,
             max_value=cfg.temperature_regulator.max_value,
             step=cfg.temperature_regulator.step,
-            units=cfg.temperature_regulator.units,
+            units=temperature_unit.display,
             label=cfg.temperature_regulator.label,
             width=cfg.temperature_regulator.width,
             height=cfg.temperature_regulator.height,
@@ -238,6 +252,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             alarm_high=cfg.temperature_regulator.alarm_high,
             alarm_low=cfg.temperature_regulator.alarm_low,
             alert_errors=cfg.temperature_regulator.alert_errors,
+            theme_color=theme_color,
         )
         return [pressure_regulator, temperature_regulator]
 
@@ -278,11 +293,16 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         """Create meters for the downstream station using configured parameters."""
         cfg = self.config
         pipeline = manager.get_pipeline()
+        unit_system = manager.config.get_unit_system()
+        theme_color = manager.config.state.global_.theme_color
+        pressure_unit = unit_system["pressure"]
+        temperature_unit = unit_system["temperature"]
+        flow_unit = unit_system["flow_rate"]
         pressure_gauge = PressureGauge(
-            value=pipeline.downstream_pressure.to(cfg.pressure_unit).magnitude,
+            value=pipeline.downstream_pressure.to(pressure_unit.unit).magnitude,
             min_value=cfg.pressure_guage.min_value,
             max_value=cfg.pressure_guage.max_value,
-            units=cfg.pressure_guage.units,
+            units=pressure_unit.display,
             label=cfg.pressure_guage.label,
             width=cfg.pressure_guage.width,
             height=cfg.pressure_guage.height,
@@ -292,17 +312,18 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             animation_speed=cfg.pressure_guage.animation_speed,
             animation_interval=cfg.pressure_guage.animation_interval,
             update_func=lambda: pipeline.downstream_pressure.to(
-                cfg.pressure_unit
+                pressure_unit.unit
             ).magnitude,
             update_interval=cfg.pressure_guage.update_interval,
+            theme_color=theme_color,
         )
         temperature_gauge = TemperatureGauge(
-            value=pipeline.fluid.temperature.to(cfg.temperature_unit).magnitude
+            value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
             if pipeline.fluid
             else 0,
             min_value=cfg.temperature_guage.min_value,
             max_value=cfg.temperature_guage.max_value,
-            units=cfg.temperature_guage.units,
+            units=temperature_unit.display,
             label=cfg.temperature_guage.label,
             width=cfg.temperature_guage.width,
             height=cfg.temperature_guage.height,
@@ -312,20 +333,21 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             animation_speed=cfg.temperature_guage.animation_speed,
             animation_interval=cfg.temperature_guage.animation_interval,
             update_func=lambda: pipeline.fluid.temperature.to(
-                cfg.temperature_unit
+                temperature_unit.unit
             ).magnitude
             if pipeline.fluid
             else 0,
             update_interval=cfg.temperature_guage.update_interval,
+            theme_color=theme_color,
         )
         flow_meter = FlowMeter(
-            value=pipeline.outlet_flow_rate.to(cfg.flow_unit).magnitude,
+            value=pipeline.outlet_flow_rate.to(flow_unit.unit).magnitude,
             min_value=cfg.flow_meter.min_value,
             max_value=max(
                 cfg.flow_meter.max_value,
-                pipeline.max_flow_rate.to(cfg.flow_unit).magnitude,
+                pipeline.max_flow_rate.to(flow_unit.unit).magnitude,
             ),
-            units=cfg.flow_meter.units,
+            units=flow_unit.display,
             label=cfg.flow_meter.label,
             width=cfg.flow_meter.width,
             height=cfg.flow_meter.height,
@@ -337,8 +359,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             flow_direction=str(pipeline.pipes[-1].direction)
             if pipeline.pipes
             else "east",  # type: ignore
-            update_func=lambda: pipeline.outlet_flow_rate.to(cfg.flow_unit).magnitude,
+            update_func=lambda: pipeline.outlet_flow_rate.to(flow_unit.unit).magnitude,
             update_interval=cfg.flow_meter.update_interval,
+            theme_color=theme_color,
         )
         return [pressure_gauge, temperature_gauge, flow_meter]
 
@@ -348,18 +371,21 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         """Downstream stations typically just have pressure regulators."""
         cfg = self.config
         pipeline = manager.get_pipeline()
+        unit_system = manager.config.get_unit_system()
+        theme_color = manager.config.state.global_.theme_color
+        pressure_unit = unit_system["pressure"]
 
         def set_pressure(value: float):
             pipeline.set_downstream_pressure(
-                Quantity(value, cfg.pressure_unit), sync=True
+                Quantity(value, pressure_unit.unit), sync=True
             ).update_viz()
             manager.sync()
 
         pressure_regulator = Regulator(
-            value=pipeline.downstream_pressure.to(cfg.pressure_unit).magnitude,
+            value=pipeline.downstream_pressure.to(pressure_unit.unit).magnitude,
             min_value=cfg.pressure_regulator.min_value,
             max_value=cfg.pressure_regulator.max_value,
-            units=cfg.pressure_regulator.units,
+            units=pressure_unit.display,
             label=cfg.pressure_regulator.label,
             width=cfg.pressure_regulator.width,
             height=cfg.pressure_regulator.height,
@@ -367,6 +393,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             alarm_high=cfg.pressure_regulator.alarm_high,
             alarm_low=cfg.pressure_regulator.alarm_low,
             setter_func=set_pressure,
+            theme_color=theme_color,
         )
         return [pressure_regulator]
 
@@ -392,6 +419,7 @@ class PipelineManager(typing.Generic[PipelineT]):
     def __init__(
         self,
         pipeline: PipelineT,
+        config: ConfigurationManager,
         validators: typing.Optional[typing.Sequence[PipeConfigValidator]] = None,
         flow_station_factories: typing.Optional[
             typing.Sequence[FlowStationFactory]
@@ -401,6 +429,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         Initialize the pipeline manager.
 
         :param pipeline: The Pipeline instance to manage.
+        :param config: Configuration manager for global and pipeline settings.
         :param validator: Function to validate the pipeline configurations.
         """
         self._pipeline = pipeline
@@ -410,7 +439,19 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._flow_station_factories = flow_station_factories or []
         self._observers: typing.List[PipelineObserver] = []
         self._errors: typing.List[str] = []
+        self._config = config
+        self._config.add_observer(self.on_config_change)
         self.sync()
+
+    @property
+    def config(self) -> ConfigurationManager:
+        """The configuration manager."""
+        return self._config
+
+    @property
+    def config_state(self) -> ConfigurationState:
+        """The current configuration state."""
+        return self._config.state
 
     def sync(self):
         """
@@ -419,6 +460,11 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         Called internally after any modification to the pipeline.
         """
+        logger.info(
+            f"Synchronizing pipeline manager state with pipeline {self._pipeline.name}"
+        )
+        old_pipe_configs = self._pipe_configs
+        old_fluid_config = self._fluid_config
         self._pipe_configs = []
 
         if self._pipeline.fluid:
@@ -430,7 +476,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 molecular_weight=self._pipeline.fluid.molecular_weight,  # type: ignore
             )
 
-        for i, pipe in enumerate(self._pipeline):
+        for i, pipe in enumerate(self._pipeline.pipes):
             pipe_config = PipeConfig(
                 name=pipe.name or f"Pipe-{i + 1}",
                 length=pipe.length,  # type: ignore
@@ -447,6 +493,25 @@ class PipelineManager(typing.Generic[PipelineT]):
                 flow_type=pipe.flow_type,  # type: ignore
             )
             self._pipe_configs.append(pipe_config)
+
+        # Notify observers if there are changes
+        if (
+            old_pipe_configs != self._pipe_configs
+            or old_fluid_config != self._fluid_config
+        ):
+            self.notify_observers(
+                PipelineEvent.SYNCED,
+                {
+                    "old_pipe_configs": old_pipe_configs,
+                    "new_pipe_configs": self._pipe_configs,
+                    "old_fluid_config": old_fluid_config,
+                    "new_fluid_config": self._fluid_config,
+                },
+            )
+
+        logger.info(
+            f"Synchronized {len(self._pipe_configs)} pipes and fluid '{self._fluid_config.name}'"
+        )
         return self
 
     def add_observer(self, observer: PipelineObserver):
@@ -679,29 +744,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     def __init__(
         self,
         manager: PipelineManager[PipelineT],
-        config: ConfigurationManager,
-        theme_color: str = "blue",
-        unit_system: typing.Union[
-            typing.Literal["imperial", "si"], UnitSystem[QuantityUnitT]
-        ] = "imperial",
     ) -> None:
-        self.manager = manager
-        self.manager.add_observer(self.on_pipeline_event)
-        self.theme_color = theme_color
-        if isinstance(unit_system, str):
-            self.unit_system = IMPERIAL if unit_system == "imperial" else SI
-        else:
-            self.unit_system = unit_system
+        """
+        Initialize the pipeline manager UI.
 
-        self.config = config
-        self.config_ui = ConfigurationUI(self.config, theme_color)
-        self.config.add_observer(self.on_config_change)
+        :param manager: The PipelineManager instance to interface with.
+        :param theme_color: The primary theme color for UI elements.
+        """
+        self.manager = manager
+        self.config_ui = ConfigurationUI(manager.config)
+        self.manager.add_observer(self.on_pipeline_event)
+        self.manager.config.add_observer(self.on_config_change)
 
         # UI components
         self.add_pipe_button = None
         self.config_menu_button = None
         self.main_container = None
-        self.unit_controls_container = None
         self.pipes_container = None
         self.validation_container = None
         self.pipeline_preview = None
@@ -714,6 +772,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.selected_pipe_index: typing.Optional[int] = None
         self.current_pipeline: typing.Optional[Pipeline] = None
         self.current_flow_stations: typing.Optional[typing.List[FlowStation]] = None
+
+    # For easy access to configuration properties
+    @property
+    def theme_color(self) -> str:
+        """Get the current theme color."""
+        return self.manager.config.state.global_.theme_color
+
+    @property
+    def config(self) -> ConfigurationManager:
+        """Get the configuration manager."""
+        return self.manager.config
+
+    @property
+    def unit_system(self) -> UnitSystem:
+        """Get the current unit system."""
+        return self.manager.config.get_unit_system()
 
     def get_primary_button_classes(self, additional_classes: str = "") -> str:
         """Get primary button classes with theme color."""
@@ -765,32 +839,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Only refresh flow station if validation is now valid
             if self.manager.is_valid():
                 self.refresh_flow_stations()
+        elif event == PipelineEvent.SYNCED:
+            self.refresh_pipes_list()
+            self.refresh_pipeline_preview()
+            self.refresh_properties_panel()
 
     def on_config_change(self, config_state: ConfigurationState):
         """Handle configuration changes and update UI accordingly."""
-        # Update theme color if it changed
-        new_theme_color = config_state.global_.theme_color
-        if new_theme_color != self.theme_color:
-            self.set_theme_color(new_theme_color)
-
-        # Update unit system if it changed
-        unit_system_name = config_state.global_.unit_system_name
-        if unit_system_name == "imperial" and self.unit_system != IMPERIAL:
-            self.unit_system = IMPERIAL
-            logger.info("Unit system updated to Imperial")
-        elif unit_system_name == "si" and self.unit_system != SI:
-            self.unit_system = SI
-            logger.info("Unit system updated to SI")
-        elif unit_system_name not in ["imperial", "si"]:
-            # Handle custom unit system
-            custom_systems = config_state.global_.custom_unit_systems
-            if unit_system_name in custom_systems:
-                # TODO: Create custom unit system from configuration
-                # This would need unit system creation logic based on custom_systems[unit_system_name]
-                logger.info(f"Custom unit system '{unit_system_name}' selected")
-
         # Refresh UI components that depend on configuration
-        self.refresh_unit_system_controls()
         self.refresh_properties_panel()
         self.refresh_pipes_list()
         self.refresh_flow_stations()
@@ -806,13 +862,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             logger.error(
                 f"Error during Pipeline Manager UI cleanup: {e}", exc_info=True
             )
-
-    def set_theme_color(self, color: str):
-        """Set a new theme color and update UI elements."""
-        self.theme_color = color
-        self.config_ui.set_theme_color(color)
-        self.update_button_themes()
-        logger.info(f"Theme color updated to: {color}")
 
     def update_button_themes(self):
         """Update all button colors to match current theme."""
@@ -871,9 +920,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                 # Configuration menu button
                 self.show_config_menu_button()
-
-            # Unit system controls
-            self.unit_controls_container = self.show_unit_system_controls()
 
             # Top panel - Pipeline preview
             self.show_preview_panel(pipeline_label=pipeline_label)
@@ -1222,7 +1268,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     diameter_unit = self.unit_system["diameter"]
 
                     # Use configuration defaults if available, otherwise use unit system defaults
-                    config_state = self.config.get_config()
+                    config_state = self.config.state
                     pipe_config = config_state.pipeline.pipe
 
                     length_default = pipe_config.length.to(length_unit.unit).magnitude
@@ -1745,364 +1791,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Clear pipe selection and return to fluid properties."""
         self.selected_pipe_index = None
         self.refresh_properties_panel()
-
-    def show_unit_system_controls(self):
-        """Create unit system selection controls."""
-        unit_controls = ui.row().classes("gap-2 items-center mb-4 flex-wrap")
-
-        with unit_controls:
-            ui.label("Unit System:").classes("text-sm font-medium")
-
-            def update_unit_system(system_name: str, custom_system=None):
-                """Update the current unit system."""
-                if custom_system:
-                    self.unit_system = custom_system
-                elif system_name == "imperial":
-                    self.unit_system = IMPERIAL
-                elif system_name == "si":
-                    self.unit_system = SI
-
-                # Refresh all UI components to reflect new units
-                self.refresh_properties_panel()
-                self.refresh_pipes_list()
-
-                # Refresh unit system controls to update active state
-                self.refresh_unit_system_controls()
-
-                system_display_name = (
-                    system_name.upper() if not custom_system else "Custom"
-                )
-                ui.notify(f"Switched to {system_display_name} unit system", type="info")
-
-            # Imperial button - active styling with opacity
-            imperial_is_active = self.unit_system == IMPERIAL
-            imperial_button = ui.button(
-                "Imperial",
-                on_click=lambda: update_unit_system("imperial"),
-                color=self.theme_color,
-            ).classes(
-                self.get_primary_button_classes("text-sm px-3 py-1")
-                if imperial_is_active
-                else self.get_secondary_button_classes(
-                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                )
-            )
-
-            # Add active indicator styling
-            if imperial_is_active:
-                imperial_button.classes("ring-2 ring-gray-300 shadow-lg")
-
-            # SI button - active styling with opacity
-            si_is_active = self.unit_system == SI
-            si_button = ui.button(
-                "SI", on_click=lambda: update_unit_system("si"), color=self.theme_color
-            ).classes(
-                self.get_primary_button_classes("text-sm px-3 py-1")
-                if si_is_active
-                else self.get_secondary_button_classes(
-                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                )
-            )
-
-            # Add active indicator styling
-            if si_is_active:
-                si_button.classes("ring-2 ring-gray-300 shadow-lg")
-
-            # Custom button - check if current system is neither Imperial nor SI
-            custom_is_active = self.unit_system not in [IMPERIAL, SI]
-            custom_button = ui.button(
-                "Custom",
-                on_click=self.show_custom_unit_system_dialog,
-                color=self.theme_color,
-            ).classes(
-                self.get_primary_button_classes("text-sm px-3 py-1")
-                if custom_is_active
-                else self.get_accent_button_classes(
-                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                )
-            )
-
-            # Add active indicator styling for custom
-            if custom_is_active:
-                custom_button.classes("ring-2 ring-green-300 shadow-lg")
-
-        # Store reference for refreshing
-        self.unit_controls_container = unit_controls
-        return unit_controls
-
-    def refresh_unit_system_controls(self):
-        """Refresh the unit system controls to update active state."""
-        if self.unit_controls_container is None:
-            return
-
-        self.unit_controls_container.clear()
-        with self.unit_controls_container:
-            # Recreate the controls without calling the full method to avoid recursion
-            ui.label("Unit System:").classes("text-sm font-medium")
-
-            def update_unit_system(system_name: str, custom_system=None):
-                """Update the current unit system."""
-                if custom_system:
-                    self.unit_system = custom_system
-                elif system_name == "imperial":
-                    self.unit_system = IMPERIAL
-                elif system_name == "si":
-                    self.unit_system = SI
-
-                # Refresh all UI components to reflect new units
-                self.refresh_properties_panel()
-                self.refresh_pipes_list()
-
-                # Refresh unit system controls to update active state
-                self.refresh_unit_system_controls()
-
-                system_display_name = (
-                    system_name.upper() if not custom_system else "Custom"
-                )
-                ui.notify(f"Switched to {system_display_name} unit system", type="info")
-
-            # Imperial button - active styling with opacity
-            imperial_is_active = self.unit_system == IMPERIAL
-            imperial_button = ui.button(
-                "Imperial",
-                on_click=lambda: update_unit_system("imperial"),
-                color=self.theme_color,
-            ).classes(
-                self.get_primary_button_classes("text-sm px-3 py-1")
-                if imperial_is_active
-                else self.get_secondary_button_classes(
-                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                )
-            )
-
-            if imperial_is_active:
-                imperial_button.classes("ring-2 ring-gray-300 shadow-lg")
-
-            # SI button - active styling with opacity
-            si_is_active = self.unit_system == SI
-            si_button = ui.button(
-                "SI",
-                on_click=lambda: update_unit_system("si"),
-                color=self.theme_color,
-            ).classes(
-                self.get_primary_button_classes("text-sm px-3 py-1")
-                if si_is_active
-                else self.get_secondary_button_classes(
-                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                )
-            )
-
-            if si_is_active:
-                si_button.classes("ring-2 ring-gray-300 shadow-lg")
-
-            # Custom button
-            custom_is_active = self.unit_system not in [IMPERIAL, SI]
-            custom_button = ui.button(
-                "Custom",
-                on_click=self.show_custom_unit_system_dialog,
-                color=self.theme_color,
-            ).classes(
-                self.get_primary_button_classes("text-sm px-3 py-1")
-                if custom_is_active
-                else self.get_accent_button_classes(
-                    "text-sm px-3 py-1 opacity-60 hover:opacity-100"
-                )
-            )
-
-            if custom_is_active:
-                custom_button.classes("ring-2 ring-green-300 shadow-lg")
-
-    def show_custom_unit_system_dialog(self):
-        """Show dialog to create a custom unit system."""
-        with (
-            ui.dialog() as dialog,
-            ui.card().classes("w-full max-w-2xl mx-2 p-4"),
-        ):
-            ui.label("Create Custom Unit System").classes("text-xl font-semibold mb-4")
-
-            # Form for custom unit system
-            form_container = ui.column().classes("w-full gap-4")
-
-            with form_container:
-                ui.label("Configure units for different quantities:").classes(
-                    "text-sm text-gray-600 mb-2"
-                )
-
-                # Preset systems for quick selection
-                ui.label("Quick Presets:").classes("font-medium text-sm mb-2")
-                preset_row = ui.row().classes("w-full gap-2 mb-4 flex-wrap")
-
-                def apply_preset(preset_name):
-                    """Apply a preset unit system configuration."""
-                    presets = {
-                        "oil_gas": {
-                            "length": ("ft", None),
-                            "diameter": ("in", None),
-                            "pressure": ("psi", None),
-                            "temperature": ("°R", 520.0),
-                            "flow_rate": ("bbl/day", None),
-                            "molecular_weight": ("g/mol", 16.04),
-                        },
-                        "metric_industrial": {
-                            "length": ("m", None),
-                            "diameter": ("mm", None),
-                            "pressure": ("kPa", None),
-                            "temperature": ("°C", 25.0),
-                            "flow_rate": ("L/min", None),
-                            "molecular_weight": ("g/mol", 16.04),
-                        },
-                        "laboratory": {
-                            "length": ("cm", None),
-                            "diameter": ("mm", None),
-                            "pressure": ("atm", 1.0),
-                            "temperature": ("K", 298.15),
-                            "flow_rate": ("mL/min", None),
-                            "molecular_weight": ("g/mol", None),
-                        },
-                    }
-
-                    if preset_name in presets:
-                        preset = presets[preset_name]
-                        for qty_key, (unit, default_val) in preset.items():
-                            if qty_key in quantity_inputs:
-                                quantity_inputs[qty_key]["unit"].value = unit
-                                quantity_inputs[qty_key]["default"].value = default_val
-
-                with preset_row:
-                    ui.button(
-                        "Oil & Gas", on_click=lambda: apply_preset("oil_gas")
-                    ).classes(self.get_secondary_button_classes("text-xs px-2 py-1"))
-                    ui.button(
-                        "Metric Industrial",
-                        on_click=lambda: apply_preset("metric_industrial"),
-                    ).classes(self.get_secondary_button_classes("text-xs px-2 py-1"))
-                    ui.button(
-                        "Laboratory", on_click=lambda: apply_preset("laboratory")
-                    ).classes(self.get_secondary_button_classes("text-xs px-2 py-1"))
-
-                # Create inputs for common quantities
-                quantity_inputs = {}
-                quantities = [
-                    ("length", "Length", ["ft", "m", "cm", "mm", "in"]),
-                    ("diameter", "Diameter", ["in", "mm", "cm", "ft"]),
-                    ("pressure", "Pressure", ["psi", "Pa", "kPa", "bar", "atm"]),
-                    ("temperature", "Temperature", ["°F", "°C", "K", "°R"]),
-                    (
-                        "flow_rate",
-                        "Flow Rate",
-                        [
-                            "ft³/s",
-                            "m³/s",
-                            "gpm",
-                            "L/min",
-                            "bbl/day",
-                            "mL/min",
-                            "scf/day",
-                            "Mscf/day",
-                            "MMscf/day",
-                            "m³/day",
-                            "m³/hr",
-                        ],
-                    ),
-                    ("molecular_weight", "Molecular Weight", ["g/mol", "kg/mol"]),
-                ]
-
-                # Create a responsive grid for quantity inputs
-                grid = ui.grid(columns=2).classes("w-full gap-4")
-
-                with grid:
-                    for qty_key, qty_label, unit_options in quantities:
-                        with ui.column().classes("gap-2"):
-                            ui.label(qty_label).classes("font-medium text-sm")
-
-                            # Unit selection
-                            unit_select = ui.select(
-                                options=unit_options,
-                                value=unit_options[0],
-                                label="Unit",
-                            ).classes("w-full")
-
-                            # Default value (optional)
-                            default_input = ui.number(
-                                "Default Value (optional)", value=None, step=0.1
-                            ).classes("w-full")
-
-                            quantity_inputs[qty_key] = {
-                                "unit": unit_select,
-                                "default": default_input,
-                            }
-
-                # System name
-                system_name_input = ui.input(
-                    "System Name (optional)", placeholder="e.g., Oil & Gas Units"
-                ).classes("w-full mt-4")
-
-                # Buttons
-                button_row = ui.row().classes("w-full justify-end gap-2 mt-6")
-                with button_row:
-                    ui.button("Cancel", on_click=dialog.close).classes(
-                        self.get_secondary_button_classes("px-4 py-2")
-                    )
-
-                    def create_custom_system():
-                        """Create and apply the custom unit system."""
-                        try:
-                            custom_system = UnitSystem()
-
-                            # Convert unit display strings to actual units for Pint
-                            unit_mapping = {
-                                "°F": "degF",
-                                "°C": "degC",
-                                "K": "kelvin",
-                                "°R": "degR",
-                                "ft³/s": "ft^3/s",
-                                "m³/s": "m^3/s",
-                                "gpm": "gallon/minute",
-                                "L/min": "liter/minute",
-                                "bbl/day": "barrel/day",
-                                "mL/min": "milliliter/minute",
-                            }
-
-                            for qty_key, inputs in quantity_inputs.items():
-                                unit_display = inputs["unit"].value
-                                unit_str = unit_mapping.get(unit_display, unit_display)
-                                default_val = inputs["default"].value
-
-                                # Ensure unit_str is not None
-                                if unit_str is None:
-                                    unit_str = "dimensionless"
-
-                                custom_system[qty_key] = QuantityUnit(
-                                    unit=unit_str,
-                                    display=unit_display,
-                                    default=default_val,
-                                )
-
-                            # Apply the custom system
-                            self.unit_system = custom_system
-
-                            # Refresh UI
-                            self.refresh_properties_panel()
-                            self.refresh_pipes_list()
-                            self.refresh_unit_system_controls()
-
-                            system_name = system_name_input.value or "Custom"
-                            ui.notify(
-                                f"Applied {system_name} unit system", type="positive"
-                            )
-                            dialog.close()
-
-                        except Exception as e:
-                            logger.error(f"Error creating custom unit system: {e}")
-                            ui.notify(f"Error: {str(e)}", type="negative")
-
-                    ui.button(
-                        "Apply Custom System",
-                        on_click=create_custom_system,
-                        color=self.theme_color,
-                    ).classes(self.get_primary_button_classes("px-4 py-2"))
-
-        dialog.open()
 
     def __del__(self):
         """Cleanup when the UI is destroyed."""

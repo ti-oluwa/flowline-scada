@@ -54,11 +54,15 @@ class UnitSystem(defaultdict[str, QuantityUnitT]):
 
     def __init__(
         self,
-        map: typing.Optional[typing.Mapping[str, QuantityUnitT]] = None,
+        name: str,
+        __map: typing.Optional[typing.Mapping[str, QuantityUnitT]] = None,
         /,
         *,
         default_factory: typing.Optional[typing.Callable[[], QuantityUnitT]] = None,
+        **kwargs: typing.Any,
     ):
+        """Initialize UnitSystem with optional name and mapping."""
+        self.name = name
         if default_factory is None:
 
             def _default_factory() -> QuantityUnitT:
@@ -67,14 +71,23 @@ class UnitSystem(defaultdict[str, QuantityUnitT]):
                 )
 
             default_factory = _default_factory
-        super().__init__(default_factory, dict(map or {}))
+
+        map_ = dict(__map or {}, **kwargs)
+        super().__init__(default_factory, map_)
 
     def __missing__(self, key: str) -> QuantityUnitT:
         """Return default QuantityUnit for missing keys."""
         return self.default_factory()  # type: ignore
 
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}({self.name})"
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(name={self.name}, units={dict(self)})"
+
 
 IMPERIAL = UnitSystem(
+    "imperial",
     {
         "length": QuantityUnit(unit="ft", display="ft", default=None),
         "diameter": QuantityUnit(unit="inch", display="in", default=None),
@@ -93,10 +106,11 @@ IMPERIAL = UnitSystem(
         "velocity": QuantityUnit(unit="ft/s", display="ft/s", default=None),
         "density": QuantityUnit(unit="lb/ft^3", display="lb/ft³", default=None),
         "viscosity": QuantityUnit(unit="cP", display="cP", default=None),
-    }
+    },
 )
 
 SI = UnitSystem(
+    "si",
     {
         "length": QuantityUnit(unit="m", display="m", default=None),
         "diameter": QuantityUnit(unit="mm", display="mm", default=None),
@@ -115,5 +129,28 @@ SI = UnitSystem(
         "velocity": QuantityUnit(unit="m/s", display="m/s", default=None),
         "density": QuantityUnit(unit="kg/m^3", display="kg/m³", default=None),
         "viscosity": QuantityUnit(unit="Pa*s", display="Pa⋅s", default=None),
-    }
+    },
+)
+
+OIL_FIELD = UnitSystem(
+    "oil_field",
+    {
+        "length": QuantityUnit(unit="ft", display="ft", default=None),
+        "diameter": QuantityUnit(unit="inch", display="in", default=None),
+        "pressure": QuantityUnit(unit="psi", display="psi", default=None),
+        "temperature": QuantityUnit(
+            unit="degR", display="°R", default=520.0
+        ),  # Room temperature
+        "flow_rate": QuantityUnit(unit="Mscf/day", display="Mscf/day", default=None),
+        "flow_volume": QuantityUnit(unit="scf", display="scf", default=None),
+        "molecular_weight": QuantityUnit(
+            unit="g/mol", display="g/mol", default=16.04
+        ),  # Methane MW
+        "roughness": QuantityUnit(unit="inch", display="in", default=None),
+        "elevation": QuantityUnit(unit="ft", display="ft", default=0.0),  # Sea level
+        "area": QuantityUnit(unit="inch^2", display="in²", default=None),
+        "velocity": QuantityUnit(unit="ft/s", display="ft/s", default=None),
+        "density": QuantityUnit(unit="lb/ft^3", display="lb/ft³", default=None),
+        "viscosity": QuantityUnit(unit="cP", display="cP", default=None),
+    },
 )

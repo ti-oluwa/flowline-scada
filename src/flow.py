@@ -962,6 +962,13 @@ def determine_pipe_flow_equation(
     :param fluid_phase: Phase of the fluid, either "liquid" or "gas".
     :return: Selected flow equation from `FlowEquation` enum.
     """
+    if upstream_pressure.magnitude <= 0:
+        return (
+            FlowEquation.DARCY_WEISBACH
+            if flow_type == FlowType.INCOMPRESSIBLE
+            else FlowEquation.WEYMOUTH
+        )  # Avoid division by zero or negative pressures
+
     pressure_drop_ratio = (
         pressure_drop.to("psi").magnitude / upstream_pressure.to("psi").magnitude
     )

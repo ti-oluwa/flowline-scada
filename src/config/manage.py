@@ -38,6 +38,11 @@ class ConfigurationManager:
         self.load_configuration()
         self._observers: typing.List[typing.Callable[[ConfigurationState], None]] = []
 
+    @property
+    def state(self) -> ConfigurationState:
+        """Get a copy of the current configuration state"""
+        return self.get_state()
+
     def add_observer(self, observer: typing.Callable[[ConfigurationState], None]):
         """Add configuration change observer"""
         if observer not in self._observers:
@@ -52,12 +57,12 @@ class ConfigurationManager:
         """Notify all observers of configuration changes"""
         for observer in self._observers:
             try:
-                observer(self.get_config())
+                observer(self.state)
             except Exception as e:
                 logger.error(f"Error notifying config observer: {e}")
 
-    def get_config(self) -> ConfigurationState:
-        """Get current configuration state"""
+    def get_state(self) -> ConfigurationState:
+        """Get a copy of the current configuration state"""
         return copy.deepcopy(self._config_state)
 
     def update_global_config(self, **kwargs: typing.Any):
@@ -121,43 +126,27 @@ class ConfigurationManager:
 
     def get_unit_system(self) -> UnitSystem:
         """Get current unit system"""
-        config = self._config_state.global_
+        global_state = self._config_state.global_
+        unit_system_name = global_state.unit_system_name
+        unit_systems = {
+            **ConfigurationState().global_.unit_systems,
+            **global_state.unit_systems,
+        }
+        return unit_systems.get(unit_system_name, IMPERIAL)
 
-        # Check if it's a custom unit system
-        if config.unit_system_name in config.custom_unit_systems:
-            unit_data = config.custom_unit_systems[config.unit_system_name]
-            unit_system = UnitSystem()
-            for quantity, unit_info in unit_data.items():
-                unit_system[quantity] = QuantityUnit(
-                    unit=unit_info["unit"],
-                    display=unit_info.get("display", unit_info["unit"]),
-                    default=unit_info.get("default"),
-                )
-            return unit_system
-
-        # Return predefined unit systems
-        return IMPERIAL if config.unit_system_name == "imperial" else SI
-
-    def add_custom_unit_system(self, name: str, unit_system: UnitSystem):
+    def add_custom_unit_system(self, unit_system: UnitSystem):
         """Add a custom unit system"""
-        unit_data = {}
-        for quantity, unit_obj in unit_system.items():
-            unit_data[quantity] = {
-                "unit": unit_obj.unit,
-                "display": unit_obj.display,
-                "default": unit_obj.default,
-            }
-
-        self._config_state.global_.custom_unit_systems[name] = unit_data
+        self._config_state.global_.unit_systems[unit_system.name.lower()] = unit_system
         self._config_state.last_updated = datetime.now().isoformat()
         self.save_configuration()
         self.notify_observers()
 
     def get_available_unit_systems(self) -> typing.List[str]:
         """Get list of available unit system names"""
-        systems = ["imperial", "si"]
-        systems.extend(self._config_state.global_.custom_unit_systems.keys())
-        return systems
+        return list(
+            set(self._config_state.global_.unit_systems.keys())
+            | ConfigurationState().global_.unit_systems.keys()
+        )
 
     def get_nested_config(self, path: str) -> typing.Any:
         """Get nested configuration using dot notation (e.g., 'pipeline.fluid.name')"""

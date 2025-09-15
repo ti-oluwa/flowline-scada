@@ -49,17 +49,14 @@ def root(client: Client) -> ui.element:
 
     session_storage = SessionStorage(app, session_key="pipeline-scada")
     file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada")
-    config_manager = ConfigurationManager(
-        session_id, storages=[session_storage, file_storage]
-    )
+    config = ConfigurationManager(session_id, storages=[session_storage, file_storage])
     # Get current configuration
-    config = config_manager.get_config()
-    theme_color = config.global_.theme_color
+    theme_color = config.state.global_.theme_color
 
     # Main layout container
     main_container = (
         ui.column()
-        .classes("w-full h-screen bg-gray-50")
+        .classes("w-full h-auto bg-gray-50")
         .style(
             "max-width: 1440px; min-width: minmax(800px, 100%); margin: auto; scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;"
         )
@@ -75,23 +72,23 @@ def root(client: Client) -> ui.element:
                 "text-2xl font-bold flex-1 sm:text-lg"
             )
 
-        def on_theme_change(config: ConfigurationState) -> None:
+        def on_theme_change(config_state: ConfigurationState) -> None:
             """Handle theme color changes."""
             nonlocal theme_color
 
-            new_theme = config.global_.theme_color
+            new_theme = config_state.global_.theme_color
             header.classes(remove=f"bg-{theme_color}-600")
             header.classes(add=f"bg-{new_theme}-600")
             theme_color = new_theme
             logger.info(f"Theme changed to: {new_theme}")
 
-        config_manager.add_observer(on_theme_change)
+        config.add_observer(on_theme_change)
 
         # Pipeline manager interface
         pipeline_manager_container = ui.column().classes("w-full")
         with pipeline_manager_container:
-            pipeline_config = config.pipeline
-            flow_station_config = config.flow_station
+            pipeline_config = config.state.pipeline
+            flow_station_config = config.state.flow_station
 
             # Use fluid configuration from pipeline.fluid
             fluid_config = pipeline_config.fluid
@@ -117,42 +114,38 @@ def root(client: Client) -> ui.element:
 
             # Build flow station factories
             upstream_factory = UpstreamStationFactory(
-                "Upstream Station", config=flow_station_config
+                name="Upstream Station", config=flow_station_config
             )
             downstream_factory = DownstreamStationFactory(
-                "Downstream Station", config=flow_station_config
+                name="Downstream Station", config=flow_station_config
             )
 
             # Build pipeline manager
             pipeline_manager = PipelineManager(
                 pipeline,
+                config=config,
                 flow_station_factories=[upstream_factory, downstream_factory],
             )
 
             # Get the active unit system
-            unit_system_name = config.global_.unit_system_name
-            logger.info(f"Using unit system: {unit_system_name}")
-            manager_ui = PipelineManagerUI(
-                manager=pipeline_manager,
-                config=config_manager,
-                theme_color=theme_color,
-                unit_system=config_manager.get_unit_system(),
-            )
+            unit_system = config.get_unit_system()
+            logger.info(f"Using unit system: {unit_system!s}")
+            manager_ui = PipelineManagerUI(manager=pipeline_manager)
 
-            config_manager.add_observer(pipeline_manager.on_config_change)
+            config.add_observer(pipeline_manager.on_config_change)
 
-            def upstream_observer(config: ConfigurationState) -> None:
+            def upstream_observer(config_state: ConfigurationState) -> None:
                 """Handle upstream station configuration changes."""
-                upstream_factory.on_config_change(config)
+                upstream_factory.on_config_change(config_state)
                 manager_ui.refresh_flow_stations()
 
-            def downstream_observer(config: ConfigurationState) -> None:
+            def downstream_observer(config_state: ConfigurationState) -> None:
                 """Handle downstream station configuration changes."""
-                downstream_factory.on_config_change(config)
+                downstream_factory.on_config_change(config_state)
                 manager_ui.refresh_flow_stations()
 
-            config_manager.add_observer(upstream_observer)
-            config_manager.add_observer(downstream_observer)
+            config.add_observer(upstream_observer)
+            config.add_observer(downstream_observer)
             manager_ui.show(ui_label="Pipeline Builder", max_width="95%")
 
     return main_container
