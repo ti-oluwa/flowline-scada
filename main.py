@@ -13,7 +13,7 @@ from nicegui import Client, app, ui
 
 from src.config.manage import ConfigurationManager
 from src.types import ConfigurationState, PipelineEvent
-from src.config.storages import JSONFileStorage, BrowserLocalStorage, HybridStorage
+from src.config.storages import JSONFileStorage
 from src.flow import FlowType, Fluid
 from src.ui.components import Pipeline
 from src.ui.manage import (

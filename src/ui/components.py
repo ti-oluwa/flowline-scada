@@ -2394,6 +2394,11 @@ class Pipeline:
         self, temperature: typing.Union[PlainQuantity[float], float]
     ) -> Self:
         """Set the upstream fluid temperature for the pipeline (applied to the first pipe)."""
+        if self.fluid is None:
+            raise ValueError(
+                "Cannot set upstream temperature without defining fluid properties."
+            )
+
         if isinstance(temperature, Quantity):
             temperature_q = temperature.to("degF")
         else:
