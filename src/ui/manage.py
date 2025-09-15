@@ -4,8 +4,6 @@ Pipeline Management UI
 
 import typing
 import logging
-import copy
-from attrs import evolve
 from functools import partial
 from nicegui import ui
 
@@ -23,13 +21,16 @@ from src.ui.components import (
     FlowMeter,
 )
 from src.flow import Fluid
-from src.units import Quantity, QuantityUnit, QuantityUnitT, UnitSystem, IMPERIAL, SI
+from src.units import Quantity, UnitSystem
 from src.types import (
     PipelineEvent,
     PipeConfig,
     FluidConfig,
     FlowStationConfig,
     FlowType,
+    converter,
+    structure_quantity,
+    unstructure_quantity,
 )
 
 logger = logging.getLogger(__name__)
@@ -736,6 +737,104 @@ class PipelineManager(typing.Generic[PipelineT]):
             except Exception as e:
                 logger.error(f"Error building flow station: {e}", exc_info=True)
         return flow_stations
+
+    def get_state(self) -> typing.Dict[str, typing.Any]:
+        """Dump the current state of the pipeline manager for serialization."""
+        return {
+            "pipeline": {
+                "name": self._pipeline.name,
+                "max_flow_rate": unstructure_quantity(self._pipeline.max_flow_rate),
+                "flow_type": self._pipeline._flow_type.value,
+                "scale_factor": self._pipeline.scale_factor,
+                "connector_length": unstructure_quantity(
+                    self._pipeline.connector_length
+                ),
+                "alert_errors": self._pipeline.alert_errors,
+            },
+            "fluid": converter.unstructure(self._fluid_config),
+            "pipes": [converter.unstructure(pc) for pc in self._pipe_configs],
+        }
+
+    @classmethod
+    def from_state(
+        cls,
+        state: typing.Dict[str, typing.Any],
+        config: ConfigurationManager,
+        validators: typing.Optional[typing.Sequence[PipeConfigValidator]] = None,
+        flow_station_factories: typing.Optional[
+            typing.Sequence[FlowStationFactory]
+        ] = None,
+    ) -> "PipelineManager":
+        """Load a pipeline manager from a dumped state."""
+        pipeline_data = state.get("pipeline", {})
+        fluid_data = state.get("fluid", {})
+        pipes_data = state.get("pipes", [])
+
+        # Build fluid
+        fluid_config = converter.structure(fluid_data, FluidConfig)
+        try:
+            fluid = Fluid.from_coolprop(
+                fluid_name=fluid_config.name,
+                phase=fluid_config.phase,
+                temperature=fluid_config.temperature,
+                pressure=fluid_config.pressure,
+                molecular_weight=fluid_config.molecular_weight,
+            )
+        except Exception as e:
+            ui.notify(
+                f"Error building fluid '{fluid_config.name}'. Proceeding with no fluid.",
+                type="warning",
+            )
+            logger.error(f"Error building fluid from config: {e}", exc_info=True)
+            fluid = None
+
+        # Build pipes
+        pipe_configs = [
+            converter.structure(pipe_data, PipeConfig) for pipe_data in pipes_data
+        ]
+        pipes = [
+            Pipe(
+                length=pc.length,
+                internal_diameter=pc.internal_diameter,
+                upstream_pressure=pc.upstream_pressure,
+                downstream_pressure=pc.downstream_pressure,
+                material=pc.material,
+                roughness=pc.roughness,
+                efficiency=pc.efficiency,
+                elevation_difference=pc.elevation_difference,
+                fluid=fluid,
+                direction=pc.direction,
+                name=pc.name,
+                scale_factor=pc.scale_factor,
+                max_flow_rate=pc.max_flow_rate,
+                flow_type=pc.flow_type,
+            )
+            for pc in pipe_configs
+        ]
+
+        # Build pipeline
+        pipeline = Pipeline(
+            pipes=pipes,
+            fluid=fluid,
+            name=pipeline_data.get("name", "Pipeline"),
+            max_flow_rate=structure_quantity(
+                pipeline_data.get("max_flow_rate", {"magnitude": 1.0, "unit": "m^3/s"}),
+                Quantity,
+            ),
+            flow_type=FlowType(pipeline_data.get("flow_type", "incompressible")),
+            scale_factor=pipeline_data.get("scale_factor", 1.0),
+            connector_length=structure_quantity(
+                pipeline_data.get("connector_length", {"magnitude": 0.0, "unit": "m"}),
+                Quantity,
+            ),
+            alert_errors=pipeline_data.get("alert_errors", True),
+        )
+        return cls(
+            pipeline=pipeline,
+            config=config,
+            validators=validators,
+            flow_station_factories=flow_station_factories,
+        )
 
 
 class PipelineManagerUI(typing.Generic[PipelineT]):

@@ -1956,7 +1956,7 @@ class Pipeline:
             self.set_downstream_pressure(downstream_pressure)
 
         for pipe in pipes:
-            self.add_pipe(pipe, update=False)
+            self.add_pipe(pipe, sync=False)
         self.sync()
 
     @property

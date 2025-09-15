@@ -1,5 +1,5 @@
 """
-Configuration Management System with Session Persistence
+Configuration Management System
 """
 
 import orjson
@@ -8,14 +8,14 @@ import logging
 from datetime import datetime
 import copy
 
-from src.units import UnitSystem, IMPERIAL, SI, QuantityUnit
+from src.units import UnitSystem, IMPERIAL
 from src.types import converter, ConfigStorage, ConfigurationState
 
 logger = logging.getLogger(__name__)
 
 
 class ConfigurationManager:
-    """Manages application configuration with session persistence"""
+    """Manages application configuration with optional persistence via storage backends."""
 
     def __init__(
         self,
@@ -29,7 +29,7 @@ class ConfigurationManager:
         :param storages: List of storage backends to use (session storage, file storage, etc.).
         If multiple storages are provided, they will be tried in order for loading/saving.
         It is advisable to use only two backends to avoid complexity. First should be
-        session-based (like `SessionStorage`) and second should be persistent
+        session-based (like `UserSessionStorage`) and second should be persistent
         (like `JSONFileStorage` or `InMemoryStorage`).
         """
         self.id = id
@@ -128,6 +128,7 @@ class ConfigurationManager:
         """Get current unit system"""
         global_state = self._config_state.global_
         unit_system_name = global_state.unit_system_name
+        # Merge default and custom unit systems
         unit_systems = {
             **ConfigurationState().global_.unit_systems,
             **global_state.unit_systems,
@@ -143,6 +144,7 @@ class ConfigurationManager:
 
     def get_available_unit_systems(self) -> typing.List[str]:
         """Get list of available unit system names"""
+        # Merge default and custom unit systems
         return list(
             set(self._config_state.global_.unit_systems.keys())
             | ConfigurationState().global_.unit_systems.keys()

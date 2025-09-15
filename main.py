@@ -5,16 +5,16 @@ Main Entry Point for Pipeline Management System Application.
 import hashlib
 import logging
 import os
+import typing
 from pathlib import Path
 
-from attrs import evolve
 from dotenv import find_dotenv, load_dotenv
 from nicegui import Client, app, ui
 
-from src.config.manage import ConfigurationManager, ConfigurationState
-from src.config.storages import JSONFileStorage, SessionStorage
-from src.flow import FlowType
-from src.flow import Fluid
+from src.config.manage import ConfigurationManager
+from src.types import ConfigurationState, PipelineEvent
+from src.config.storages import JSONFileStorage, UserSessionStorage, BrowserLocalStorage
+from src.flow import FlowType, Fluid
 from src.ui.components import Pipeline
 from src.ui.manage import (
     DownstreamStationFactory,
@@ -47,11 +47,17 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    session_storage = SessionStorage(app, session_key="pipeline-scada")
-    file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada")
-    config = ConfigurationManager(session_id, storages=[session_storage, file_storage])
+    session_storage = UserSessionStorage(app, session_key="pipeline-scada")
+    browser_storage = BrowserLocalStorage(app, storage_key="pipeline-scada")
+    config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
+    config = ConfigurationManager(
+        session_id, storages=[session_storage, browser_storage, config_file_storage]
+    )
+
     # Get current configuration
     theme_color = config.state.global_.theme_color
+    state_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/states")
+    last_state = state_file_storage.read(session_id)
 
     # Main layout container
     main_container = (
@@ -90,28 +96,6 @@ def root(client: Client) -> ui.element:
             pipeline_config = config.state.pipeline
             flow_station_config = config.state.flow_station
 
-            # Use fluid configuration from pipeline.fluid
-            fluid_config = pipeline_config.fluid
-            initial_fluid = Fluid.from_coolprop(
-                fluid_name=fluid_config.name,
-                phase=fluid_config.phase,
-                temperature=fluid_config.temperature,
-                pressure=fluid_config.pressure,
-                molecular_weight=fluid_config.molecular_weight,
-            )
-
-            flow_type = FlowType(pipeline_config.flow_type)
-            pipeline = Pipeline(
-                pipes=[],
-                fluid=initial_fluid,
-                name=pipeline_config.name,
-                max_flow_rate=pipeline_config.max_flow_rate,
-                flow_type=flow_type,
-                scale_factor=pipeline_config.scale_factor,
-                connector_length=pipeline_config.connector_length,
-                alert_errors=pipeline_config.alert_errors,
-            )
-
             # Build flow station factories
             upstream_factory = UpstreamStationFactory(
                 name="Upstream Station", config=flow_station_config
@@ -120,20 +104,74 @@ def root(client: Client) -> ui.element:
                 name="Downstream Station", config=flow_station_config
             )
 
-            # Build pipeline manager
-            pipeline_manager = PipelineManager(
-                pipeline,
-                config=config,
-                flow_station_factories=[upstream_factory, downstream_factory],
-            )
+            if last_state:
+                logger.info(f"Restoring last pipeline state for session {session_id!r}")
+                try:
+                    pipeline_manager = PipelineManager.from_state(
+                        last_state,
+                        config=config,
+                        flow_station_factories=[upstream_factory, downstream_factory],
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to restore last state: {e}", exc_info=True)
+                    last_state = None
+
+            if not last_state:
+                logger.info(f"Creating new pipeline for session {session_id!r}")
+                # Use fluid configuration from pipeline.fluid
+                fluid_config = pipeline_config.fluid
+                initial_fluid = Fluid.from_coolprop(
+                    fluid_name=fluid_config.name,
+                    phase=fluid_config.phase,
+                    temperature=fluid_config.temperature,
+                    pressure=fluid_config.pressure,
+                    molecular_weight=fluid_config.molecular_weight,
+                )
+
+                flow_type = FlowType(pipeline_config.flow_type)
+                pipeline = Pipeline(
+                    pipes=[],
+                    fluid=initial_fluid,
+                    name=pipeline_config.name,
+                    max_flow_rate=pipeline_config.max_flow_rate,
+                    flow_type=flow_type,
+                    scale_factor=pipeline_config.scale_factor,
+                    connector_length=pipeline_config.connector_length,
+                    alert_errors=pipeline_config.alert_errors,
+                )
+                # Build pipeline manager
+                pipeline_manager = PipelineManager(
+                    pipeline,
+                    config=config,
+                    flow_station_factories=[upstream_factory, downstream_factory],
+                )
+
+            def pipeline_state_observer(_: PipelineEvent, __: typing.Any) -> None:
+                """Handle pipeline state changes."""
+                logger.debug(
+                    f"Pipeline state changed, updating storage for session {session_id!r}"
+                )
+                if not pipeline_manager.is_valid():
+                    logger.warning("Pipeline state is invalid, skipping state save")
+                    return
+
+                state = pipeline_manager.get_state()
+                if not state_file_storage.read(session_id):
+                    state_file_storage.create(session_id, state)
+                else:
+                    state_file_storage.update(session_id, state, overwrite=True)
+                logger.debug(
+                    f"Pipeline state storage updated for session {session_id!r}"
+                )
+
+            pipeline_manager.add_observer(pipeline_state_observer)
 
             # Get the active unit system
             unit_system = config.get_unit_system()
             logger.info(f"Using unit system: {unit_system!s}")
             manager_ui = PipelineManagerUI(manager=pipeline_manager)
 
-            config.add_observer(pipeline_manager.on_config_change)
-
+            # Observe configuration changes to update factories and UI
             def upstream_observer(config_state: ConfigurationState) -> None:
                 """Handle upstream station configuration changes."""
                 upstream_factory.on_config_change(config_state)

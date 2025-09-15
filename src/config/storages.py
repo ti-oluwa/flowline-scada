@@ -6,7 +6,7 @@ from nicegui import App
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["InMemoryStorage", "SessionStorage", "JSONFileStorage"]
+__all__ = ["InMemoryStorage", "UserSessionStorage", "JSONFileStorage"]
 
 
 class InMemoryStorage:
@@ -39,7 +39,7 @@ class InMemoryStorage:
             raise KeyError(f"Configuration with id '{id}' does not exist.")
 
 
-class SessionStorage:
+class UserSessionStorage:
     """Session storage backend for configurations using NiceGUI's app storage"""
 
     def __init__(self, app: App, session_key: str = "pipeline-scada"):
@@ -85,6 +85,55 @@ class SessionStorage:
                 raise KeyError(f"Configuration with id '{id}' does not exist.")
         except Exception as e:
             logger.error(f"Failed to delete session storage for id '{id}': {e}")
+            raise
+
+
+class BrowserLocalStorage:
+    """Browser local storage backend for configurations using NiceGUI's app storage"""
+
+    def __init__(self, app: App, storage_key: str = "pipeline-scada"):
+        self.app = app
+        self.storage_key = storage_key
+        if not hasattr(app, "storage"):
+            raise ValueError("App does not support storage backend.")
+        self.app.storage.browser[self.storage_key] = {}
+
+    def read(self, id: str) -> typing.Optional[dict]:
+        try:
+            return self.app.storage.browser[self.storage_key].get(id)
+        except Exception as e:
+            logger.error(f"Failed to read local storage for id '{id}': {e}")
+            return None
+
+    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
+        try:
+            if id not in self.app.storage.browser[self.storage_key]:
+                raise KeyError(f"Configuration with id '{id}' does not exist.")
+            if overwrite:
+                self.app.storage.browser[self.storage_key][id] = data
+            else:
+                self.app.storage.browser[self.storage_key][id].update(data)
+        except Exception as e:
+            logger.error(f"Failed to update local storage for id '{id}': {e}")
+            raise
+
+    def create(self, id: str, data: dict) -> None:
+        try:
+            if id in self.app.storage.browser[self.storage_key]:
+                raise KeyError(f"Configuration with id '{id}' already exists.")
+            self.app.storage.browser[self.storage_key][id] = data
+        except Exception as e:
+            logger.error(f"Failed to create local storage for id '{id}': {e}")
+            raise
+
+    def delete(self, id: str) -> None:
+        try:
+            if id in self.app.storage.browser[self.storage_key]:
+                del self.app.storage.browser[self.storage_key][id]
+            else:
+                raise KeyError(f"Configuration with id '{id}' does not exist.")
+        except Exception as e:
+            logger.error(f"Failed to delete local storage for id '{id}': {e}")
             raise
 
 
