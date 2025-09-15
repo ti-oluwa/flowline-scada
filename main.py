@@ -51,22 +51,9 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    browser_storage = BrowserLocalStorage(app, storage_key="pipeline-scada")
-    hybrid_storage = HybridStorage(
-        browser_storage=browser_storage,
-        json_storage=config_file_storage,
-        dump_freq=5,
-    )
-
-    @app.on_disconnect
-    def flush_on_disconnect(client: Client) -> None:
-        """Dump browser storage to file storage on client disconnect."""
-        logger.info("Client disconnected, dumping browser storage to file storage")
-        hybrid_storage.flush()
-
     config = ConfigurationManager(
         session_id,
-        storages=[hybrid_storage],
+        storages=[config_file_storage],
     )
 
     # Get current configuration
