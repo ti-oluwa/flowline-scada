@@ -13,7 +13,7 @@ from nicegui import Client, app, ui
 
 from src.config.manage import ConfigurationManager
 from src.types import ConfigurationState, PipelineEvent
-from src.config.storages import JSONFileStorage, UserSessionStorage, BrowserLocalStorage
+from src.config.storages import JSONFileStorage
 from src.flow import FlowType, Fluid
 from src.ui.components import Pipeline
 from src.ui.manage import (
@@ -47,11 +47,10 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    session_storage = UserSessionStorage(app, session_key="pipeline-scada")
-    browser_storage = BrowserLocalStorage(app, storage_key="pipeline-scada")
     config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
     config = ConfigurationManager(
-        session_id, storages=[session_storage, browser_storage, config_file_storage]
+        session_id,
+        storages=[config_file_storage],
     )
 
     # Get current configuration
