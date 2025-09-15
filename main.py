@@ -149,7 +149,10 @@ def root(client: Client) -> ui.element:
                     flow_station_factories=[upstream_factory, downstream_factory],
                 )
 
-            session_id_in_storage = bool(state_file_storage.read(session_id))
+            session_id_in_storage = state_file_storage.read(session_id) is not None
+            logger.info(
+                f"Session ID {session_id!r} in storage: {session_id_in_storage}"
+            )
 
             def pipeline_state_observer(_: PipelineEvent, __: typing.Any) -> None:
                 """Handle pipeline state changes."""
