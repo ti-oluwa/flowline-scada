@@ -270,6 +270,8 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
     def on_config_change(self, config_state: ConfigurationState):
         """Update internal config if the configuration state changes."""
         flow_station_config = config_state.flow_station
+        if flow_station_config is self.config:
+            return
         self.set_config(flow_station_config)
 
 
@@ -411,6 +413,8 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
     def on_config_change(self, config_state: ConfigurationState):
         """Update internal config if the configuration state changes."""
         flow_station_config = config_state.flow_station
+        if flow_station_config is self.config:
+            return
         self.set_config(flow_station_config)
 
 

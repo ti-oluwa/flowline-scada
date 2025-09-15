@@ -195,3 +195,68 @@ class JSONFileStorage:
         except Exception as e:
             logger.error(f"Failed to delete configuration file '{file_path}': {e}")
             raise
+
+
+class HybridStorage:
+    """Hybrid storage backend combining JSON file storage and browser local storage."""
+
+    def __init__(
+        self,
+        json_storage: JSONFileStorage,
+        browser_storage: BrowserLocalStorage,
+        dump_freq: int = 10,
+    ):
+        self.json_storage = json_storage
+        self.browser_storage = browser_storage
+        self.dump_freq = dump_freq
+        self._operation_count = 0
+
+    def read(self, id: str) -> typing.Optional[dict]:
+        data = self.browser_storage.read(id)
+        if data is not None:
+            return data
+
+        data = self.json_storage.read(id)
+        if data is not None:
+            try:
+                self.browser_storage.create(id, data)
+            except KeyError:
+                self.browser_storage.update(id, data, overwrite=True)
+        return data
+
+    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
+        self.browser_storage.update(id, data, overwrite)
+        self._operation_count += 1
+        if self._operation_count >= self.dump_freq:
+            self.dump(id)
+            self._operation_count = 0
+
+    def create(self, id: str, data: dict) -> None:
+        self.browser_storage.create(id, data)
+        self._operation_count += 1
+        if self._operation_count >= self.dump_freq:
+            self.dump(id)
+            self._operation_count = 0
+
+    def delete(self, id: str) -> None:
+        self.browser_storage.delete(id)
+        try:
+            self.json_storage.delete(id)
+        except KeyError:
+            pass
+
+    def dump(self, id: str) -> None:
+        data = self.browser_storage.read(id)
+        if data is not None:
+            try:
+                self.json_storage.update(id, data, overwrite=True)
+            except KeyError:
+                self.json_storage.create(id, data)
+
+    def flush(self) -> None:
+        """Force dump all browser storage data to file storage"""
+        for id in self.browser_storage.app.storage.browser.get(
+            self.browser_storage.storage_key, {}
+        ):
+            self.dump(id)
+        self._operation_count = 0

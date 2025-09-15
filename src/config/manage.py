@@ -2,11 +2,11 @@
 Configuration Management System
 """
 
+from attrs import evolve
 import orjson
 import typing
 import logging
 from datetime import datetime
-import copy
 
 from src.units import UnitSystem, IMPERIAL
 from src.types import converter, ConfigStorage, ConfigurationState
@@ -63,7 +63,7 @@ class ConfigurationManager:
 
     def get_state(self) -> ConfigurationState:
         """Get a copy of the current configuration state"""
-        return copy.deepcopy(self._config_state)
+        return evolve(self._config_state)
 
     def update_global_config(self, **kwargs: typing.Any):
         """Update global configuration"""

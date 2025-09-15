@@ -13,7 +13,7 @@ from nicegui import Client, app, ui
 
 from src.config.manage import ConfigurationManager
 from src.types import ConfigurationState, PipelineEvent
-from src.config.storages import JSONFileStorage
+from src.config.storages import JSONFileStorage, BrowserLocalStorage, HybridStorage
 from src.flow import FlowType, Fluid
 from src.ui.components import Pipeline
 from src.ui.manage import (
@@ -33,6 +33,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
+state_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/states")
+
+
 @ui.page("/", title="Pipeline Management System")
 def root(client: Client) -> ui.element:
     """Create the main Pipeline Management System application."""
@@ -47,15 +51,26 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
+    browser_storage = BrowserLocalStorage(app, storage_key="pipeline-scada")
+    hybrid_storage = HybridStorage(
+        browser_storage=browser_storage,
+        json_storage=config_file_storage,
+        dump_freq=5,
+    )
+
+    @app.on_disconnect
+    def flush_on_disconnect(client: Client) -> None:
+        """Dump browser storage to file storage on client disconnect."""
+        logger.info("Client disconnected, dumping browser storage to file storage")
+        hybrid_storage.flush()
+
     config = ConfigurationManager(
         session_id,
-        storages=[config_file_storage],
+        storages=[hybrid_storage],
     )
 
     # Get current configuration
     theme_color = config.state.global_.theme_color
-    state_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/states")
     last_state = state_file_storage.read(session_id)
 
     # Main layout container
@@ -80,6 +95,9 @@ def root(client: Client) -> ui.element:
         def on_theme_change(config_state: ConfigurationState) -> None:
             """Handle theme color changes."""
             nonlocal theme_color
+
+            if theme_color == config_state.global_.theme_color:
+                return
 
             new_theme = config_state.global_.theme_color
             header.classes(remove=f"bg-{theme_color}-600")
@@ -117,9 +135,8 @@ def root(client: Client) -> ui.element:
 
             if not last_state:
                 logger.info(f"Creating new pipeline for session {session_id!r}")
-                # Use fluid configuration from pipeline.fluid
                 fluid_config = pipeline_config.fluid
-                initial_fluid = Fluid.from_coolprop(
+                fluid = Fluid.from_coolprop(
                     fluid_name=fluid_config.name,
                     phase=fluid_config.phase,
                     temperature=fluid_config.temperature,
@@ -130,7 +147,7 @@ def root(client: Client) -> ui.element:
                 flow_type = FlowType(pipeline_config.flow_type)
                 pipeline = Pipeline(
                     pipes=[],
-                    fluid=initial_fluid,
+                    fluid=fluid,
                     name=pipeline_config.name,
                     max_flow_rate=pipeline_config.max_flow_rate,
                     flow_type=flow_type,
@@ -145,8 +162,12 @@ def root(client: Client) -> ui.element:
                     flow_station_factories=[upstream_factory, downstream_factory],
                 )
 
+            session_id_in_storage = bool(state_file_storage.read(session_id))
+
             def pipeline_state_observer(_: PipelineEvent, __: typing.Any) -> None:
                 """Handle pipeline state changes."""
+                nonlocal session_id_in_storage
+
                 logger.debug(
                     f"Pipeline state changed, updating storage for session {session_id!r}"
                 )
@@ -155,7 +176,7 @@ def root(client: Client) -> ui.element:
                     return
 
                 state = pipeline_manager.get_state()
-                if not state_file_storage.read(session_id):
+                if not session_id_in_storage:
                     state_file_storage.create(session_id, state)
                 else:
                     state_file_storage.update(session_id, state, overwrite=True)
