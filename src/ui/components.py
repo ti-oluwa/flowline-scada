@@ -1,6 +1,7 @@
 import copy
 import logging
 import math
+import time
 import typing
 
 from attrs import evolve
@@ -242,6 +243,22 @@ class Meter:
                 active=False,
             )
 
+    def _cancel_timers(self):
+        """Cancel timers to free resources."""
+        if self._animation_timer is not None:
+            self._animation_timer.cancel()
+            self._animation_timer = None
+
+        if self._update_timer is not None:
+            self._update_timer.cancel()
+            self._update_timer = None
+
+    def __del__(self):
+        try:
+            self._cancel_timers()
+        except Exception:
+            pass
+
     def display(self):
         """Override in subclasses to create specific meter displays"""
         self.label_element = (
@@ -329,8 +346,9 @@ class Meter:
         if not self.visible:
             return
 
-        if abs(self.value - self._target_value) < 0.1:
+        if math.isclose(self.value, self._target_value, abs_tol=0.01):
             self.value = self._target_value
+            self.update_viz()
             return
 
         # Calculate animation step with better responsiveness
@@ -1151,7 +1169,9 @@ class Regulator:
         # Slider with enhanced styling
         self.slider_element = (
             ui.slider(min=self.min, max=self.max, value=value, step=self.step)
-            .props(f"label-always color={self.theme_color}")
+            .props(
+                f"label-always color={self.theme_color} background={self.theme_color}"
+            )
             .classes("w-full mb-1")
             .style("""
                 margin: 4px 0;
@@ -1239,8 +1259,12 @@ class Regulator:
                     )
 
         # Connect events
-        self.slider_element.on("update:model-value", lambda e: update_value(e.args))
-        self.input_element.on("update:model-value", lambda e: update_value(e.args))
+        self.slider_element.on(
+            "update:model-value", lambda e: update_value(e.args), throttle=1
+        )
+        self.input_element.on(
+            "update:model-value", lambda e: update_value(e.args), throttle=1
+        )
 
     def get_status_color(self) -> str:
         """Get color based on value and alarm thresholds."""
