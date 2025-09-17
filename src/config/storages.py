@@ -177,8 +177,6 @@ class JSONFileStorage:
 
     def create(self, id: str, data: dict) -> None:
         file_path = self._get_file_path(id)
-        if file_path.exists():
-            raise KeyError(f"Configuration with id '{id}' already exists.")
         try:
             with open(file_path, "wb") as f:
                 f.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))

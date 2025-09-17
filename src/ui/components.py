@@ -2801,7 +2801,7 @@ class Pipeline:
             max_diameter_m = max(
                 p.internal_diameter.to("m").magnitude for p in self._pipes
             )
-            max_area_m2 = (3.14159 * max_diameter_m**2) / 4
+            max_area_m2 = (math.pi * max_diameter_m**2) / 4
             # 100 m/s is a very high velocity for most pipeline flows, making it a safe upper limit.
             max_sane_velocity_m_s = 100.0
             max_mass_rate = inlet_density_kg_m3 * max_area_m2 * max_sane_velocity_m_s
