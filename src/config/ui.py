@@ -508,6 +508,9 @@ class ConfigurationUI:
                                     "text-sm font-mono text-blue-600 flex-1"
                                 )
 
+                                if "unit_systems" in config_path:
+                                    continue
+
                                 if config_path == "last_updated":
                                     ui.label(str(value)).classes(
                                         "text-sm text-gray-600"

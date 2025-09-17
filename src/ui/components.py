@@ -2106,46 +2106,45 @@ class Pipeline:
         :return: Html component containing the pipeline visualization
         """
         container = (
-            ui.row()
-            .classes(
-                "w-full p-2 bg-white border border-gray-200 rounded-lg shadow-sm space-y-2"
-            )
+            ui.column()  # Changed to column for better flex control
+            .classes("w-full p-2 bg-white border border-gray-200 rounded-lg shadow-sm")
             .style(
                 f"""
                 min-width: min({min_width}, 100%);
                 max-width: min({max_width}, 100%);
-                max-height: {height} !important;
+                height: {height};
                 min-height: 200px;
                 overflow: hidden; 
                 display: flex;
-                align-items: center;
-                justify-content: center;
-                flex-wrap: nowrap;
                 flex-direction: column;
-                scrollbar-width: thin;
-                position: relative;
+                align-items: stretch;
+                gap: 8px;
+                padding: 16px;
                 """,
             )
         )
 
         with container:
-            label = label or self.name
             if show_label:
-                ui.label(label).classes("text-2xl font-bold text-gray-800")
+                label = label or self.name
+                ui.label(label).classes(
+                    "text-lg sm:text-xl font-bold text-gray-800 text-center flex-shrink-0"
+                )
 
             # Get the SVG content and check if it's valid
             svg_content = self.get_svg()
             self.pipeline_viz = ui.html(svg_content).style(
                 """
                 width: 100%;
-                height: 80%;
-                flex: 1 !important;
+                flex: 1;  
                 border: 1px solid #ccc; 
                 border-radius: inherit;
                 background: #f9f9f9;
                 display: flex;
                 align-items: center;
                 justify-content: center;
+                overflow: hidden;
+                min-height: 0; 
                 """
             )
         return container
@@ -2270,7 +2269,7 @@ class Pipeline:
                 max_height = max(max_height, svg_comp.height)
 
             return f'''
-            <svg viewBox="0 0 {total_width} {max_height}" class="mx-auto" style="width: 100%; height: auto; max-width: 100%;">
+            <svg viewBox="0 0 {total_width} {max_height}" class="mx-auto" style="width: 100%; height: 100%; max-width: 100%;">
                 <defs>
                     <linearGradient id="fallbackGrad" x1="0%" y1="0%" x2="0%" y2="100%">
                         <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.3" />
@@ -2640,6 +2639,13 @@ class Pipeline:
                 molecular_weight=fluid.molecular_weight,
             )
 
+            is_elbow_connected = current_pipe.direction != next_pipe.direction
+            connector_length = (
+                self.connector_length
+                if not is_elbow_connected
+                else 2 * self.connector_length
+            )
+
             # NOTE: Even a straight connector has length and thus frictional drop!
             # Your assumption of zero drop for <2% diff is only valid if length is zero.
             relative_diameter_difference = abs(
@@ -2653,35 +2659,55 @@ class Pipeline:
                 relative_diameter_difference,
             )
             # If diameters are within 2%, treat as same diameter (assume connector is straight)
-            if relative_diameter_difference < 0.02:
+            if relative_diameter_difference <= 0.02:
+                average_efficiency = (
+                    current_pipe.efficiency + next_pipe.efficiency
+                ) / 2
+                # Assume elbow connectors have slightly lower efficiency due to bends
+                connector_efficiency = (
+                    average_efficiency * 0.95
+                    if is_elbow_connected
+                    else average_efficiency
+                )
+                # If the current pipe has an elevation change, assume the connector follows that
+                # with the same rate of elevation change per unit length
+                if current_pipe.length.magnitude != 0:
+                    elevation_change_per_length = (
+                        current_pipe.elevation_difference.to("m").magnitude
+                        / current_pipe.length.to("m").magnitude
+                    )
+                else:
+                    elevation_change_per_length = 0.0
+
+                connector_elevation_difference = Quantity(
+                    elevation_change_per_length * connector_length.to("m").magnitude,
+                    "m",
+                )
                 connector_pressure_drop = compute_pipe_pressure_drop(
                     upstream_pressure=downstream_pipe_pressure,
-                    length=self.connector_length,  # Your connector length
+                    length=connector_length,
                     internal_diameter=current_pipe.internal_diameter,
                     relative_roughness=0.0001,  # Assume very smooth connector
-                    efficiency=1.0,  # Assume no efficiency loss in short connector
-                    elevation_difference=Quantity(
-                        0.0, "m"
-                    ),  # Assume horizontal connector
+                    efficiency=connector_efficiency,
+                    elevation_difference=connector_elevation_difference,
                     specific_gravity=fluid_at_connector_inlet.specific_gravity,
                     temperature=fluid_at_connector_inlet.temperature,
                     compressibility_factor=fluid_at_connector_inlet.compressibility_factor,
                     density=fluid_at_connector_inlet.density,
                     viscosity=fluid_at_connector_inlet.viscosity,
                     flow_rate=volumetric_flow_rate,
-                    flow_equation=FlowEquation.DARCY_WEISBACH
-                    if self._flow_type == FlowType.INCOMPRESSIBLE
-                    else FlowEquation.WEYMOUTH,
+                    flow_equation=FlowEquation.DARCY_WEISBACH,  # Darcy-Weisbach for connectors which are short pipes
                 )
             else:
                 connector_pressure_drop = compute_tapered_pipe_pressure_drop(
                     flow_rate=volumetric_flow_rate,
                     pipe_inlet_diameter=current_pipe.internal_diameter,
                     pipe_outlet_diameter=next_pipe.internal_diameter,
-                    pipe_length=self.connector_length,  # Your connector length
+                    pipe_length=connector_length,  # Your connector length
                     fluid_density=fluid_at_connector_inlet.density,
                     fluid_dynamic_viscosity=fluid_at_connector_inlet.viscosity,
                     pipe_relative_roughness=0.0001,  # Assume very smooth connector
+                    gradual_angle_threshold_deg=15.0,  # Assume gradual if angle < 15 degrees
                 )
             logger.info(
                 "Connector Pressure Drop between Pipe %d and Pipe %d: %s",
@@ -2696,7 +2722,7 @@ class Pipeline:
         # This part should ideally not be reached if the loop returns
         return current_pressure
 
-    def _compute_mass_rate_range(self) -> typing.Tuple[float, float]:
+    def _compute_mass_rate_range_complex(self) -> typing.Tuple[float, float]:
         """
         Estimate a reasonable mass flow rate range for the solver based on max flow rates of pipes.
 
@@ -2709,7 +2735,15 @@ class Pipeline:
         max_internal_diameter = max(
             pipe.internal_diameter.to("m").magnitude for pipe in self._pipes
         )
-        total_length = sum(pipe.length.to("m").magnitude for pipe in self._pipes)
+        total_length = 0
+        for i, pipe in enumerate(self._pipes):
+            total_length += pipe.length.to("m").magnitude
+            if i < len(self._pipes) - 1:
+                total_length += self.connector_length.to("m").magnitude
+
+        if total_length == 0:
+            raise ValueError("Total pipeline length cannot be zero.")
+
         upstream_pressure = self.upstream_pressure.to("psi")
         downstream_pressure = self.downstream_pressure.to("psi")
         min_relative_roughness = min(pipe.relative_roughness for pipe in self._pipes)
@@ -2742,6 +2776,45 @@ class Pipeline:
         )
         max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
         return 0.001, max_mass_flow_rate.magnitude
+
+    def _compute_mass_rate_range(self) -> typing.Tuple[float, float]:
+        """
+        Estimates a reasonable mass flow rate range using the "Wide Net" approach.
+
+        This method provides a broad range to ensure the root-finding algorithm can find a valid solution.
+
+        Logic:
+        1. Lower Bound: A small, non-zero number to avoid division by zero or no-flow scenarios.
+        2. Upper Bound: Based on a generously high fluid velocity through the largest pipe diameter.
+
+        :return: Tuple of (min_mass_flow_rate, max_mass_flow_rate) in kg/s
+        """
+        if not self._pipes or self.fluid is None:
+            return 0.001, 1000.0
+
+        # 1. Lower Bound: A small, non-zero number.
+        min_mass_rate = 1e-3  # 1 g/s
+
+        # 2. Upper Bound: Based on a generously high fluid velocity.
+        try:
+            inlet_density_kg_m3 = self.fluid.density.to("kg/m^3").magnitude
+            max_diameter_m = max(
+                p.internal_diameter.to("m").magnitude for p in self._pipes
+            )
+            max_area_m2 = (3.14159 * max_diameter_m**2) / 4
+            # 100 m/s is a very high velocity for most pipeline flows, making it a safe upper limit.
+            max_sane_velocity_m_s = 100.0
+            max_mass_rate = inlet_density_kg_m3 * max_area_m2 * max_sane_velocity_m_s
+
+            # Ensure max is significantly larger than min
+            if max_mass_rate <= min_mass_rate:
+                max_mass_rate = min_mass_rate * 1000.0
+
+            return min_mass_rate, max_mass_rate
+
+        except Exception:
+            # Fallback in case of any calculation errors
+            return 0.001, 1000.0
 
     def sync(self) -> Self:
         """

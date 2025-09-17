@@ -781,7 +781,8 @@ class PipelineManager(typing.Generic[PipelineT]):
                 fluid_name=fluid_config.name,
                 phase=fluid_config.phase,
                 temperature=fluid_config.temperature,
-                pressure=fluid_config.pressure,
+                pressure=fluid_config.pressure
+                or Quantity(101325, "Pa"),  # Default to 1 atm if not specified
                 molecular_weight=fluid_config.molecular_weight,
             )
         except Exception as e:
@@ -1123,13 +1124,17 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         preview_card = (
             ui.card()
             .classes("w-full p-2 sm:p-4")
-            .style("max-height: 800px; overflow-y: auto;")
+            .style("height: fit-content; overflow-y: auto; position: relative;")
         )
         with preview_card:
             ui.label(pipeline_label).classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
             )
-            self.pipeline_preview = ui.column().classes("w-full overflow-x-auto")
+            self.pipeline_preview = (
+                ui.column()
+                .classes("w-full overflow-x-hidden")
+                .style("height: fit-content; min-height: 300px; position: relative;")
+            )
         self.refresh_pipeline_preview()
 
     def show_flow_station_panel(

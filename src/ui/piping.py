@@ -902,9 +902,10 @@ class ElbowConnector(PipeComponent):
         intensity = calculate_flow_intensity(flow_rate, max_flow_rate)
         color = get_flow_color(intensity)
 
-        # Fixed elbow size
-        width = height = 80
-        center_x = center_y = 40
+        # Calculate elbow size based on arm length to ensure proper alignment
+        margin = 10  # Margin around the elbow
+        width = height = 2 * arm_pixels + margin * 2
+        center_x = center_y = arm_pixels + margin
 
         # Determine elbow orientation and positions
         orientation_map = {
@@ -922,41 +923,75 @@ class ElbowConnector(PipeComponent):
             (inlet_dir, outlet_dir), ("west", "north")
         )
 
-        # Calculate positions
+        # Calculate positions - these should be at the exact edge of the elbow for proper alignment
         if inlet_face == "west":
-            inlet_x, inlet_y = center_x - arm_pixels, center_y
+            inlet_x, inlet_y = margin, center_y  # Left edge
         elif inlet_face == "east":
-            inlet_x, inlet_y = center_x + arm_pixels, center_y
+            inlet_x, inlet_y = width - margin, center_y  # Right edge
         elif inlet_face == "north":
-            inlet_x, inlet_y = center_x, center_y - arm_pixels
+            inlet_x, inlet_y = center_x, margin  # Top edge
         else:  # south
-            inlet_x, inlet_y = center_x, center_y + arm_pixels
+            inlet_x, inlet_y = center_x, height - margin  # Bottom edge
 
         if outlet_face == "west":
-            outlet_x, outlet_y = center_x - arm_pixels, center_y
+            outlet_x, outlet_y = margin, center_y  # Left edge
         elif outlet_face == "east":
-            outlet_x, outlet_y = center_x + arm_pixels, center_y
+            outlet_x, outlet_y = width - margin, center_y  # Right edge
         elif outlet_face == "north":
-            outlet_x, outlet_y = center_x, center_y - arm_pixels
+            outlet_x, outlet_y = center_x, margin  # Top edge
         else:  # south
-            outlet_x, outlet_y = center_x, center_y + arm_pixels
+            outlet_x, outlet_y = center_x, height - margin  # Bottom edge
 
-        # Create elbow geometry
+        # Create elbow geometry that extends exactly to the connection points
         if inlet_face in ["west", "east"] and outlet_face in ["north", "south"]:
             # Horizontal to vertical
-            h_rect = f'''<rect x="{min(center_x, inlet_x) - avg_diameter / 2}" y="{center_y - avg_diameter / 2}" 
-                              width="{abs(center_x - inlet_x) + avg_diameter / 2}" height="{avg_diameter}" 
+            # Horizontal arm extends from inlet to center
+            if inlet_face == "west":
+                h_start_x = inlet_x
+                h_width = center_x - inlet_x + avg_diameter / 2
+            else:  # east
+                h_start_x = center_x - avg_diameter / 2
+                h_width = inlet_x - center_x + avg_diameter / 2
+
+            h_rect = f'''<rect x="{h_start_x}" y="{center_y - avg_diameter / 2}" 
+                              width="{h_width}" height="{avg_diameter}" 
                               fill="url(#elbowGrad_{unique_id})" stroke="{color}" stroke-width="2" rx="3"/>'''
-            v_rect = f'''<rect x="{center_x - avg_diameter / 2}" y="{min(center_y, outlet_y) - avg_diameter / 2}" 
-                              width="{avg_diameter}" height="{abs(center_y - outlet_y) + avg_diameter / 2}" 
+
+            # Vertical arm extends from outlet to center
+            if outlet_face == "north":
+                v_start_y = outlet_y
+                v_height = center_y - outlet_y + avg_diameter / 2
+            else:  # south
+                v_start_y = center_y - avg_diameter / 2
+                v_height = outlet_y - center_y + avg_diameter / 2
+
+            v_rect = f'''<rect x="{center_x - avg_diameter / 2}" y="{v_start_y}" 
+                              width="{avg_diameter}" height="{v_height}" 
                               fill="url(#elbowGrad_{unique_id})" stroke="{color}" stroke-width="2" rx="3"/>'''
         else:
             # Vertical to horizontal
-            v_rect = f'''<rect x="{center_x - avg_diameter / 2}" y="{min(center_y, inlet_y) - avg_diameter / 2}" 
-                              width="{avg_diameter}" height="{abs(center_y - inlet_y) + avg_diameter / 2}" 
+            # Vertical arm extends from inlet to center
+            if inlet_face == "north":
+                v_start_y = inlet_y
+                v_height = center_y - inlet_y + avg_diameter / 2
+            else:  # south
+                v_start_y = center_y - avg_diameter / 2
+                v_height = inlet_y - center_y + avg_diameter / 2
+
+            v_rect = f'''<rect x="{center_x - avg_diameter / 2}" y="{v_start_y}" 
+                              width="{avg_diameter}" height="{v_height}" 
                               fill="url(#elbowGrad_{unique_id})" stroke="{color}" stroke-width="2" rx="3"/>'''
-            h_rect = f'''<rect x="{min(center_x, outlet_x) - avg_diameter / 2}" y="{center_y - avg_diameter / 2}" 
-                              width="{abs(center_x - outlet_x) + avg_diameter / 2}" height="{avg_diameter}" 
+
+            # Horizontal arm extends from outlet to center
+            if outlet_face == "west":
+                h_start_x = outlet_x
+                h_width = center_x - outlet_x + avg_diameter / 2
+            else:  # east
+                h_start_x = center_x - avg_diameter / 2
+                h_width = outlet_x - center_x + avg_diameter / 2
+
+            h_rect = f'''<rect x="{h_start_x}" y="{center_y - avg_diameter / 2}" 
+                              width="{h_width}" height="{avg_diameter}" 
                               fill="url(#elbowGrad_{unique_id})" stroke="{color}" stroke-width="2" rx="3"/>'''
 
         # Flow particles following curved path
@@ -982,10 +1017,16 @@ class ElbowConnector(PipeComponent):
                 </circle>
                 '''
 
+        # Add center junction sized to properly connect the arms
+        junction_radius = avg_diameter / 2 + 2
+        center_junction = f'''<circle cx="{center_x}" cy="{center_y}" r="{junction_radius}" 
+                                    fill="{color}" fill-opacity="0.9" stroke="{color}" stroke-width="3"/>'''
+
         # Generate inner content
         inner_content = f'''
             {h_rect}
             {v_rect}
+            {center_junction}
             <!-- Connection points -->
             <circle cx="{inlet_x}" cy="{inlet_y}" r="2" 
                     fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
@@ -1012,7 +1053,6 @@ class ElbowConnector(PipeComponent):
         # Create connection points
         inlet = ConnectionPoint(inlet_x, inlet_y, inlet_dir, diameter1, flow_rate)
         outlet = ConnectionPoint(outlet_x, outlet_y, outlet_dir, diameter2, flow_rate)
-
         return SVGComponent(
             main_svg=main_svg,
             inner_content=inner_content,
