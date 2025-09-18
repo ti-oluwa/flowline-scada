@@ -2696,7 +2696,9 @@ class Pipeline:
                     density=fluid_at_connector_inlet.density,
                     viscosity=fluid_at_connector_inlet.viscosity,
                     flow_rate=volumetric_flow_rate,
-                    flow_equation=FlowEquation.DARCY_WEISBACH,  # Darcy-Weisbach for connectors which are short pipes
+                    flow_equation=FlowEquation.DARCY_WEISBACH
+                    if self._flow_type is FlowType.INCOMPRESSIBLE
+                    else FlowEquation.WEYMOUTH,
                 )
             else:
                 connector_pressure_drop = compute_tapered_pipe_pressure_drop(
