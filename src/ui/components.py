@@ -2441,6 +2441,8 @@ class Pipeline:
                 raise PipelineConnectionError(error_msg)
 
         pipe = copy.deepcopy(pipe)
+        # Set pipe to not alert errors individually. Alerts will be handled by the pipeline
+        pipe.alert_errors = False
         # Apply the pipeline's scale factor and max flow rate to the pipe
         pipe.set_scale_factor(self.scale_factor, update_viz=False)
         if self.max_flow_rate.magnitude > 0:
