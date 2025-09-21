@@ -1,6 +1,7 @@
 import typing
 import orjson
 import logging
+import redis
 from pathlib import Path
 from nicegui import App
 
@@ -258,3 +259,36 @@ class HybridStorage:
         ):
             self.dump(id)
         self._operation_count = 0
+
+
+class RedisStorage:
+    """Redis storage backend for configurations"""
+
+    def __init__(self, client: redis.Redis):
+        self.client = client
+
+    def read(self, id: str) -> typing.Optional[dict]:
+        data = self.client.get(id)
+        if data is None:
+            return None
+        return orjson.loads(data)
+
+    def update(self, id: str, data: dict, overwrite: bool = False) -> None:
+        if not self.client.exists(id):
+            raise KeyError(f"Configuration with id '{id}' does not exist.")
+        if overwrite:
+            self.client.set(id, orjson.dumps(data, option=orjson.OPT_INDENT_2))
+            return
+        existing_data = self.read(id) or {}
+        existing_data.update(data)
+        self.client.set(id, orjson.dumps(existing_data, option=orjson.OPT_INDENT_2))
+
+    def create(self, id: str, data: dict) -> None:
+        if self.client.exists(id):
+            raise KeyError(f"Configuration with id '{id}' already exists.")
+        self.client.set(id, orjson.dumps(data, option=orjson.OPT_INDENT_2))
+
+    def delete(self, id: str) -> None:
+        if not self.client.exists(id):
+            raise KeyError(f"Configuration with id '{id}' does not exist.")
+        self.client.delete(id)

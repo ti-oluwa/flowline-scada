@@ -1,7 +1,6 @@
 import copy
 import logging
 import math
-import time
 import typing
 
 from attrs import evolve
@@ -2659,7 +2658,7 @@ class Pipeline:
                 relative_diameter_difference,
             )
             # If diameters are within 2%, treat as same diameter (assume connector is straight)
-            if relative_diameter_difference <= 0.02:
+            if relative_diameter_difference < 0.02:
                 average_efficiency = (
                     current_pipe.efficiency + next_pipe.efficiency
                 ) / 2
@@ -2880,7 +2879,7 @@ class Pipeline:
             logger.info("Error (psi): %.4f", error_psi)
             return error_psi
 
-        min_mass_rate, max_mass_rate = self._compute_mass_rate_range()
+        min_mass_rate, max_mass_rate = self._compute_mass_rate_range_complex()
         logger.info("Initial Min Mass Flow Rate: %s", min_mass_rate)
         logger.info("Initial Max Mass Flow Rate: %s", max_mass_rate)
 

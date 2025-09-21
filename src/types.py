@@ -2,7 +2,7 @@ import enum
 import typing
 import attrs
 import cattrs
-from datetime import datetime
+import re
 from pint.facets.plain import PlainQuantity
 
 from src.units import Quantity, Unit, UnitSystem, QuantityUnit, IMPERIAL, SI, OIL_FIELD
@@ -130,29 +130,7 @@ class PipeDirection(str, enum.Enum):
         return self.value
 
 
-class PipelineEvent(enum.Enum):
-    """Events that can occur during pipeline construction."""
-
-    SYNCED = "synced"
-    """Sent when the pipeline is synchronized with the manager."""
-    PIPE_ADDED = "pipe_added"
-    """Sent when a pipe is added to the pipeline."""
-    PIPE_REMOVED = "pipe_removed"
-    """Sent when a pipe is removed from the pipeline."""
-    PIPE_MOVED = "pipe_moved"
-    """Sent when a pipe is moved within the pipeline."""
-    PROPERTIES_UPDATED = "properties_updated"
-    """Sent when the properties of a pipe are updated."""
-    VALIDATION_CHANGED = "validation_changed"
-    """Sent when the validation state of a pipe changes."""
-    METERS_UPDATED = "meters_updated"
-    """Sent when the meters associated with a pipe are updated."""
-
-    def __str__(self) -> str:
-        return self.value
-
-
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class PipeConfig:
     """Configuration for a single pipe component."""
 
@@ -187,7 +165,7 @@ class PipeConfig:
     """Type of flow in the pipe (incompressible or compressible)"""
 
 
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class FluidConfig:
     """Configuration for fluid properties."""
 
@@ -203,7 +181,7 @@ class FluidConfig:
     """Molecular weight of the fluid"""
 
 
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class MeterConfig:
     """Configuration for all meter types (PressureGauge, TemperatureGauge, FlowMeter)"""
 
@@ -233,7 +211,7 @@ class MeterConfig:
     """Whether to alert on errors"""
 
 
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class RegulatorConfig:
     """Configuration for regulator components"""
 
@@ -259,7 +237,7 @@ class RegulatorConfig:
     """Whether to alert on errors"""
 
 
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class FlowStationConfig:
     """Configuration for complete flow station setup"""
 
@@ -301,7 +279,7 @@ class FlowStationConfig:
     """Configuration for the temperature regulator (mostly upstream only)"""
 
 
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class GlobalConfig:
     """Global application configuration"""
 
@@ -317,7 +295,7 @@ class GlobalConfig:
     """Whether to auto-save configurations"""
 
 
-@attrs.define(slots=True)
+@attrs.define(slots=True, frozen=True)
 class PipelineConfig:
     """Pipeline-specific configuration"""
 
@@ -347,22 +325,6 @@ class PipelineConfig:
     """Default pipe properties"""
 
 
-@attrs.define(slots=True)
-class ConfigurationState:
-    """Complete configuration state"""
-
-    global_: GlobalConfig = attrs.field(factory=GlobalConfig)
-    """Global application settings"""
-    pipeline: PipelineConfig = attrs.field(factory=PipelineConfig)
-    """Pipeline-specific settings"""
-    flow_station: FlowStationConfig = attrs.field(factory=FlowStationConfig)
-    """Default flow station settings"""
-    last_updated: str = attrs.field(factory=lambda: datetime.now().isoformat())
-    """Timestamp of the last update"""
-    version: str = "1.0"
-    """Configuration schema version"""
-
-
 class ConfigStorage(typing.Protocol):
     """Protocol defining a configuration storage backend interface"""
 
@@ -381,3 +343,43 @@ class ConfigStorage(typing.Protocol):
     def delete(self, id: str) -> None:
         """Delete configuration data by ID"""
         ...
+
+
+EventCallback = typing.Callable[[str, typing.Any], None]
+
+
+class EventSubscription:
+    """Represents a subscription to an event or events with pattern matching."""
+
+    def __init__(self, event: str, callback: EventCallback):
+        """
+        Initialize event subscription.
+
+        :param event: Event pattern to match ("*" for all, "pipeline.*" for prefix, or exact event name)
+        :param callback: Callback function to execute when event matches
+        """
+        self.event = event
+        self.callback = callback
+        self._is_wildcard = event == "*"
+        self._is_prefix = event.endswith("*") and not self._is_wildcard
+        self._prefix = event[:-1] if self._is_prefix else None
+        self._is_regex = False
+
+        # Check if event contains regex special characters (excluding * which we handle specially)
+        if any(char in event for char in r"[](){}+?.^$|\\") and not event == "*":
+            self._is_regex = True
+            try:
+                self._regex = re.compile(event)
+            except re.error:
+                # If regex compilation fails, treat as exact match
+                self._is_regex = False
+
+    def matches(self, event: str) -> bool:
+        """Check if the event matches this subscription's event pattern."""
+        if self._is_wildcard:
+            return True
+        if self._is_regex:
+            return bool(self._regex.match(event))
+        if self._is_prefix:
+            return event.startswith(self._prefix)
+        return event == self.pattern

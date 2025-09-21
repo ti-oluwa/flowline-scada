@@ -6,8 +6,7 @@ import typing
 import logging
 from nicegui import ui
 
-from src.config.manage import ConfigurationManager
-from src.types import ConfigurationState
+from src.config.core import Configuration
 from src.units import Quantity
 
 logger = logging.getLogger(__name__)
@@ -16,25 +15,16 @@ logger = logging.getLogger(__name__)
 class ConfigurationUI:
     """Multi-tab configuration interface"""
 
-    def __init__(self, config: ConfigurationManager):
+    def __init__(self, config: Configuration):
         """Initialize Configuration UI"""
         self.config = config
-        self.config_dialog = None
+        self.dialog = None
         self.is_open = False
 
     @property
     def theme_color(self) -> str:
         """Get current theme color from configuration"""
         return self.config.state.global_.theme_color
-
-    #     self.config.add_observer(self.on_config_change)
-
-    # def on_config_change(self, config_state: ConfigurationState):
-    #     """Handle configuration changes"""
-    #     # Update any open UI elements if needed
-    #     if self.is_open and self.config_dialog:
-    #         # Could refresh UI here if needed
-    #         pass
 
     def show(
         self,
@@ -45,8 +35,8 @@ class ConfigurationUI:
         **kwargs,
     ):
         """Show the configuration dialog"""
-        if self.config_dialog:
-            self.config_dialog.close()
+        if self.dialog:
+            self.dialog.close()
 
         # Custom CSS for styling
         ui.add_head_html("""
@@ -108,11 +98,11 @@ class ConfigurationUI:
         </style>
         """)
 
-        self.config_dialog = (
+        self.dialog = (
             ui.dialog().classes("q-pa-none").style("width: 100vw; height: 100vh;")
         )
 
-        with self.config_dialog:
+        with self.dialog:
             with (
                 ui.card()
                 .classes("flex flex-col w-full h-full")
@@ -198,7 +188,7 @@ class ConfigurationUI:
                         ).classes(
                             f"text-xs text-{'green' if auto_save_enabled else 'orange'}-600 font-medium"
                         )
-                        if not auto_save_enabled and self.config.has_unsaved_changes():
+                        if not auto_save_enabled and self.config.state.changed:
                             ui.chip("Unsaved changes", color="orange").classes(
                                 "text-xs"
                             )
@@ -207,7 +197,7 @@ class ConfigurationUI:
                     with ui.row().classes("gap-2"):
                         ui.button(
                             "Reset",
-                            on_click=self.reset_to_defaults,
+                            on_click=self.reset,
                             color="red",
                         ).props("outline").classes("text-xs sm:text-sm")
 
@@ -226,7 +216,7 @@ class ConfigurationUI:
                             color=self.theme_color,
                         ).classes("text-xs sm:text-sm")
 
-        self.config_dialog.open()
+        self.dialog.open()
         self.is_open = True
 
     def show_global_config_panel(self):
@@ -264,17 +254,17 @@ class ConfigurationUI:
                             "stone",
                         ],
                         value=config.theme_color,
-                        on_change=lambda e: self.config.update_global_config(
-                            theme_color=e.value
+                        on_change=lambda e: self.config.update(
+                            "global_", theme_color=e.value
                         ),
                     ).classes("w-full")
 
                     ui.select(
                         label="Unit System",
-                        options=self.config.get_available_unit_systems(),
+                        options=self.config.get_unit_systems(),
                         value=config.unit_system_name,
-                        on_change=lambda e: self.config.update_global_config(
-                            unit_system_name=e.value
+                        on_change=lambda e: self.config.update(
+                            "global_", unit_system_name=e.value
                         ),
                     ).classes("w-full")
 
@@ -309,8 +299,8 @@ class ConfigurationUI:
                     ui.input(
                         label="Pipeline Name",
                         value=config.name,
-                        on_change=lambda e: self.config.update_pipeline_config(
-                            name=e.value
+                        on_change=lambda e: self.config.update(
+                            "pipeline", name=e.value
                         ),
                     ).classes("w-full")
 
@@ -318,8 +308,8 @@ class ConfigurationUI:
                         label="Flow Type",
                         options=["compressible", "incompressible"],
                         value=config.flow_type,
-                        on_change=lambda e: self.config.update_pipeline_config(
-                            flow_type=e.value
+                        on_change=lambda e: self.config.update(
+                            "pipeline", flow_type=e.value
                         ),
                     ).classes("w-full")
 
@@ -328,8 +318,9 @@ class ConfigurationUI:
                         label=f"Max Flow Rate ({flow_unit.display})",
                         value=config.max_flow_rate.to(flow_unit.unit).magnitude,
                         format="%.2f",
-                        on_change=lambda e: self.config.update_pipeline_config(
-                            max_flow_rate=Quantity(e.value, flow_unit.unit)  # type: ignore
+                        on_change=lambda e: self.config.update(
+                            "pipeline",
+                            max_flow_rate=Quantity(e.value, flow_unit.unit),  # type: ignore
                         ),
                     ).classes("w-full")
 
@@ -338,8 +329,9 @@ class ConfigurationUI:
                         value=config.connector_length.to(length_unit.unit).magnitude,
                         format="%.3f",
                         step=0.001,
-                        on_change=lambda e: self.config.update_pipeline_config(
-                            connector_length=Quantity(e.value, length_unit.unit)  # type: ignore
+                        on_change=lambda e: self.config.update(
+                            "pipeline",
+                            connector_length=Quantity(e.value, length_unit.unit),  # type: ignore
                         ),
                     ).classes("w-full")
 
@@ -351,8 +343,8 @@ class ConfigurationUI:
                         step=0.001,
                         min=0.001,
                         max=10.0,
-                        on_change=lambda e: self.config.update_pipeline_config(
-                            scale_factor=e.value
+                        on_change=lambda e: self.config.update(
+                            "pipeline", scale_factor=e.value
                         ),
                     ).classes("w-full")
 
@@ -360,8 +352,8 @@ class ConfigurationUI:
                     ui.label("Alert Errors:").classes("w-24")
                     ui.switch(
                         value=config.alert_errors,
-                        on_change=lambda e: self.config.update_pipeline_config(
-                            alert_errors=e.value
+                        on_change=lambda e: self.config.update(
+                            "pipeline", alert_errors=e.value
                         ),
                     )
 
@@ -376,7 +368,7 @@ class ConfigurationUI:
                     ui.input(
                         label="Fluid Name",
                         value=fluid_config.name,
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.fluid", name=e.value
                         ),
                     ).classes("w-full")
@@ -385,7 +377,7 @@ class ConfigurationUI:
                         label="Fluid Phase",
                         options=["gas", "liquid"],
                         value=fluid_config.phase,
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.fluid", phase=e.value
                         ),
                     ).classes("w-full")
@@ -397,7 +389,7 @@ class ConfigurationUI:
                             temperature_unit.unit
                         ).magnitude,
                         format="%.2f",
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.fluid",
                             temperature=Quantity(e.value, temperature_unit.unit),
                         ),
@@ -407,7 +399,7 @@ class ConfigurationUI:
                         label=f"Pressure ({pressure_unit.display})",
                         value=fluid_config.pressure.to(pressure_unit.unit).magnitude,
                         format="%.2f",
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.fluid",
                             pressure=Quantity(e.value, pressure_unit.unit),
                         ),
@@ -424,7 +416,7 @@ class ConfigurationUI:
                     ui.input(
                         label="Pipe Name",
                         value=pipe_config.name,
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.pipe", name=e.value
                         ),
                     ).classes("w-full")
@@ -432,7 +424,7 @@ class ConfigurationUI:
                     ui.input(
                         label="Material",
                         value=pipe_config.material,
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.pipe", material=e.value
                         ),
                     ).classes("w-full")
@@ -442,7 +434,7 @@ class ConfigurationUI:
                         label=f"Length ({length_unit.display})",
                         value=pipe_config.length.to(length_unit.unit).magnitude,
                         format="%.2f",
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.pipe",
                             length=Quantity(e.value, length_unit.unit),
                         ),
@@ -455,7 +447,7 @@ class ConfigurationUI:
                         ).magnitude,
                         format="%.4f",
                         step=0.0001,
-                        on_change=lambda e: self.config.update_nested_config(
+                        on_change=lambda e: self.config.update(
                             "pipeline.pipe",
                             internal_diameter=Quantity(e.value, diameter_unit.unit),
                         ),
@@ -463,7 +455,7 @@ class ConfigurationUI:
 
     def show_all_configs_panel(self):
         """Create a panel showing all configurations in a flat view"""
-        flat_configs = self.config.get_all_configs_flat()
+        flat_configs = self.config.state.flatten()
 
         with ui.column().classes("w-full gap-4 config-panel-content"):
             with ui.card().classes("w-full p-4"):
@@ -511,7 +503,7 @@ class ConfigurationUI:
                                 if "unit_systems" in config_path:
                                     continue
 
-                                if config_path == "last_updated":
+                                if config_path == "last_update_configd":
                                     ui.label(str(value)).classes(
                                         "text-sm text-gray-600"
                                     )
@@ -522,7 +514,7 @@ class ConfigurationUI:
                                     ui.switch(
                                         value=value,
                                         on_change=lambda e,
-                                        path=config_path: self._update_from_path(
+                                        path=config_path: self._update_config(
                                             path, e.value
                                         ),
                                     ).classes("flex-shrink-0")
@@ -531,7 +523,7 @@ class ConfigurationUI:
                                         value=value,
                                         format="%.6g",
                                         on_change=lambda e,
-                                        path=config_path: self._update_from_path(
+                                        path=config_path: self._update_config(
                                             path, e.value
                                         ),
                                     ).classes("w-32 flex-shrink-0")
@@ -539,7 +531,7 @@ class ConfigurationUI:
                                     ui.input(
                                         value=", ".join(map(str, value)),
                                         on_change=lambda e,
-                                        path=config_path: self._update_from_path(
+                                        path=config_path: self._update_config(
                                             path, e.value.split(", ")
                                         ),
                                     ).classes("w-64 flex-shrink-0")
@@ -548,7 +540,7 @@ class ConfigurationUI:
                                         value="",
                                         placeholder="None",
                                         on_change=lambda e,
-                                        path=config_path: self._update_from_path(
+                                        path=config_path: self._update_config(
                                             path, e.value or None
                                         ),
                                     ).classes("w-64 flex-shrink-0")
@@ -556,7 +548,7 @@ class ConfigurationUI:
                                     ui.input(
                                         value=str(value),
                                         on_change=lambda e,
-                                        path=config_path: self._update_from_path(
+                                        path=config_path: self._update_config(
                                             path, e.value
                                         ),
                                     ).classes("w-64 flex-shrink-0")
@@ -577,22 +569,22 @@ class ConfigurationUI:
 
                 ui.button(
                     "Export Configuration",
-                    on_click=self.export_configuration,
+                    on_click=self.export,
                     color=self.theme_color,
                     icon="download",
                 ).classes("w-full mb-4")
 
                 ui.upload(
                     label="Import Configuration",
-                    on_upload=self.import_configuration,
+                    on_upload=self.import_,
                     auto_upload=True,
                 ).classes("w-full")
 
     def _on_auto_save_change(self, value: bool):
         """Handle auto-save setting change"""
-        self.config.update_global_config(auto_save=value)
+        self.config.update("global_", auto_save=value)
         # Refresh the UI to update the footer status
-        if self.is_open and self.config_dialog:
+        if self.is_open and self.dialog:
             ui.notify(
                 f"Auto-save {'enabled' if value else 'disabled'}. "
                 f"{'Changes will be saved automatically.' if value else 'You must manually save changes.'}",
@@ -601,52 +593,46 @@ class ConfigurationUI:
             # Refresh the dialog to update button visibility
             self.show()
 
-    def _update_from_path(self, path: str, value: typing.Any):
+    def _update_config(self, path: str, value: typing.Any):
         """Update configuration from a flat path"""
         try:
-            if "." in path:
-                parts = path.split(".")
+            parts = path.split(".")
+            if len(parts) > 1:
                 obj_path = ".".join(parts[:-1])
                 attr_name = parts[-1]
-                self.config.update_nested_config(obj_path, **{attr_name: value})
+                self.config.update(obj_path, **{attr_name: value})
             else:
-                # Handle top-level attributes
-                if hasattr(self.config.state.global_, path):
-                    self.config.update_global_config(**{path: value})
-                elif hasattr(self.config.state.pipeline, path):
-                    self.config.update_pipeline_config(**{path: value})
-                elif hasattr(self.config.state.flow_station, path):
-                    self.config.update_flow_station_config(**{path: value})
+                self.config.update(".", **{path: value})
         except Exception as e:
             logger.error(f"Failed to update config at path {path}: {e}")
             ui.notify(f"Failed to update {path}: {str(e)}", type="negative")
 
-    def export_configuration(self):
+    def export(self):
         """Export configuration to JSON file"""
         try:
-            config_json = self.config.export_configuration()
+            config_json = self.config.export()
             ui.download(config_json.encode(), filename="scada_config.json")
             ui.notify("Configuration exported successfully", type="positive")
-        except Exception as e:
-            logger.error(f"Export failed: {e}")
-            ui.notify(f"Export failed: {e}", type="negative")
+        except Exception as exc:
+            logger.error(f"Export failed: {exc}")
+            ui.notify(f"Export failed: {exc}", type="negative")
 
-    def import_configuration(self, event):
+    def import_(self, event):
         """Import configuration from uploaded file"""
         try:
             content = event.content.read().decode()
-            self.config.import_configuration(content)
+            self.config.import_(content)
             ui.notify("Configuration imported successfully", type="positive")
             self.show()
-        except Exception as e:
-            logger.error(f"Import failed: {e}")
-            ui.notify(f"Import failed: {e}", type="negative")
+        except Exception as exc:
+            logger.error(f"Import failed: {exc}")
+            ui.notify(f"Import failed: {exc}", type="negative")
 
-    def reset_to_defaults(self):
+    def reset(self):
         """Reset all configuration to defaults"""
 
         def confirm_reset():
-            self.config.reset_to_defaults()
+            self.config.reset()
             ui.notify("Configuration reset to defaults", type="positive")
             self.show()
 
@@ -668,7 +654,7 @@ class ConfigurationUI:
     def apply_changes(self):
         """Apply changes (manual save when auto-save is disabled)"""
         if not self.config.state.global_.auto_save:
-            self.config.manual_save()
+            self.config.save()
             ui.notify("Configuration saved manually", type="positive")
         else:
             ui.notify(
@@ -678,14 +664,14 @@ class ConfigurationUI:
     def apply_and_close(self):
         """Apply changes and close dialog"""
         if not self.config.state.global_.auto_save:
-            self.config.manual_save()
+            self.config.save()
         self.close_dialog()
         ui.notify("Configuration applied", type="positive")
 
     def close_dialog(self):
         """Close the configuration dialog"""
-        if self.config_dialog:
-            self.config_dialog.close()
+        if self.dialog:
+            self.dialog.close()
             self.is_open = False
 
     def cleanup(self):

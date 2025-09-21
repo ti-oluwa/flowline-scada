@@ -7,7 +7,7 @@ import logging
 from functools import partial
 from nicegui import ui
 
-from src.config.manage import ConfigurationManager, ConfigurationState
+from src.config.core import Configuration, ConfigurationState
 from src.config.ui import ConfigurationUI
 from src.ui.piping import PipeDirection
 from src.ui.components import (
@@ -23,7 +23,6 @@ from src.ui.components import (
 from src.flow import Fluid
 from src.units import Quantity, UnitSystem
 from src.types import (
-    PipelineEvent,
     PipeConfig,
     FluidConfig,
     FlowStationConfig,
@@ -31,6 +30,8 @@ from src.types import (
     converter,
     structure_quantity,
     unstructure_quantity,
+    EventCallback,
+    EventSubscription,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,6 @@ __all__ = [
 
 
 PipelineT = typing.TypeVar("PipelineT", bound=Pipeline)
-PipelineObserver = typing.Callable[[PipelineEvent, typing.Any], None]
 PipeConfigValidator = typing.Callable[[typing.Sequence[PipeConfig]], typing.List[str]]
 FlowStationFactory = typing.Callable[["PipelineManager[PipelineT]"], FlowStation]
 
@@ -424,7 +424,7 @@ class PipelineManager(typing.Generic[PipelineT]):
     def __init__(
         self,
         pipeline: PipelineT,
-        config: ConfigurationManager,
+        config: Configuration,
         validators: typing.Optional[typing.Sequence[PipeConfigValidator]] = None,
         flow_station_factories: typing.Optional[
             typing.Sequence[FlowStationFactory]
@@ -442,14 +442,15 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._fluid_config = FluidConfig()
         self._validators = validators or [validate_pipe_configs]
         self._flow_station_factories = flow_station_factories or []
-        self._observers: typing.List[PipelineObserver] = []
+        self._subscriptions: typing.List[EventSubscription] = []
         self._errors: typing.List[str] = []
         self._config = config
-        self._config.add_observer(self.on_config_change)
+        self._config.observe(self.on_config_change)
+        # Synchronize initial state
         self.sync()
 
     @property
-    def config(self) -> ConfigurationManager:
+    def config(self) -> Configuration:
         """The configuration manager."""
         return self._config
 
@@ -481,7 +482,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 molecular_weight=self._pipeline.fluid.molecular_weight,  # type: ignore
             )
 
-        for i, pipe in enumerate(self._pipeline.pipes):
+        for i, pipe in enumerate(self._pipeline):
             pipe_config = PipeConfig(
                 name=pipe.name or f"Pipe-{i + 1}",
                 length=pipe.length,  # type: ignore
@@ -499,13 +500,13 @@ class PipelineManager(typing.Generic[PipelineT]):
             )
             self._pipe_configs.append(pipe_config)
 
-        # Notify observers if there are changes
+        # Notify subscribers if there are changes
         if (
             old_pipe_configs != self._pipe_configs
             or old_fluid_config != self._fluid_config
         ):
-            self.notify_observers(
-                PipelineEvent.SYNCED,
+            self.notify_subscribers(
+                "pipeline.synced",
                 {
                     "old_pipe_configs": old_pipe_configs,
                     "new_pipe_configs": self._pipe_configs,
@@ -519,23 +520,51 @@ class PipelineManager(typing.Generic[PipelineT]):
         )
         return self
 
-    def add_observer(self, observer: PipelineObserver):
-        """Add an observer for pipeline events."""
-        if observer not in self._observers:
-            self._observers.append(observer)
+    def subscribe(self, event: str, callback: EventCallback):
+        """
+        Subscribe to pipeline events matching the given pattern.
 
-    def remove_observer(self, observer: PipelineObserver):
-        """Remove an observer."""
-        if observer in self._observers:
-            self._observers.remove(observer)
+        :param event: Event pattern to match:
+                       - "*" for all events
+                       - "pipeline.*" for prefix matching
+                       - "pipeline.pipe.added" for exact event
+                       - Regex patterns are also supported
+        :param callback: Function to call when event matches
+        """
+        subscription = EventSubscription(event, callback)
+        # Remove existing subscription with same event pattern and callback
+        self._subscriptions = [
+            sub
+            for sub in self._subscriptions
+            if not (sub.event == event and sub.callback == callback)
+        ]
+        self._subscriptions.append(subscription)
 
-    def notify_observers(self, event: PipelineEvent, data: typing.Any = None):
-        """Notify all observers of an event."""
-        for observer in self._observers:
-            try:
-                observer(event, data)
-            except Exception as e:
-                logger.error(f"Error notifying pipeline observer: {e}", exc_info=True)
+    def unsubscribe(self, event: str, callback: EventCallback):
+        """Remove a subscription for the given event and callback."""
+        self._subscriptions = [
+            sub
+            for sub in self._subscriptions
+            if not (sub.event == event and sub.callback == callback)
+        ]
+
+    def unsubscribe_all(self, callback: EventCallback):
+        """Remove all subscriptions for the given callback."""
+        self._subscriptions = [
+            sub for sub in self._subscriptions if sub.callback != callback
+        ]
+
+    def notify_subscribers(self, event: str, data: typing.Any = None):
+        """Notify all subscribers whose event patterns match the given event (sequentially, as they registered)."""
+        for subscription in self._subscriptions:
+            if subscription.matches(event):
+                try:
+                    subscription.callback(event, data)
+                except Exception as e:
+                    logger.error(
+                        f"Error notifying observer for event '{event}': {e}",
+                        exc_info=True,
+                    )
 
     def on_config_change(self, config_state: ConfigurationState) -> None:
         """Updates the pipeline based on configuration changes."""
@@ -554,8 +583,8 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._pipeline.sync().update_viz()
         self.sync()
         self.validate()
-        self.notify_observers(
-            PipelineEvent.PROPERTIES_UPDATED, {"pipeline_config": pipeline_config}
+        self.notify_subscribers(
+            "pipeline.properties.updated", {"pipeline_config": pipeline_config}
         )
 
     def build_fluid(self, fluid_config: FluidConfig) -> Fluid:
@@ -601,8 +630,8 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         self.sync()
         self.validate()
-        self.notify_observers(
-            PipelineEvent.PIPE_ADDED, {"pipe_config": pipe_config, "index": index}
+        self.notify_subscribers(
+            "pipeline.pipe.added", {"pipe_config": pipe_config, "index": index}
         )
         logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
         return self
@@ -618,8 +647,8 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             self.sync()
             self.validate()
-            self.notify_observers(
-                PipelineEvent.PIPE_REMOVED,
+            self.notify_subscribers(
+                "pipeline.pipe.removed",
                 {"index": index},
             )
             logger.info(f"Removed pipe from index {index}")
@@ -652,8 +681,8 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             self.sync()
             self.validate()
-            self.notify_observers(
-                PipelineEvent.PIPE_MOVED,
+            self.notify_subscribers(
+                "pipeline.pipe.moved",
                 {"from_index": from_index, "to_index": to_index},
             )
             logger.info(f"Moved pipe from index {from_index} to {to_index}")
@@ -673,8 +702,8 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             self.sync()
             self.validate()
-            self.notify_observers(
-                PipelineEvent.PROPERTIES_UPDATED,
+            self.notify_subscribers(
+                "pipeline.pipe.updated",
                 {"pipe_config": pipe_config, "index": index},
             )
             logger.info(f"Updated pipe at index {index}")
@@ -693,8 +722,8 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Sync to update internal fluid config state from pipeline
         self.sync()
         self.validate()
-        self.notify_observers(
-            PipelineEvent.PROPERTIES_UPDATED, {"fluid_config": fluid_config}
+        self.notify_subscribers(
+            "pipeline.fluid.updated", {"fluid_config": fluid_config}
         )
         logger.info(f"Updated fluid configuration: {fluid_config.name}")
         return self
@@ -709,7 +738,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             except Exception as e:
                 logger.error(f"Error during validation: {e}")
         self._errors = errors
-        self.notify_observers(PipelineEvent.VALIDATION_CHANGED, {"errors": errors})
+        self.notify_subscribers("pipeline.validation.changed", {"errors": errors})
 
     def get_errors(self) -> typing.List[str]:
         """Get current validation errors."""
@@ -763,7 +792,7 @@ class PipelineManager(typing.Generic[PipelineT]):
     def from_state(
         cls,
         state: typing.Dict[str, typing.Any],
-        config: ConfigurationManager,
+        config: Configuration,
         validators: typing.Optional[typing.Sequence[PipeConfigValidator]] = None,
         flow_station_factories: typing.Optional[
             typing.Sequence[FlowStationFactory]
@@ -857,8 +886,23 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """
         self.manager = manager
         self.config_ui = ConfigurationUI(manager.config)
-        self.manager.add_observer(self.on_pipeline_event)
-        self.manager.config.add_observer(self.on_config_change)
+
+        # Subscribe to specific events with targeted handlers
+        self.manager.subscribe("pipeline.pipe.added", self.on_pipe_added)
+        self.manager.subscribe("pipeline.pipe.removed", self.on_pipe_removed)
+        self.manager.subscribe("pipeline.pipe.moved", self.on_pipe_moved)
+        self.manager.subscribe("pipeline.pipe.updated", self.on_pipe_updated)
+        self.manager.subscribe("pipeline.fluid.updated", self.on_fluid_updated)
+        self.manager.subscribe(
+            "pipeline.properties.updated", self.on_properties_updated
+        )
+        self.manager.subscribe(
+            "pipeline.validation.changed", self.on_validation_changed
+        )
+        self.manager.subscribe("pipeline.synced", self.on_pipeline_synced)
+
+        # Observe configuration changes
+        self.manager.config.observe(self.on_config_change)
 
         # UI components
         self.add_pipe_button = None
@@ -871,27 +915,28 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.properties_panel = None
         self.pipe_form_container = None
         self.fluid_form_container = None
-
-        # Current state
         self.selected_pipe_index: typing.Optional[int] = None
+        """Index of the currently selected pipe, or None if no selection."""
         self.current_pipeline: typing.Optional[Pipeline] = None
+        """Cached current pipeline for comparison."""
         self.current_flow_stations: typing.Optional[typing.List[FlowStation]] = None
+        """Cached current flow stations for comparison."""
 
     # For easy access to configuration properties
     @property
-    def theme_color(self) -> str:
-        """Get the current theme color."""
-        return self.manager.config.state.global_.theme_color
-
-    @property
-    def config(self) -> ConfigurationManager:
+    def config(self) -> Configuration:
         """Get the configuration manager."""
         return self.manager.config
 
     @property
+    def theme_color(self) -> str:
+        """Get the current theme color."""
+        return self.config.state.global_.theme_color
+
+    @property
     def unit_system(self) -> UnitSystem:
         """Get the current unit system."""
-        return self.manager.config.get_unit_system()
+        return self.config.get_unit_system()
 
     def get_primary_button_classes(self, additional_classes: str = "") -> str:
         """Get primary button classes with theme color."""
@@ -915,38 +960,61 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         base_classes = "bg-red-500 hover:bg-red-600 text-white"
         return f"{base_classes} {additional_classes}".strip()
 
-    def on_pipeline_event(self, event: PipelineEvent, data: typing.Any):
-        """Handle pipeline events and update UI accordingly."""
-        if event == PipelineEvent.PIPE_ADDED:
-            self.refresh_pipes_list()
-            self.refresh_pipeline_preview()
-            self.refresh_flow_stations()
-        elif event == PipelineEvent.PIPE_REMOVED:
-            self.refresh_pipes_list()
-            self.refresh_pipeline_preview()
-            self.refresh_flow_stations()
-            if self.selected_pipe_index is not None and self.selected_pipe_index >= len(
-                self.manager.get_pipe_configs()
-            ):
-                self.selected_pipe_index = None
-                self.refresh_properties_panel()
-        elif event == PipelineEvent.PIPE_MOVED:
-            self.refresh_pipes_list()
-            self.refresh_pipeline_preview()
-            self.refresh_flow_stations()
-        elif event == PipelineEvent.PROPERTIES_UPDATED:
-            self.refresh_pipes_list()
-            self.refresh_pipeline_preview()
-            self.refresh_flow_stations()
-        elif event == PipelineEvent.VALIDATION_CHANGED:
-            self.refresh_validation_display()
-            # Only refresh flow station if validation is now valid
-            if self.manager.is_valid():
-                self.refresh_flow_stations()
-        elif event == PipelineEvent.SYNCED:
-            self.refresh_pipes_list()
-            self.refresh_pipeline_preview()
+    def on_pipe_added(self, event: str, data: typing.Any):
+        """Handle pipe added events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
+
+    def on_pipe_removed(self, event: str, data: typing.Any):
+        """Handle pipe removed events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
+        if self.selected_pipe_index is not None and self.selected_pipe_index >= len(
+            self.manager.get_pipe_configs()
+        ):
+            self.selected_pipe_index = None
             self.refresh_properties_panel()
+
+    def on_pipe_moved(self, event: str, data: typing.Any):
+        """Handle pipe moved events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
+
+    def on_pipe_updated(self, event: str, data: typing.Any):
+        """Handle pipe updated events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
+        self.refresh_properties_panel()
+
+    def on_fluid_updated(self, event: str, data: typing.Any):
+        """Handle fluid updated events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
+        self.refresh_properties_panel()
+
+    def on_properties_updated(self, event: str, data: typing.Any):
+        """Handle general properties updated events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
+
+    def on_validation_changed(self, event: str, data: typing.Any):
+        """Handle validation changed events."""
+        self.refresh_validation_display()
+        # Only refresh flow station if validation is now valid
+        if self.manager.is_valid():
+            self.refresh_flow_stations()
+
+    def on_pipeline_synced(self, event: str, data: typing.Any):
+        """Handle pipeline synced events."""
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_properties_panel()
 
     def on_config_change(self, config_state: ConfigurationState):
         """Handle configuration changes and update UI accordingly."""
@@ -958,13 +1026,21 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     def cleanup(self):
         """Clean up resources and remove observers."""
         try:
-            # Remove observers to prevent memory leaks
-            self.manager.remove_observer(self.on_pipeline_event)
-            self.config.remove_observer(self.on_config_change)
+            # Remove all subscriptions for this UI instance
+            self.manager.unsubscribe_all(self.on_pipe_added)
+            self.manager.unsubscribe_all(self.on_pipe_removed)
+            self.manager.unsubscribe_all(self.on_pipe_moved)
+            self.manager.unsubscribe_all(self.on_pipe_updated)
+            self.manager.unsubscribe_all(self.on_fluid_updated)
+            self.manager.unsubscribe_all(self.on_properties_updated)
+            self.manager.unsubscribe_all(self.on_validation_changed)
+            self.manager.unsubscribe_all(self.on_pipeline_synced)
+
+            self.manager.config.unobserve(self.on_config_change)
             logger.info("Pipeline Manager UI cleaned up successfully")
-        except Exception as e:
+        except Exception as exc:
             logger.error(
-                f"Error during Pipeline Manager UI cleanup: {e}", exc_info=True
+                f"Error during Pipeline Manager UI cleanup: {exc}", exc_info=True
             )
 
     def update_button_themes(self):
@@ -972,10 +1048,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         # Update Add Pipe button
         if self.add_pipe_button is not None:
             self.add_pipe_button.props(f'color="{self.theme_color}"')
+            self.add_pipe_button.update()
 
         # Update Config Menu button
         if self.config_menu_button is not None:
             self.config_menu_button.props(f'color="{self.theme_color}"')
+            self.config_menu_button.update()
 
     def show(
         self,
@@ -984,7 +1062,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         ui_label: str = "Pipeline Builder",
         pipeline_label: str = "Pipeline Preview",
         flow_station_label: str = "Flow Station - Meters & Regulators",
-        theme_color: typing.Optional[str] = None,
         show_label: bool = True,
     ) -> ui.column:
         """
@@ -995,14 +1072,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         :param ui_label: Label for the UI header.
         :param pipeline_label: Label for the pipeline preview.
         :param flow_station_label: Label for the flow station panel.
-        :param theme_color: Theme color for buttons and accents.
         :param show_label: Whether to show the UI label header.
         :return: The main UI container.
         """
-        # Override theme color if provided
-        if theme_color is not None:
-            self.theme_color = theme_color
-
         self.main_container = (
             ui.column()
             .classes("w-full min-h-screen gap-2 p-2 sm:gap-4 sm:p-4")
@@ -1078,10 +1150,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.add_pipe_button = ui.button(
                 "+ Add Pipe", on_click=self.show_pipe_dialog, color=self.theme_color
             ).classes(self.get_primary_button_classes("mb-2 sm:mb-4 w-full sm:w-auto"))
-
             # Pipes list
             self.pipes_container = ui.column().classes("w-full gap-1 sm:gap-2")
-
             # Validation display
             self.validation_container = ui.column().classes("w-full mt-2 sm:mt-4")
 

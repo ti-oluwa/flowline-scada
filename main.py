@@ -6,14 +6,14 @@ import hashlib
 import logging
 import os
 import typing
+import redis
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
-from nicegui import Client, app, ui
+from nicegui import Client, ui
 
-from src.config.manage import ConfigurationManager
-from src.types import ConfigurationState, PipelineEvent
-from src.config.storages import JSONFileStorage
+from src.config.core import ConfigurationState, Configuration
+from src.config.storages import JSONFileStorage, RedisStorage
 from src.flow import FlowType, Fluid
 from src.ui.components import Pipeline
 from src.ui.manage import (
@@ -33,8 +33,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
-state_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/states")
+redis_available = False
+if redis_url := os.getenv("REDIS_URL"):
+    try:
+        redis_client = redis.Redis.from_url(redis_url)
+        redis_client.ping()
+        config_file_storage = RedisStorage(redis_client)
+        state_file_storage = RedisStorage(redis_client)
+        redis_available = True
+        logger.info("Using `RedisStorage` for config and state storage")
+    except redis.RedisError as exc:
+        logger.error(f"Failed to connect to Redis: {exc}, falling back to file storage")
+        redis_available = False
+
+if not redis_available:
+    config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
+    state_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/states")
+    logger.info("Using `JSONFileStorage` for config and state storage")
 
 
 @ui.page("/", title="Pipeline Management System")
@@ -51,7 +66,7 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    config = ConfigurationManager(
+    config = Configuration(
         session_id,
         storages=[config_file_storage],
     )
@@ -92,7 +107,7 @@ def root(client: Client) -> ui.element:
             theme_color = new_theme
             logger.info(f"Theme changed to: {new_theme}")
 
-        config.add_observer(on_theme_change)
+        config.observe(on_theme_change)
 
         # Pipeline manager interface
         pipeline_manager_container = ui.column().classes("w-full")
@@ -154,7 +169,7 @@ def root(client: Client) -> ui.element:
                 f"Session ID {session_id!r} in storage: {session_id_in_storage}"
             )
 
-            def pipeline_state_observer(_: PipelineEvent, __: typing.Any) -> None:
+            def pipeline_state_observer(_: str, __: typing.Any) -> None:
                 """Handle pipeline state changes."""
                 nonlocal session_id_in_storage
 
@@ -174,7 +189,7 @@ def root(client: Client) -> ui.element:
                     f"Pipeline state storage updated for session {session_id!r}"
                 )
 
-            pipeline_manager.add_observer(pipeline_state_observer)
+            pipeline_manager.subscribe("pipeline.*", pipeline_state_observer)
 
             # Get the active unit system
             unit_system = config.get_unit_system()
@@ -192,8 +207,8 @@ def root(client: Client) -> ui.element:
                 downstream_factory.on_config_change(config_state)
                 manager_ui.refresh_flow_stations()
 
-            config.add_observer(upstream_observer)
-            config.add_observer(downstream_observer)
+            config.observe(upstream_observer)
+            config.observe(downstream_observer)
             manager_ui.show(ui_label="Pipeline Builder", max_width="95%")
 
     return main_container
