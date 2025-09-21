@@ -2723,7 +2723,7 @@ class Pipeline:
         # This part should ideally not be reached if the loop returns
         return current_pressure
 
-    def _compute_mass_rate_range_complex(self) -> typing.Tuple[float, float]:
+    def _compute_mass_rate_range(self) -> typing.Tuple[float, float]:
         """
         Estimate a reasonable mass flow rate range for the solver based on max flow rates of pipes.
 
@@ -2776,9 +2776,9 @@ class Pipeline:
             flow_equation=flow_equation,
         )
         max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
-        return 0.001, max_mass_flow_rate.magnitude
+        return 0.001, max(max_mass_flow_rate.magnitude, 10.0)
 
-    def _compute_mass_rate_range(self) -> typing.Tuple[float, float]:
+    def _compute_mass_rate_range_simple(self) -> typing.Tuple[float, float]:
         """
         Estimates a reasonable mass flow rate range using the "Wide Net" approach.
 
@@ -2879,7 +2879,7 @@ class Pipeline:
             logger.info("Error (psi): %.4f", error_psi)
             return error_psi
 
-        min_mass_rate, max_mass_rate = self._compute_mass_rate_range_complex()
+        min_mass_rate, max_mass_rate = self._compute_mass_rate_range()
         logger.info("Initial Min Mass Flow Rate: %s", min_mass_rate)
         logger.info("Initial Max Mass Flow Rate: %s", max_mass_rate)
 
@@ -3010,12 +3010,9 @@ class Pipeline:
 
         if not solution.converged:
             logger.warning("Solver did not converge. Check your bracket or function.")
-            if self.alert_errors:
-                show_alert(
-                    f"Pipeline solver did not converge for pipeline - {self.name!r}. Check pipe parameter, pressures and flow conditions for unphysical conditions.",
-                    severity="warning",
-                )
-            raise RuntimeError("Pipeline solver did not converge.")
+            raise RuntimeError(
+                f"Pipeline solver did not converge for pipeline - {self.name!r}. Check pipe parameter, pressures and flow conditions for unphysical conditions.",
+            )
 
         mass_flow_solution = abs(
             float(
