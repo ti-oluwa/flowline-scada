@@ -560,9 +560,9 @@ class PipelineManager(typing.Generic[PipelineT]):
             if subscription.matches(event):
                 try:
                     subscription.callback(event, data)
-                except Exception as e:
+                except Exception as exc:
                     logger.error(
-                        f"Error notifying observer for event '{event}': {e}",
+                        f"Error notifying observer for event '{event}': {exc}",
                         exc_info=True,
                     )
 
@@ -630,10 +630,11 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         self.sync()
         self.validate()
-        self.notify_subscribers(
-            "pipeline.pipe.added", {"pipe_config": pipe_config, "index": index}
-        )
-        logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
+        if self.is_valid():
+            self.notify_subscribers(
+                "pipeline.pipe.added", {"pipe_config": pipe_config, "index": index}
+            )
+            logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
         return self
 
     def remove_pipe(self, index: int) -> "PipelineManager":
@@ -647,11 +648,12 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             self.sync()
             self.validate()
-            self.notify_subscribers(
-                "pipeline.pipe.removed",
-                {"index": index},
-            )
-            logger.info(f"Removed pipe from index {index}")
+            if self.is_valid():
+                self.notify_subscribers(
+                    "pipeline.pipe.removed",
+                    {"index": index},
+                )
+                logger.info(f"Removed pipe from index {index}")
         return self
 
     def move_pipe(self, from_index: int, to_index: int) -> "PipelineManager[PipelineT]":
@@ -681,11 +683,12 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             self.sync()
             self.validate()
-            self.notify_subscribers(
-                "pipeline.pipe.moved",
-                {"from_index": from_index, "to_index": to_index},
-            )
-            logger.info(f"Moved pipe from index {from_index} to {to_index}")
+            if self.is_valid():
+                self.notify_subscribers(
+                    "pipeline.pipe.moved",
+                    {"from_index": from_index, "to_index": to_index},
+                )
+                logger.info(f"Moved pipe from index {from_index} to {to_index}")
         return self
 
     def update_pipe(
@@ -702,11 +705,12 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             self.sync()
             self.validate()
-            self.notify_subscribers(
-                "pipeline.pipe.updated",
-                {"pipe_config": pipe_config, "index": index},
-            )
-            logger.info(f"Updated pipe at index {index}")
+            if self.is_valid():
+                self.notify_subscribers(
+                    "pipeline.pipe.updated",
+                    {"pipe_config": pipe_config, "index": index},
+                )
+                logger.info(f"Updated pipe at index {index}")
         return self
 
     def set_fluid_config(
@@ -716,16 +720,23 @@ class PipelineManager(typing.Generic[PipelineT]):
         try:
             fluid = self.build_fluid(self._fluid_config)
             self._pipeline.set_fluid(fluid, sync=True)
-        except Exception as e:
-            logger.error(f"Error updating pipeline fluid: {e}")
+        except Exception as exc:
+            ui.notify(
+                f"Error updating fluid '{fluid_config.name}'. Keeping existing fluid.",
+                type="warning",
+                position="top",
+            )
+            logger.error(f"Error updating pipeline fluid: {exc}", exc_info=True)
+            return self
 
         # Sync to update internal fluid config state from pipeline
         self.sync()
         self.validate()
-        self.notify_subscribers(
-            "pipeline.fluid.updated", {"fluid_config": fluid_config}
-        )
-        logger.info(f"Updated fluid configuration: {fluid_config.name}")
+        if self.is_valid():
+            self.notify_subscribers(
+                "pipeline.fluid.updated", {"fluid_config": fluid_config}
+            )
+            logger.info(f"Updated fluid configuration: {fluid_config.name}")
         return self
 
     def validate(self):
@@ -735,8 +746,8 @@ class PipelineManager(typing.Generic[PipelineT]):
             try:
                 validation_errors = validator(self._pipe_configs)
                 errors.extend(validation_errors)
-            except Exception as e:
-                logger.error(f"Error during validation: {e}")
+            except Exception as exc:
+                logger.error(f"Error during validation: {exc}", exc_info=True)
         self._errors = errors
         self.notify_subscribers("pipeline.validation.changed", {"errors": errors})
 
@@ -767,8 +778,8 @@ class PipelineManager(typing.Generic[PipelineT]):
             try:
                 station = factory(self)
                 flow_stations.append(station)
-            except Exception as e:
-                logger.error(f"Error building flow station: {e}", exc_info=True)
+            except Exception as exc:
+                logger.error(f"Error building flow station: {exc}", exc_info=True)
         return flow_stations
 
     def get_state(self) -> typing.Dict[str, typing.Any]:
@@ -803,25 +814,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         fluid_data = state.get("fluid", {})
         pipes_data = state.get("pipes", [])
 
-        # Build fluid
-        fluid_config = converter.structure(fluid_data, FluidConfig)
-        try:
-            fluid = Fluid.from_coolprop(
-                fluid_name=fluid_config.name,
-                phase=fluid_config.phase,
-                temperature=fluid_config.temperature,
-                pressure=fluid_config.pressure
-                or Quantity(101325, "Pa"),  # Default to 1 atm if not specified
-                molecular_weight=fluid_config.molecular_weight,
-            )
-        except Exception as e:
-            ui.notify(
-                f"Error building fluid '{fluid_config.name}'. Proceeding with no fluid.",
-                type="warning",
-            )
-            logger.error(f"Error building fluid from config: {e}", exc_info=True)
-            fluid = None
-
         # Build pipes
         pipe_configs = [
             converter.structure(pipe_data, PipeConfig) for pipe_data in pipes_data
@@ -836,7 +828,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 roughness=pc.roughness,
                 efficiency=pc.efficiency,
                 elevation_difference=pc.elevation_difference,
-                fluid=fluid,
+                fluid=None,  # Will be set later
                 direction=pc.direction,
                 name=pc.name,
                 scale_factor=pc.scale_factor,
@@ -849,7 +841,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Build pipeline
         pipeline = Pipeline(
             pipes=pipes,
-            fluid=fluid,
+            fluid=None,  # Will be set later
             name=pipeline_data.get("name", "Pipeline"),
             max_flow_rate=structure_quantity(
                 pipeline_data.get("max_flow_rate", {"magnitude": 1.0, "unit": "m^3/s"}),
@@ -863,6 +855,27 @@ class PipelineManager(typing.Generic[PipelineT]):
             ),
             alert_errors=pipeline_data.get("alert_errors", True),
         )
+
+        if fluid_data:
+            # Build fluid
+            fluid_config = converter.structure(fluid_data, FluidConfig)
+            try:
+                fluid = Fluid.from_coolprop(
+                    fluid_name=fluid_config.name,
+                    phase=fluid_config.phase,
+                    temperature=fluid_config.temperature,
+                    pressure=pipeline.upstream_pressure
+                    or Quantity(101325, "Pa"),  # Default to 1 atm if not specified
+                    molecular_weight=fluid_config.molecular_weight,
+                )
+                pipeline.set_fluid(fluid, sync=True)
+            except Exception as exc:
+                ui.notify(
+                    f"Error building fluid '{fluid_config.name}'. Proceeding with no fluid.",
+                    type="warning",
+                )
+                logger.error(f"Error building fluid from config: {exc}", exc_info=True)
+
         return cls(
             pipeline=pipeline,
             config=config,
@@ -962,12 +975,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def on_pipe_added(self, event: str, data: typing.Any):
         """Handle pipe added events."""
+        ui.notify(
+            f"Pipe '{data['pipe_config'].name}' added successfully at index {data['index']}",
+            type="success",
+            position="top",
+        )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
 
     def on_pipe_removed(self, event: str, data: typing.Any):
         """Handle pipe removed events."""
+        ui.notify(
+            f"Pipe at index {data['index']} removed successfully",
+            type="success",
+            position="top",
+        )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
@@ -979,12 +1002,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def on_pipe_moved(self, event: str, data: typing.Any):
         """Handle pipe moved events."""
+        ui.notify(
+            f"Pipe '{data['pipe_config'].name}' moved successfully",
+            type="success",
+            position="top",
+        )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
 
     def on_pipe_updated(self, event: str, data: typing.Any):
         """Handle pipe updated events."""
+        ui.notify(
+            f"Pipe '{data['pipe_config'].name}' updated successfully",
+            type="success",
+            position="top",
+        )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
@@ -992,6 +1025,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def on_fluid_updated(self, event: str, data: typing.Any):
         """Handle fluid updated events."""
+        ui.notify("Fluid updated successfully", type="success", position="top")
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
@@ -999,6 +1033,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
     def on_properties_updated(self, event: str, data: typing.Any):
         """Handle general properties updated events."""
+        ui.notify(
+            "Pipeline properties updated successfully", type="success", position="top"
+        )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
@@ -1203,7 +1240,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.pipeline_preview = (
                 ui.column()
                 .classes("w-full overflow-x-hidden")
-                .style("height: fit-content; min-height: 300px; position: relative;")
+                .style("height: 100%; min-height: 300px; position: relative;")
             )
         self.refresh_pipeline_preview()
 
@@ -1670,9 +1707,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.manager.add_pipe(pipe_config, index)
             dialog.close()
 
-        except Exception as e:
-            logger.error(f"Error adding pipe: {e}", exc_info=True)
-            ui.notify(f"Error adding pipe: {str(e)}", type="negative")
+        except Exception as exc:
+            logger.error(f"Error adding pipe: {exc}", exc_info=True)
+            ui.notify(f"Error adding pipe: {str(exc)}", type="negative")
 
     def select_pipe(self, index: int):
         """Select a pipe for editing."""
@@ -1700,8 +1737,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.manager.remove_pipe(index)
             if self.selected_pipe_index == index:
                 self.selected_pipe_index = None
-        except ValueError as e:
-            ui.notify(str(e), type="warning")
+        except ValueError as exc:
+            ui.notify(str(exc), type="warning")
 
     def show_pipe_properties_form(self, pipe_config: PipeConfig):
         """Create form for editing pipe properties."""
@@ -1926,13 +1963,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     ),  # type: ignore
                     efficiency=efficiency_input.value,
                 )
-
                 self.manager.update_pipe(self.selected_pipe_index, updated_config)
-                ui.notify("Pipe updated successfully", type="positive")
 
-        except Exception as e:
-            logger.error(f"Error updating pipe: {e}")
-            ui.notify(f"Error updating pipe: {str(e)}", type="negative")
+        except Exception as exc:
+            logger.error(f"Error updating pipe: {exc}", exc_info=True)
 
     def _update_fluid_from_form(
         self,
@@ -1959,11 +1993,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ),
             )
             self.manager.set_fluid_config(updated_config)
-            ui.notify("Fluid properties updated successfully", type="positive")
 
-        except Exception as e:
-            logger.error(f"Error updating fluid: {e}")
-            ui.notify(f"Error updating fluid: {str(e)}", type="negative")
+        except Exception as exc:
+            logger.error(f"Error updating fluid: {exc}", exc_info=True)
 
     def clear_pipe_selection(self):
         """Clear pipe selection and return to fluid properties."""

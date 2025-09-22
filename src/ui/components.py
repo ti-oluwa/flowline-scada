@@ -2111,7 +2111,7 @@ class Pipeline:
                 f"""
                 min-width: min({min_width}, 100%);
                 max-width: min({max_width}, 100%);
-                height: {height};
+                height: min({height}, 90dvh);
                 min-height: 200px;
                 overflow: hidden; 
                 display: flex;
@@ -2825,16 +2825,20 @@ class Pipeline:
 
         :return: self for method chaining
         """
-        if (
-            self.fluid is None
-            or len(self._pipes) == 0
-            or self.upstream_pressure.magnitude <= 0
-            or self.downstream_pressure.magnitude <= 0
-        ):
+        if self.fluid is None or len(self._pipes) == 0:
             logger.warning(
                 "Cannot sync pipeline %r: Ensure fluid is set, at least one pipe exists, and both upstream and downstream pressures are positive.",
                 self.name,
             )
+            return self
+
+        if (
+            self.upstream_pressure.magnitude <= 0
+            or self.downstream_pressure.magnitude <= 0
+        ):
+            # Just set all flow rates to zero if pressures are non-positive
+            for pipe in self._pipes:
+                pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
             return self
 
         # If only one pipe, just sync that pipe directly
