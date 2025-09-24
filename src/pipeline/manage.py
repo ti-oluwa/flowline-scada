@@ -201,29 +201,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             update_interval=cfg.flow_meter.update_interval,
             theme_color=theme_color,
         )
-        mass_flow_meter = MassFlowMeter(
-            value=pipeline.inlet_mass_rate.to(mass_flow_unit.unit).magnitude,
-            min_value=cfg.mass_flow_meter.min_value,
-            max_value=cfg.mass_flow_meter.max_value,
-            units=mass_flow_unit.display,
-            label=cfg.mass_flow_meter.label,
-            width=cfg.mass_flow_meter.width,
-            height=cfg.mass_flow_meter.height,
-            precision=cfg.mass_flow_meter.precision,
-            alarm_high=cfg.mass_flow_meter.alarm_high,
-            alarm_low=cfg.mass_flow_meter.alarm_low,
-            animation_speed=cfg.mass_flow_meter.animation_speed,
-            animation_interval=cfg.mass_flow_meter.animation_interval,
-            flow_direction=str(pipeline.pipes[0].direction)
-            if pipeline.pipes
-            else "east",  # type: ignore
-            update_func=lambda: pipeline.inlet_mass_rate.to(
-                mass_flow_unit.unit
-            ).magnitude,
-            update_interval=cfg.mass_flow_meter.update_interval,
-            theme_color=theme_color,
-        )
-        return [pressure_gauge, temperature_gauge, flow_meter, mass_flow_meter]
+        return [pressure_gauge, temperature_gauge, flow_meter]
 
     def build_regulators(
         self, manager: "PipelineManager[PipelineT]"
@@ -396,7 +374,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             theme_color=theme_color,
         )
         mass_flow_meter = MassFlowMeter(
-            value=pipeline.outlet_mass_rate.to(mass_flow_unit.unit).magnitude,
+            value=pipeline.mass_rate.to(mass_flow_unit.unit).magnitude,
             min_value=cfg.mass_flow_meter.min_value,
             max_value=cfg.mass_flow_meter.max_value,
             units=mass_flow_unit.display,
@@ -411,7 +389,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             flow_direction=str(pipeline.pipes[0].direction)
             if pipeline.pipes
             else "east",  # type: ignore
-            update_func=lambda: pipeline.outlet_mass_rate.to(
+            update_func=lambda: pipeline.mass_rate.to(
                 mass_flow_unit.unit
             ).magnitude,
             update_interval=cfg.mass_flow_meter.update_interval,

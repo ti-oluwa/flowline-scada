@@ -41,6 +41,7 @@ __all__ = [
     "check_directions_compatibility",
     "Meter",
     "FlowMeter",
+    "MassFlowMeter",
     "PressureGauge",
     "TemperatureGauge",
     "Regulator",
@@ -2251,6 +2252,7 @@ class Pipeline:
         self._upstream_pressure = None
         self._downstream_pressure = None
         self._upstream_temperature = upstream_temperature
+        self._mass_rate = Quantity(0.0, "lb/s")
 
         if upstream_pressure is not None:
             self.set_upstream_pressure(upstream_pressure)
@@ -2269,6 +2271,13 @@ class Pipeline:
     def fluid(self) -> typing.Optional[Fluid]:
         """Get the fluid in the pipeline."""
         return self._fluid
+
+    @property
+    def mass_rate(self) -> PlainQuantity[float]:
+        """The mass flow rate of the pipeline in lb/s."""
+        if self._fluid is None:
+            return Quantity(0.0, "lb/s")
+        return self._mass_rate.to("lb/s")
 
     @property
     def is_leaking(self) -> bool:
@@ -2797,11 +2806,11 @@ class Pipeline:
         if sync:
             try:
                 self.sync()
-            except Exception as e:
+            except Exception as exc:
                 self._pipes.pop(index)  # Rollback addition
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to synchronize pipeline properties after adding pipe - {self.name!r}: {e}",
+                        f"Failed to synchronize pipeline properties after adding pipe - {self.name!r}: {exc}",
                         severity="error",
                     )
                 raise
@@ -3433,6 +3442,7 @@ class Pipeline:
             )
         )
         actual_mass_flow_rate = Quantity(mass_flow_solution, "kg/s")
+        self._mass_rate = actual_mass_flow_rate
         logger.info("Actual Mass Flow Rate: %s", actual_mass_flow_rate)
         logger.info(f"System solved! Mass Flow Rate: {actual_mass_flow_rate:.4f}")
         # Now we run the calculation one last time with the correct flow rate
