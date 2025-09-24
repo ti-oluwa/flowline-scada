@@ -12,11 +12,11 @@ from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 from nicegui import Client, ui
 
-from src.config.core import ConfigurationState, Configuration
-from src.config.storages import JSONFileStorage, RedisStorage
+from src.config import ConfigurationState, Configuration
+from src.storages import JSONFileStorage, RedisStorage
 from src.flow import FlowType, Fluid
-from src.ui.components import Pipeline
-from src.ui.manage import (
+from src.pipeline.components import Pipeline
+from src.pipeline.manage import (
     DownstreamStationFactory,
     PipelineManager,
     PipelineManagerUI,
@@ -43,7 +43,10 @@ if redis_url := os.getenv("REDIS_URL"):
         redis_available = True
         logger.info("Using `RedisStorage` for config and state storage")
     except redis.RedisError as exc:
-        logger.error(f"Failed to connect to Redis: {exc}, falling back to file storage")
+        logger.error(
+            f"Failed to connect to Redis: {exc}, falling back to file storage",
+            exc_info=True,
+        )
         redis_available = False
 
 if not redis_available:
@@ -126,7 +129,7 @@ def root(client: Client) -> ui.element:
             if last_state:
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
                 try:
-                    pipeline_manager = PipelineManager.from_state(
+                    pipeline_manager = PipelineManager.load_state(
                         last_state,
                         config=config,
                         flow_station_factories=[upstream_factory, downstream_factory],
@@ -180,7 +183,7 @@ def root(client: Client) -> ui.element:
                     logger.warning("Pipeline state is invalid, skipping state save")
                     return
 
-                state = pipeline_manager.get_state()
+                state = pipeline_manager.dump_state()
                 if not session_id_in_storage:
                     state_file_storage.create(session_id, state)
                 else:
@@ -221,7 +224,8 @@ def main():
         title="Pipeline Management System",
         port=8080,
         host="0.0.0.0",
-        reload=os.getenv("DEBUG", "False").lower() in ("t", "true", "yes", "on"),
+        reload=os.getenv("DEBUG", "False").lower()
+        in ("t", "true", "yes", "on", "1", "y"),
         show=True,
         favicon="🔧",
         dark=False,

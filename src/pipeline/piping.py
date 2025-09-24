@@ -8,6 +8,7 @@ with proper connection interfaces and decoupled SVG generation.
 import typing
 import copy
 import attrs
+import math
 from pint.facets.plain import PlainQuantity
 
 from src.units import Quantity
@@ -17,6 +18,7 @@ __all__ = [
     "ConnectionPoint",
     "SVGComponent",
     "PipeComponent",
+    "LeakInfo",
     "HorizontalPipe",
     "VerticalPipe",
     "StraightConnector",
@@ -60,6 +62,40 @@ class SVGComponent:
     """Outlet connection point for this component."""
     viewbox: str
     """SVG viewBox attribute string defining the coordinate system."""
+
+
+@attrs.define(slots=True)
+class LeakInfo:
+    """Visual representation of a pipe leak for SVG rendering."""
+
+    location: float
+    """Position along pipe length as fraction (0.0 to 1.0)."""
+    severity: str
+    """Qualitative severity: 'pinhole', 'small', 'moderate', 'large', 'critical'."""
+
+    def get_visual_size(self, pipe_diameter_pixels: float) -> float:
+        """Calculate visual size of leak indicator based on severity and pipe size."""
+        # Base size as fraction of pipe diameter
+        size_map = {
+            "pinhole": 0.15,
+            "small": 0.25,
+            "moderate": 0.4,
+            "large": 0.6,
+            "critical": 0.8,
+        }
+        base_fraction = size_map.get(self.severity, 0.3)
+        return max(3, pipe_diameter_pixels * base_fraction)
+
+    def get_leak_color(self) -> str:
+        """Get color based on leak severity."""
+        color_map = {
+            "pinhole": "#fbbf24",  # Yellow
+            "small": "#f59e0b",  # Orange
+            "moderate": "#dc2626",  # Red
+            "large": "#991b1b",  # Dark red
+            "critical": "#7f1d1d",  # Very dark red
+        }
+        return color_map.get(self.severity, "#dc2626")
 
 
 @typing.runtime_checkable
@@ -172,6 +208,8 @@ class HorizontalPipe(PipeComponent):
     """Width of the SVG canvas for this pipe."""
     canvas_height: float = 100.0
     """Height of the SVG canvas for this pipe."""
+    leaks: typing.List[LeakInfo] = attrs.field(factory=list)
+    """List of leaks in this pipe."""
 
     def __attrs_post_init__(self):
         """Validate direction after initialization."""
@@ -283,6 +321,82 @@ class HorizontalPipe(PipeComponent):
         flange_width = 8
         flange_height = pipe_diameter_pixels + 8
 
+        # Generate leak visualization
+        leak_visuals = ""
+        for leak in self.leaks:
+            # Calculate leak position along pipe
+            leak_x = pipe_x_start + (leak.location * pipe_length_pixels)
+            leak_size = leak.get_visual_size(pipe_diameter_pixels)
+            leak_color = leak.get_leak_color()
+
+            # Create leak indicator (crack/hole)
+            leak_visuals += f'''
+            <!-- LeakInfo indicator at {leak.location:.1%} -->
+            <g class="leak-indicator" data-severity="{leak.severity}" data-rate="{leak.rate}">
+                <!-- Main leak hole -->
+                <ellipse cx="{leak_x}" cy="{center_y}" 
+                         rx="{leak_size / 2}" ry="{leak_size / 3}" 
+                         fill="{leak_color}" stroke="#000000" stroke-width="1" 
+                         opacity="0.8">
+                    <animate attributeName="opacity" 
+                             values="0.6;1;0.6" 
+                             dur="1.5s" 
+                             repeatCount="indefinite"/>
+                </ellipse>
+                
+                <!-- LeakInfo spray particles -->
+                <g class="leak-spray">
+            '''
+
+            # Generate spray particles for active leaks
+            if leak.severity in ["moderate", "large", "critical"]:
+                spray_count = min(8, max(3, int(leak.rate.to("ft^3/s").magnitude * 10)))
+                for i in range(spray_count):
+                    # Spray particles emanating from leak
+                    angle = -45 + (
+                        i * 90 / max(1, spray_count - 1)
+                    )  # Spray downward and sideways
+                    spray_distance = leak_size * (1.5 + i * 0.3)
+                    spray_x = (
+                        leak_x + spray_distance * math.cos(math.radians(angle)) * 0.3
+                    )
+                    spray_y = (
+                        center_y + spray_distance * math.sin(math.radians(angle)) * 0.3
+                    )
+
+                    leak_visuals += f'''
+                    <circle cx="{spray_x}" cy="{spray_y}" r="1" 
+                            fill="{leak_color}" opacity="0.4">
+                        <animate attributeName="opacity" 
+                                 values="0;0.7;0" 
+                                 dur="{1 + i * 0.2}s" 
+                                 repeatCount="indefinite" 
+                                 begin="{i * 0.1}s"/>
+                        <animateTransform attributeName="transform" 
+                                          type="translate" 
+                                          values="0,0; 0,{spray_distance / 3}" 
+                                          dur="{1 + i * 0.2}s" 
+                                          repeatCount="indefinite" 
+                                          begin="{i * 0.1}s"/>
+                    </circle>
+                    '''
+
+            leak_visuals += """
+                </g>
+                
+                <!-- LeakInfo severity indicator -->
+                <text x="{}" y="{}" text-anchor="middle" 
+                      font-size="8" fill="{}" font-weight="bold" opacity="0.8">
+                    {}
+                </text>
+            </g>
+            """.format(
+                leak_x,
+                center_y - pipe_diameter_pixels / 2 - 10,
+                leak_color,
+                leak.severity[0].upper(),  # First letter of severity
+            )
+
         # Generate unique ID for this component
         unique_id = id(self)
 
@@ -314,6 +428,9 @@ class HorizontalPipe(PipeComponent):
             
             <!-- Flow particles -->
             {particles}
+            
+            <!-- LeakInfo visualizations -->
+            {leak_visuals}
         '''
 
         # Generate complete SVG with unique gradient ID
@@ -385,6 +502,8 @@ class VerticalPipe(PipeComponent):
     """Width of the SVG canvas for this pipe."""
     canvas_height: float = 400.0
     """Height of the SVG canvas for this pipe."""
+    leaks: typing.List[LeakInfo] = attrs.field(factory=list)
+    """List of leaks on this pipe."""
 
     def __attrs_post_init__(self):
         """
@@ -500,6 +619,80 @@ class VerticalPipe(PipeComponent):
         flange_width = pipe_diameter_pixels + 8
         flange_height = 8
 
+        # Generate leak visualization
+        leak_visuals = ""
+        for leak in self.leaks:
+            # Calculate leak position along pipe (vertical)
+            leak_y = pipe_y_start + (leak.location * pipe_length_pixels)
+            leak_size = leak.get_visual_size(pipe_diameter_pixels)
+            leak_color = leak.get_leak_color()
+
+            # Create leak indicator (crack/hole)
+            leak_visuals += f'''
+            <!-- LeakInfo indicator at {leak.location:.1%} -->
+            <g class="leak-indicator" data-severity="{leak.severity}" data-rate="{leak.rate}">
+                <!-- Main leak hole -->
+                <ellipse cx="{center_x}" cy="{leak_y}" 
+                         rx="{leak_size / 3}" ry="{leak_size / 2}" 
+                         fill="{leak_color}" stroke="#000000" stroke-width="1" 
+                         opacity="0.8">
+                    <animate attributeName="opacity" 
+                             values="0.6;1;0.6" 
+                             dur="1.5s" 
+                             repeatCount="indefinite"/>
+                </ellipse>
+                
+                <!-- LeakInfo spray particles -->
+                <g class="leak-spray">
+            '''
+
+            # Generate spray particles for active leaks
+            if leak.severity in ["moderate", "large", "critical"]:
+                spray_count = min(8, max(3, int(leak.rate.to("ft^3/s").magnitude * 10)))
+                for i in range(spray_count):
+                    # Spray particles emanating from leak (horizontal spray from vertical pipe)
+                    angle = -135 + (i * 90 / max(1, spray_count - 1))  # Spray sideways
+                    spray_distance = leak_size * (1.5 + i * 0.3)
+                    spray_x = (
+                        center_x + spray_distance * math.cos(math.radians(angle)) * 0.5
+                    )
+                    spray_y = (
+                        leak_y + spray_distance * math.sin(math.radians(angle)) * 0.3
+                    )
+
+                    leak_visuals += f'''
+                    <circle cx="{spray_x}" cy="{spray_y}" r="1" 
+                            fill="{leak_color}" opacity="0.4">
+                        <animate attributeName="opacity" 
+                                 values="0;0.7;0" 
+                                 dur="{1 + i * 0.2}s" 
+                                 repeatCount="indefinite" 
+                                 begin="{i * 0.1}s"/>
+                        <animateTransform attributeName="transform" 
+                                          type="translate" 
+                                          values="0,0; {spray_distance / 3},0" 
+                                          dur="{1 + i * 0.2}s" 
+                                          repeatCount="indefinite" 
+                                          begin="{i * 0.1}s"/>
+                    </circle>
+                    '''
+
+            leak_visuals += """
+                </g>
+                
+                <!-- LeakInfo severity indicator -->
+                <text x="{}" y="{}" text-anchor="middle" 
+                      font-size="8" fill="{}" font-weight="bold" opacity="0.8">
+                    {}
+                </text>
+            </g>
+            """.format(
+                center_x + pipe_diameter_pixels / 2 + 15,
+                leak_y,
+                leak_color,
+                leak.severity[0].upper(),  # First letter of severity
+            )
+
         # Generate unique ID for this component
         unique_id = id(self)
 
@@ -531,6 +724,9 @@ class VerticalPipe(PipeComponent):
             
             <!-- Flow particles -->
             {particles}
+            
+            <!-- LeakInfo visualizations -->
+            {leak_visuals}
         '''
 
         # Generate complete SVG
@@ -563,7 +759,6 @@ class VerticalPipe(PipeComponent):
             diameter=pipe_diameter_pixels,
             flow_rate=self.flow_rate,
         )
-
         return SVGComponent(
             main_svg=main_svg,
             inner_content=inner_content,
@@ -1233,6 +1428,7 @@ def build_horizontal_pipe(
     scale_factor: float = 1.0,
     canvas_width: float = 400.0,
     canvas_height: float = 100.0,
+    leaks: typing.Optional[typing.List[LeakInfo]] = None,
 ) -> HorizontalPipe:
     """
     Build a horizontal pipe component.
@@ -1247,6 +1443,7 @@ def build_horizontal_pipe(
     :param scale_factor: Scaling factor for physical to display conversion.
     :param canvas_width: Width of the SVG canvas.
     :param canvas_height: Height of the SVG canvas.
+    :param leaks: Optional list of leaks in the pipe.
     :return: Configured horizontal pipe component.
     :raises ValueError: If direction is not EAST or WEST.
     """
@@ -1264,6 +1461,7 @@ def build_horizontal_pipe(
         scale_factor=scale_factor,
         canvas_width=canvas_width,
         canvas_height=canvas_height,
+        leaks=leaks or [],
     )
 
 
@@ -1276,6 +1474,7 @@ def build_vertical_pipe(
     scale_factor: float = 1.0,
     canvas_width: float = 100.0,
     canvas_height: float = 400.0,
+    leaks: typing.Optional[typing.List[LeakInfo]] = None,
 ) -> VerticalPipe:
     """
     Build a vertical pipe component.
@@ -1290,6 +1489,7 @@ def build_vertical_pipe(
     :param scale_factor: Scaling factor for physical to display conversion.
     :param canvas_width: Width of the SVG canvas.
     :param canvas_height: Height of the SVG canvas.
+    :param leaks: Optional list of leaks in the pipe.
     :return: Configured vertical pipe component.
     :raises ValueError: If direction is not NORTH or SOUTH.
     """
@@ -1307,6 +1507,7 @@ def build_vertical_pipe(
         scale_factor=scale_factor,
         canvas_width=canvas_width,
         canvas_height=canvas_height,
+        leaks=leaks or [],
     )
 
 

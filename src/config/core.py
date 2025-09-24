@@ -1,5 +1,5 @@
 """
-Configuration Management System
+Main configuration management module.
 """
 
 from typing_extensions import Self
@@ -12,13 +12,15 @@ from datetime import datetime
 from src.units import UnitSystem, IMPERIAL
 from src.types import (
     converter,
-    ConfigStorage,
+    StorageBackend,
     GlobalConfig,
     PipelineConfig,
     FlowStationConfig,
 )
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["Configuration", "ConfigurationState"]
 
 
 def _flatten(obj, parent_key: str = "", sep: str = "."):
@@ -143,7 +145,7 @@ class Configuration:
     def __init__(
         self,
         id: str,
-        storages: typing.Optional[typing.List[ConfigStorage]] = None,
+        storages: typing.Optional[typing.List[StorageBackend]] = None,
     ) -> None:
         """
         Initialize configuration.
@@ -227,7 +229,7 @@ class Configuration:
             self.save()
         self.notify()
 
-    def load(self, storage: typing.Optional[ConfigStorage] = None):
+    def load(self, storage: typing.Optional[StorageBackend] = None):
         """
         Load configuration from storages
 

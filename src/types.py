@@ -131,6 +131,31 @@ class PipeDirection(str, enum.Enum):
 
 
 @attrs.define(slots=True, frozen=True)
+class PipeLeakConfig:
+    """Configuration for a pipe leak."""
+
+    location: float
+    """Location of the leak as a fraction along the pipe length (0.0 to 1.0)"""
+    diameter: Quantity
+    """Diameter of the leak opening"""
+    discharge_coefficient: float = 0.6
+    """Discharge coefficient for the leak (typically 0.6 for sharp-edged orifice)"""
+    active: bool = True
+    """Whether the leak is currently active"""
+    name: typing.Optional[str] = None
+    """Optional name for the leak"""
+
+    def __attrs_post_init__(self):
+        """Validate leak configuration after initialization."""
+        if self.diameter.magnitude <= 0:
+            raise ValueError("Leak diameter must be positive")
+        if not (0.0 <= self.location <= 1.0):
+            raise ValueError("Location fraction must be between 0.0 and 1.0")
+        if not (0.1 <= self.discharge_coefficient <= 1.0):
+            raise ValueError("Discharge coefficient must be between 0.1 and 1.0")
+
+
+@attrs.define(slots=True, frozen=True)
 class PipeConfig:
     """Configuration for a single pipe component."""
 
@@ -163,6 +188,10 @@ class PipeConfig:
     """Maximum flow rate through the pipe"""
     flow_type: FlowType = FlowType.COMPRESSIBLE
     """Type of flow in the pipe (incompressible or compressible)"""
+    leaks: typing.List[PipeLeakConfig] = attrs.field(factory=list)
+    """List of leaks in the pipe"""
+    ambient_pressure: Quantity = attrs.field(factory=lambda: Quantity(14.7, "psi"))  # type: ignore
+    """Ambient pressure outside the pipe (usually atmospheric)"""
 
 
 @attrs.define(slots=True, frozen=True)
@@ -264,6 +293,15 @@ class FlowStationConfig:
         )
     )
     """Configuration for the flow meter"""
+    mass_flow_meter: MeterConfig = attrs.field(
+        factory=lambda: MeterConfig(
+            label="Mass Flow Rate",
+            max_value=5000.0,
+            height="220px",
+            precision=3,
+        )
+    )
+    """Configuration for the mass flow meter"""
     pressure_regulator: RegulatorConfig = attrs.field(
         factory=lambda: RegulatorConfig(label="Pressure Control", max_value=5000.0)
     )
@@ -299,11 +337,11 @@ class GlobalConfig:
 class PipelineConfig:
     """Pipeline-specific configuration"""
 
-    name: str = "Main Pipeline"
+    name: str = "Flowline"
     """Default name for new pipelines"""
     max_flow_rate: Quantity = attrs.field(factory=lambda: Quantity(100.0, "MMscf/day"))  # type: ignore
     """Default maximum flow rate"""
-    flow_type: str = "compressible"
+    flow_type: FlowType = FlowType.COMPRESSIBLE
     """Default flow type: 'compressible' or 'incompressible'"""
     connector_length: Quantity = attrs.field(factory=lambda: Quantity(0.1, "m"))  # type: ignore
     """Length of connectors between pipes in meters"""
@@ -318,30 +356,30 @@ class PipelineConfig:
             name="Pipe Segment",
             internal_diameter=Quantity(2, "inch"),  # type: ignore
             length=Quantity(100, "m"),  # type: ignore
-            upstream_pressure=Quantity(0, "psi"),  # type: ignore
-            downstream_pressure=Quantity(0, "psi"),  # type: ignore
+            upstream_pressure=Quantity(50, "psi"),  # type: ignore
+            downstream_pressure=Quantity(42, "psi"),  # type: ignore
         )
     )
     """Default pipe properties"""
 
 
-class ConfigStorage(typing.Protocol):
-    """Protocol defining a configuration storage backend interface"""
+class StorageBackend(typing.Protocol):
+    """Protocol defining a storage backend interface"""
 
-    def read(self, id: str) -> typing.Optional[dict]:
-        """Read configuration data by ID"""
+    def read(self, key: str) -> typing.Optional[dict]:
+        """Read data by key"""
         ...
 
-    def update(self, id: str, data: dict, overwrite: bool = ...) -> None:
-        """Update configuration data by ID"""
+    def update(self, key: str, data: dict, overwrite: bool = ...) -> None:
+        """Update data by key"""
         ...
 
-    def create(self, id: str, data: dict) -> None:
-        """Create new configuration data"""
+    def create(self, key: str, data: dict) -> None:
+        """Create new data"""
         ...
 
-    def delete(self, id: str) -> None:
-        """Delete configuration data by ID"""
+    def delete(self, key: str) -> None:
+        """Delete data by key"""
         ...
 
 
@@ -355,7 +393,7 @@ class EventSubscription:
         """
         Initialize event subscription.
 
-        :param event: Event pattern to match ("*" for all, "pipeline.*" for prefix, or exact event name)
+        :param event: Event pattern or regex to match (e.g "*" for all, "pipeline.*" for prefix, or exact event name)
         :param callback: Callback function to execute when event matches
         """
         self.event = event

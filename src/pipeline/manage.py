@@ -5,25 +5,29 @@ Pipeline Management UI
 import typing
 import logging
 from functools import partial
+from typing_extensions import Self
 from nicegui import ui
 
 from src.config.core import Configuration, ConfigurationState
 from src.config.ui import ConfigurationUI
-from src.ui.piping import PipeDirection
-from src.ui.components import (
+from src.pipeline.piping import PipeDirection
+from src.pipeline.components import (
     Pipe,
     Pipeline,
+    PipeLeak,
     Meter,
     Regulator,
     FlowStation,
     PressureGauge,
     TemperatureGauge,
     FlowMeter,
+    MassFlowMeter,
 )
 from src.flow import Fluid
 from src.units import Quantity, UnitSystem
 from src.types import (
     PipeConfig,
+    PipeLeakConfig,
     FluidConfig,
     FlowStationConfig,
     FlowType,
@@ -130,6 +134,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         pressure_unit = unit_system["pressure"]
         temperature_unit = unit_system["temperature"]
         flow_unit = unit_system["flow_rate"]
+        mass_flow_unit = unit_system["mass_flow_rate"]
 
         pressure_gauge = PressureGauge(
             value=pipeline.upstream_pressure.to(pressure_unit.unit).magnitude,
@@ -196,7 +201,29 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             update_interval=cfg.flow_meter.update_interval,
             theme_color=theme_color,
         )
-        return [pressure_gauge, temperature_gauge, flow_meter]
+        mass_flow_meter = MassFlowMeter(
+            value=pipeline.inlet_mass_rate.to(mass_flow_unit.unit).magnitude,
+            min_value=cfg.mass_flow_meter.min_value,
+            max_value=cfg.mass_flow_meter.max_value,
+            units=mass_flow_unit.display,
+            label=cfg.mass_flow_meter.label,
+            width=cfg.mass_flow_meter.width,
+            height=cfg.mass_flow_meter.height,
+            precision=cfg.mass_flow_meter.precision,
+            alarm_high=cfg.mass_flow_meter.alarm_high,
+            alarm_low=cfg.mass_flow_meter.alarm_low,
+            animation_speed=cfg.mass_flow_meter.animation_speed,
+            animation_interval=cfg.mass_flow_meter.animation_interval,
+            flow_direction=str(pipeline.pipes[0].direction)
+            if pipeline.pipes
+            else "east",  # type: ignore
+            update_func=lambda: pipeline.inlet_mass_rate.to(
+                mass_flow_unit.unit
+            ).magnitude,
+            update_interval=cfg.mass_flow_meter.update_interval,
+            theme_color=theme_color,
+        )
+        return [pressure_gauge, temperature_gauge, flow_meter, mass_flow_meter]
 
     def build_regulators(
         self, manager: "PipelineManager[PipelineT]"
@@ -301,6 +328,8 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         pressure_unit = unit_system["pressure"]
         temperature_unit = unit_system["temperature"]
         flow_unit = unit_system["flow_rate"]
+        mass_flow_unit = unit_system["mass_flow_rate"]
+
         pressure_gauge = PressureGauge(
             value=pipeline.downstream_pressure.to(pressure_unit.unit).magnitude,
             min_value=cfg.pressure_guage.min_value,
@@ -366,7 +395,29 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             update_interval=cfg.flow_meter.update_interval,
             theme_color=theme_color,
         )
-        return [pressure_gauge, temperature_gauge, flow_meter]
+        mass_flow_meter = MassFlowMeter(
+            value=pipeline.outlet_mass_rate.to(mass_flow_unit.unit).magnitude,
+            min_value=cfg.mass_flow_meter.min_value,
+            max_value=cfg.mass_flow_meter.max_value,
+            units=mass_flow_unit.display,
+            label=cfg.mass_flow_meter.label,
+            width=cfg.mass_flow_meter.width,
+            height=cfg.mass_flow_meter.height,
+            precision=cfg.mass_flow_meter.precision,
+            alarm_high=cfg.mass_flow_meter.alarm_high,
+            alarm_low=cfg.mass_flow_meter.alarm_low,
+            animation_speed=cfg.mass_flow_meter.animation_speed,
+            animation_interval=cfg.mass_flow_meter.animation_interval,
+            flow_direction=str(pipeline.pipes[0].direction)
+            if pipeline.pipes
+            else "east",  # type: ignore
+            update_func=lambda: pipeline.outlet_mass_rate.to(
+                mass_flow_unit.unit
+            ).magnitude,
+            update_interval=cfg.mass_flow_meter.update_interval,
+            theme_color=theme_color,
+        )
+        return [pressure_gauge, temperature_gauge, flow_meter, mass_flow_meter]
 
     def build_regulators(
         self, manager: "PipelineManager[PipelineT]"
@@ -464,7 +515,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         Synchronize pipe and fluid configs from the current pipeline state.
         This ensures that the internal representation matches the actual Pipeline instance.
 
-        Called internally after any modification to the pipeline.
+        *Called internally after any modification to the pipeline.*
         """
         logger.info(
             f"Synchronizing pipeline manager state with pipeline {self._pipeline.name}"
@@ -483,6 +534,18 @@ class PipelineManager(typing.Generic[PipelineT]):
             )
 
         for i, pipe in enumerate(self._pipeline):
+            # Build leak configs from pipe leaks
+            leak_configs = []
+            for leak in pipe._leaks:
+                leak_config = PipeLeakConfig(
+                    location=leak.location,
+                    diameter=leak.diameter,
+                    discharge_coefficient=leak.discharge_coefficient,
+                    active=leak.active,
+                    name=leak.name,
+                )
+                leak_configs.append(leak_config)
+
             pipe_config = PipeConfig(
                 name=pipe.name or f"Pipe-{i + 1}",
                 length=pipe.length,  # type: ignore
@@ -497,6 +560,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 scale_factor=pipe.scale_factor,
                 max_flow_rate=pipe.max_flow_rate,  # type: ignore
                 flow_type=pipe.flow_type,  # type: ignore
+                leaks=leak_configs,
             )
             self._pipe_configs.append(pipe_config)
 
@@ -505,7 +569,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             old_pipe_configs != self._pipe_configs
             or old_fluid_config != self._fluid_config
         ):
-            self.notify_subscribers(
+            self.notify(
                 "pipeline.synced",
                 {
                     "old_pipe_configs": old_pipe_configs,
@@ -525,10 +589,11 @@ class PipelineManager(typing.Generic[PipelineT]):
         Subscribe to pipeline events matching the given pattern.
 
         :param event: Event pattern to match:
-                       - "*" for all events
-                       - "pipeline.*" for prefix matching
-                       - "pipeline.pipe.added" for exact event
-                       - Regex patterns are also supported
+            - "*" for all events
+            - "pipeline.*" for prefix matching
+            - "pipeline.pipe.added" for exact event
+            - Regex patterns are also supported
+
         :param callback: Function to call when event matches
         """
         subscription = EventSubscription(event, callback)
@@ -541,7 +606,12 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._subscriptions.append(subscription)
 
     def unsubscribe(self, event: str, callback: EventCallback):
-        """Remove a subscription for the given event and callback."""
+        """
+        Remove a subscription for the given event and callback.
+
+        :param event: The event pattern to remove.
+        :param callback: The callback function to remove.
+        """
         self._subscriptions = [
             sub
             for sub in self._subscriptions
@@ -549,13 +619,23 @@ class PipelineManager(typing.Generic[PipelineT]):
         ]
 
     def unsubscribe_all(self, callback: EventCallback):
-        """Remove all subscriptions for the given callback."""
+        """
+        Remove all subscriptions for the given callback.
+
+        :param callback: The callback function to remove subscriptions for.
+        """
         self._subscriptions = [
             sub for sub in self._subscriptions if sub.callback != callback
         ]
 
-    def notify_subscribers(self, event: str, data: typing.Any = None):
-        """Notify all subscribers whose event patterns match the given event (sequentially, as they registered)."""
+    def notify(self, event: str, data: typing.Any = None):
+        """
+        Notify all subscribers whose event patterns match the given event
+        (sequentially, as they registered).
+
+        :param event: The event name to notify.
+        :param data: Optional data to pass to the callback.
+        """
         for subscription in self._subscriptions:
             if subscription.matches(event):
                 try:
@@ -567,7 +647,12 @@ class PipelineManager(typing.Generic[PipelineT]):
                     )
 
     def on_config_change(self, config_state: ConfigurationState) -> None:
-        """Updates the pipeline based on configuration changes."""
+        """
+        Monitors configuration changes.
+        Updates the pipeline based on configuration changes.
+
+        :param config_state: The new configuration state.
+        """
         pipeline_config = config_state.pipeline
         self._pipeline.name = pipeline_config.name
         self._pipeline.alert_errors = pipeline_config.alert_errors
@@ -583,12 +668,15 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._pipeline.sync().update_viz()
         self.sync()
         self.validate()
-        self.notify_subscribers(
-            "pipeline.properties.updated", {"pipeline_config": pipeline_config}
-        )
+        self.notify("pipeline.properties.updated", {"pipeline_config": pipeline_config})
 
     def build_fluid(self, fluid_config: FluidConfig) -> Fluid:
-        """Build a Fluid instance from the current fluid config."""
+        """
+        Build a Fluid instance from the current fluid config.
+
+        :param fluid_config: The `FluidConfig` to build from.
+        :return: A new Fluid instance.
+        """
         return Fluid.from_coolprop(
             fluid_name=fluid_config.name,
             phase=fluid_config.phase,
@@ -600,7 +688,25 @@ class PipelineManager(typing.Generic[PipelineT]):
     def build_pipe(
         self, pipe_config: PipeConfig, fluid: typing.Optional[Fluid] = None
     ) -> Pipe:
-        """Build a Pipe instance from a pipe config."""
+        """
+        Build a Pipe instance from a pipe config.
+
+        :param pipe_config: The `PipeConfig` to build from.
+        :param fluid: Optional Fluid instance to associate with the pipe. If None, uses the current pipeline fluid.
+        :return: A new pipe instance.
+        """
+        # Build leaks from leak configs
+        leaks = []
+        for leak_config in pipe_config.leaks:
+            leak = PipeLeak(
+                location=leak_config.location,
+                diameter=leak_config.diameter,
+                discharge_coefficient=leak_config.discharge_coefficient,
+                active=leak_config.active,
+                name=leak_config.name,
+            )
+            leaks.append(leak)
+
         return Pipe(
             length=pipe_config.length,
             internal_diameter=pipe_config.internal_diameter,
@@ -616,12 +722,20 @@ class PipelineManager(typing.Generic[PipelineT]):
             scale_factor=pipe_config.scale_factor,
             max_flow_rate=pipe_config.max_flow_rate,
             flow_type=pipe_config.flow_type,
+            leaks=leaks if leaks else None,
+            ambient_pressure=pipe_config.ambient_pressure,
         )
 
     def add_pipe(
         self, pipe_config: PipeConfig, index: typing.Optional[int] = None
-    ) -> "PipelineManager":
-        """Add a pipe at the specified index (or at the end)."""
+    ) -> Self:
+        """
+        Add a pipe at the specified index (or at the end).
+
+        :param pipe_config: The `PipeConfig` to add.
+        :param index: Optional index to insert the pipe at. If None, appends to the end.
+        :return: Self for method chaining.
+        """
         if index is None:
             index = len(self._pipe_configs)
 
@@ -631,14 +745,19 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync()
         self.validate()
         if self.is_valid():
-            self.notify_subscribers(
+            self.notify(
                 "pipeline.pipe.added", {"pipe_config": pipe_config, "index": index}
             )
             logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
         return self
 
-    def remove_pipe(self, index: int) -> "PipelineManager":
-        """Remove a pipe at the specified index."""
+    def remove_pipe(self, index: int) -> Self:
+        """
+        Remove a pipe at the specified index.
+
+        :param index: Index of the pipe to remove.
+        :return: Self for method chaining.
+        """
         if len(self._pipe_configs) <= 1:
             raise ValueError("Pipeline must contain at least one pipe")
 
@@ -649,15 +768,21 @@ class PipelineManager(typing.Generic[PipelineT]):
             self.sync()
             self.validate()
             if self.is_valid():
-                self.notify_subscribers(
+                self.notify(
                     "pipeline.pipe.removed",
                     {"index": index},
                 )
                 logger.info(f"Removed pipe from index {index}")
         return self
 
-    def move_pipe(self, from_index: int, to_index: int) -> "PipelineManager[PipelineT]":
-        """Move a pipe from one position to another."""
+    def move_pipe(self, from_index: int, to_index: int) -> Self:
+        """
+        Move a pipe from one position to another.
+
+        :param from_index: Current index of the pipe to move.
+        :param to_index: Target index to move the pipe to.
+        :return: Self for method chaining.
+        """
         if len(self._pipe_configs) < 3:
             # Do not move pipes when the number of pipes is less than 3, because the
             # upstream and downstream pressure will become invalid and unphysical
@@ -684,17 +809,25 @@ class PipelineManager(typing.Generic[PipelineT]):
             self.sync()
             self.validate()
             if self.is_valid():
-                self.notify_subscribers(
+                self.notify(
                     "pipeline.pipe.moved",
-                    {"from_index": from_index, "to_index": to_index},
+                    {
+                        "from_index": from_index,
+                        "to_index": to_index,
+                        "pipe_config": pipe_config,
+                    },
                 )
                 logger.info(f"Moved pipe from index {from_index} to {to_index}")
         return self
 
-    def update_pipe(
-        self, index: int, pipe_config: PipeConfig
-    ) -> "PipelineManager[PipelineT]":
-        """Update a pipe configuration at the specified index."""
+    def update_pipe(self, index: int, pipe_config: PipeConfig) -> Self:
+        """
+        Update a pipe configuration at the specified index.
+
+        :param index: Index of the pipe to update.
+        :param pipe_config: New `PipeConfig` to apply.
+        :return: Self for method chaining.
+        """
         if 0 <= index < len(self._pipe_configs):
             # Remove old pipe and add updated one
             self._pipeline.remove_pipe(index, sync=True)
@@ -706,16 +839,14 @@ class PipelineManager(typing.Generic[PipelineT]):
             self.sync()
             self.validate()
             if self.is_valid():
-                self.notify_subscribers(
+                self.notify(
                     "pipeline.pipe.updated",
                     {"pipe_config": pipe_config, "index": index},
                 )
                 logger.info(f"Updated pipe at index {index}")
         return self
 
-    def set_fluid_config(
-        self, fluid_config: FluidConfig
-    ) -> "PipelineManager[PipelineT]":
+    def set_fluid_config(self, fluid_config: FluidConfig) -> Self:
         """Set the fluid configuration."""
         try:
             fluid = self.build_fluid(self._fluid_config)
@@ -733,9 +864,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync()
         self.validate()
         if self.is_valid():
-            self.notify_subscribers(
-                "pipeline.fluid.updated", {"fluid_config": fluid_config}
-            )
+            self.notify("pipeline.fluid.updated", {"fluid_config": fluid_config})
             logger.info(f"Updated fluid configuration: {fluid_config.name}")
         return self
 
@@ -749,7 +878,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             except Exception as exc:
                 logger.error(f"Error during validation: {exc}", exc_info=True)
         self._errors = errors
-        self.notify_subscribers("pipeline.validation.changed", {"errors": errors})
+        self.notify("pipeline.validation.changed", {"errors": errors})
 
     def get_errors(self) -> typing.List[str]:
         """Get current validation errors."""
@@ -782,7 +911,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 logger.error(f"Error building flow station: {exc}", exc_info=True)
         return flow_stations
 
-    def get_state(self) -> typing.Dict[str, typing.Any]:
+    def dump_state(self) -> typing.Dict[str, typing.Any]:
         """Dump the current state of the pipeline manager for serialization."""
         return {
             "pipeline": {
@@ -800,7 +929,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         }
 
     @classmethod
-    def from_state(
+    def load_state(
         cls,
         state: typing.Dict[str, typing.Any],
         config: Configuration,
@@ -808,8 +937,18 @@ class PipelineManager(typing.Generic[PipelineT]):
         flow_station_factories: typing.Optional[
             typing.Sequence[FlowStationFactory]
         ] = None,
-    ) -> "PipelineManager":
-        """Load a pipeline manager from a dumped state."""
+        pipeline_type: typing.Type[PipelineT] = Pipeline,
+    ) -> Self:
+        """
+        Load a pipeline manager from a dumped state.
+
+        :param state: The dumped state dictionary.
+        :param config: Configuration manager for global and pipeline settings.
+        :param validators: Optional list of validation functions.
+        :param flow_station_factories: Optional list of flow station factories.
+        :param pipeline_type: The Pipeline subclass to instantiate.
+        :return: A pipeline manager with the loaded state.
+        """
         pipeline_data = state.get("pipeline", {})
         fluid_data = state.get("fluid", {})
         pipes_data = state.get("pipes", [])
@@ -818,8 +957,21 @@ class PipelineManager(typing.Generic[PipelineT]):
         pipe_configs = [
             converter.structure(pipe_data, PipeConfig) for pipe_data in pipes_data
         ]
-        pipes = [
-            Pipe(
+        pipes = []
+        for pc in pipe_configs:
+            # Build leaks from leak configs
+            leaks = []
+            for leak_config in pc.leaks:
+                leak = PipeLeak(
+                    location=leak_config.location,
+                    diameter=leak_config.diameter,
+                    discharge_coefficient=leak_config.discharge_coefficient,
+                    active=leak_config.active,
+                    name=leak_config.name,
+                )
+                leaks.append(leak)
+
+            pipe = Pipe(
                 length=pc.length,
                 internal_diameter=pc.internal_diameter,
                 upstream_pressure=pc.upstream_pressure,
@@ -834,12 +986,12 @@ class PipelineManager(typing.Generic[PipelineT]):
                 scale_factor=pc.scale_factor,
                 max_flow_rate=pc.max_flow_rate,
                 flow_type=pc.flow_type,
+                leaks=leaks if leaks else None,
             )
-            for pc in pipe_configs
-        ]
+            pipes.append(pipe)
 
         # Build pipeline
-        pipeline = Pipeline(
+        pipeline = pipeline_type(
             pipes=pipes,
             fluid=None,  # Will be set later
             name=pipeline_data.get("name", "Pipeline"),

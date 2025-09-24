@@ -96,6 +96,7 @@ IMPERIAL = UnitSystem(
             unit="degF", display="°F", default=60.0
         ),  # Room temperature
         "flow_rate": QuantityUnit(unit="ft^3/s", display="ft³/s", default=None),
+        "mass_flow_rate": QuantityUnit(unit="lb/s", display="lb/s", default=None),
         "flow_volume": QuantityUnit(unit="scf", display="scf", default=None),
         "molecular_weight": QuantityUnit(
             unit="g/mol", display="g/mol", default=16.04
@@ -119,6 +120,7 @@ SI = UnitSystem(
             unit="degC", display="°C", default=15.6
         ),  # Room temperature
         "flow_rate": QuantityUnit(unit="m^3/s", display="m³/s", default=None),
+        "mass_flow_rate": QuantityUnit(unit="kg/s", display="kg/s", default=None),
         "flow_volume": QuantityUnit(unit="m^3", display="m³", default=None),
         "molecular_weight": QuantityUnit(
             unit="g/mol", display="g/mol", default=16.04
@@ -142,6 +144,7 @@ OIL_FIELD = UnitSystem(
             unit="degR", display="°R", default=520.0
         ),  # Room temperature
         "flow_rate": QuantityUnit(unit="Mscf/day", display="Mscf/day", default=None),
+        "mass_flow_rate": QuantityUnit(unit="lb/hr", display="lb/hr", default=None),
         "flow_volume": QuantityUnit(unit="scf", display="scf", default=None),
         "molecular_weight": QuantityUnit(
             unit="g/mol", display="g/mol", default=16.04

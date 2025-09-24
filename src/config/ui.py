@@ -1,5 +1,5 @@
 """
-Configuration UI Components
+Configuration management UI.
 """
 
 import typing
@@ -11,6 +11,7 @@ from src.units import Quantity
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["ConfigurationUI"]
 
 class ConfigurationUI:
     """Multi-tab configuration interface"""

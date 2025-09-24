@@ -20,9 +20,10 @@ from src.flow import (
     determine_pipe_flow_equation,
 )
 from src.types import FlowEquation, FlowType
-from src.ui.piping import (
+from src.pipeline.piping import (
     PipeComponent,
     PipeDirection,
+    LeakInfo,
     Pipeline as PipelineComponent,
     build_elbow_connector,
     build_horizontal_pipe,
@@ -423,8 +424,7 @@ class Meter:
 
 class FlowMeter(Meter):
     """
-    Flow meter with visual flow indication.
-    Shows animated flow direction and rate.
+    Flow meter with visual flow indication. Shows animated flow direction and rate.
     """
 
     def __init__(
@@ -658,6 +658,52 @@ class FlowMeter(Meter):
             </text>
         </svg>
         '''
+
+
+class MassFlowMeter(FlowMeter):
+    """
+    Mass flow meter with visual flow indication. Shows animated flow direction and rate.
+    """
+
+    def __init__(
+        self,
+        value: float = 0.0,
+        min_value: float = 0.0,
+        max_value: float = 100.0,
+        units: str = "kg/sec",
+        label: str = "Mass Flow Meter",
+        flow_direction: typing.Literal["east", "west", "north", "south"] = "east",
+        width: str = "200px",
+        height: str = "220px",
+        alarm_high: typing.Optional[float] = None,
+        alarm_low: typing.Optional[float] = None,
+        animation_speed: float = 5.0,
+        animation_interval: float = 0.1,
+        update_func: typing.Optional[
+            typing.Callable[[], typing.Optional[float]]
+        ] = None,
+        update_interval: float = 1.0,
+        precision: int = 2,
+        theme_color: str = "blue",
+    ) -> None:
+        super().__init__(
+            value=value,
+            min_value=min_value,
+            max_value=max_value,
+            units=units,
+            label=label,
+            flow_direction=flow_direction,
+            width=width,
+            height=height,
+            alarm_high=alarm_high,
+            alarm_low=alarm_low,
+            animation_speed=animation_speed,
+            animation_interval=animation_interval,
+            update_func=update_func,
+            update_interval=update_interval,
+            precision=precision,
+            theme_color=theme_color,
+        )
 
 
 class PressureGauge(Meter):
@@ -1361,6 +1407,111 @@ def check_directions_compatibility(*directions: PipeDirection) -> bool:
     return True
 
 
+class PipeLeak:
+    """Represents a physical leak in a pipe section."""
+
+    def __init__(
+        self,
+        location: float,
+        diameter: PlainQuantity[float],
+        discharge_coefficient: float = 0.6,
+        active: bool = True,
+        name: typing.Optional[str] = None,
+    ):
+        if diameter.magnitude <= 0:
+            raise ValueError("LeakInfo diameter must be positive")
+        if not (0.0 <= location <= 1.0):
+            raise ValueError("Location fraction must be between 0.0 and 1.0")
+
+        self.location = location
+        self.diameter = diameter
+        self.discharge_coefficient = discharge_coefficient
+        self.active = active
+        self.name = name
+
+    @property
+    def leak_area(self) -> PlainQuantity[float]:
+        """Cross-sectional area of the leak opening."""
+        return (math.pi * self.diameter.to("m") ** 2) / 4
+
+    def compute_rate(
+        self,
+        pipe_pressure: PlainQuantity[float],
+        ambient_pressure: PlainQuantity[float] = Quantity(14.7, "psi"),
+        fluid_density: PlainQuantity[float] = Quantity(1000, "kg/m^3"),
+    ) -> PlainQuantity[float]:
+        """
+        Calculate volumetric leak rate based on orifice flow equation.
+
+        Uses the standard orifice flow equation:
+        Q = Cd * A * sqrt(2 * ΔP / ρ)
+
+        Where:
+        - Q = volumetric flow rate
+        - Cd = discharge coefficient
+        - A = orifice area
+        - ΔP = pressure difference across orifice
+        - ρ = fluid density
+
+        :param pipe_pressure: Internal pressure at leak location
+        :param ambient_pressure: External pressure (usually atmospheric). This is the pressure outside/surrounding the pipe.
+        :param fluid_density: Density of the leaking fluid
+        :return: Volumetric leak rate
+        """
+        if not self.active:
+            return Quantity(0.0, "m^3/s")
+
+        # Calculate pressure difference
+        pressure_diff = pipe_pressure.to("Pa") - ambient_pressure.to("Pa")
+
+        # If internal pressure is lower than external, no leak occurs
+        if pressure_diff.magnitude <= 0:
+            return Quantity(0.0, "m^3/s")
+
+        # Apply orifice flow equation
+        # Q = Cd * A * sqrt(2 * ΔP / ρ)
+        density_si = fluid_density.to("kg/m^3")
+        area_si = self.leak_area.to("m^2")
+
+        flow_rate_m3_s = (
+            self.discharge_coefficient
+            * area_si.magnitude
+            * math.sqrt(2 * pressure_diff.magnitude / density_si.magnitude)
+        )
+        leak_rate = Quantity(flow_rate_m3_s, "m^3/s")
+        return leak_rate
+
+    def get_severity(self) -> str:
+        """Get a qualitative description of leak severity based on diameter."""
+        diameter_mm = self.diameter.to("mm").magnitude
+        if diameter_mm < 1:
+            return "pinhole"
+        elif diameter_mm < 3:
+            return "small"
+        elif diameter_mm < 10:
+            return "moderate"
+        elif diameter_mm < 25:
+            return "large"
+        return "critical"
+
+    @classmethod
+    def from_area(
+        cls, location: float, area: PlainQuantity[float], **kwargs
+    ) -> "PipeLeak":
+        """Create a leak from area instead of diameter."""
+        area_m2 = area.to("m^2").magnitude
+        diameter_m = 2 * math.sqrt(area_m2 / math.pi)
+        leak_diameter = Quantity(diameter_m, "m")
+        return cls(location=location, diameter=leak_diameter, **kwargs)
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(name={self.name!r}, location={self.location:.2f}, "
+            f"diameter={self.diameter}, discharge_coefficient={self.discharge_coefficient}, "
+            f"active={self.active})"
+        )
+
+
 class Pipe:
     """Pipe component for flow system visualization."""
 
@@ -1377,10 +1528,12 @@ class Pipe:
         fluid: typing.Optional[Fluid] = None,
         direction: typing.Union[PipeDirection, str] = PipeDirection.EAST,
         name: typing.Optional[str] = None,
+        leaks: typing.Optional[typing.Sequence[PipeLeak]] = None,
         scale_factor: float = 0.1,
         max_flow_rate: PlainQuantity[float] = Quantity(10.0, "ft^3/s"),
         friction_factor: typing.Optional[float] = None,
         reynolds_number: typing.Optional[float] = None,
+        ambient_pressure: PlainQuantity[float] = Quantity(14.7, "psi"),
         flow_type: FlowType = FlowType.COMPRESSIBLE,
         alert_errors: bool = True,
     ) -> None:
@@ -1398,11 +1551,13 @@ class Pipe:
         :param fluid: Optional Fluid instance with fluid properties
         :param direction: PipeDirection enum indicating flow direction
         :param name: Optional name for the pipe
+        :param leaks: Optional sequence of PipeLeak instances representing leaks in the pipe
         :param scale_factor: Display scale factor for converting physical units to pixels (pixels per millimeter).
             Example: A scale_factor of 0.1 means 1 pixel represents 10 mm (1 cm).
         :param max_flow_rate: Maximum expected flow rate for intensity normalization
         :param friction_factor: Friction factor of the pipe
         :param reynolds_number: Reynolds number of the flow in the pipe
+        :param ambient_pressure: Ambient pressure outside the pipe (usually atmospheric)
         :param flow_type: Type of flow (incompressible or compressible)
         :param alert_errors: Whether to show alerts on errors
         """
@@ -1425,12 +1580,19 @@ class Pipe:
         self.friction_factor = friction_factor
         self.reynolds_number = reynolds_number
         self._flow_type = flow_type
+        self.ambient_pressure = ambient_pressure
         self.alert_errors = alert_errors
 
         self._fluid = evolve(fluid) if fluid else None
         self.scale_factor = scale_factor
-        self.flow_rate = Quantity(0.0, "ft^3/s")
+        self._flow_rate = Quantity(0.0, "ft^3/s")
         self.max_flow_rate = max_flow_rate
+        self._leaks: typing.List[PipeLeak] = []
+        self._ignore_leaks = False
+        if leaks:
+            for leak in leaks:
+                self.add_leak(leak, sync=False)
+
         self.pipe_viz = None  # Placeholder for pipe visualization element
         self.sync()
 
@@ -1481,6 +1643,41 @@ class Pipe:
         return Quantity(volume_ft3 * ureg.ft**3, "ft^3")
 
     @property
+    def flow_rate(self) -> PlainQuantity[float]:
+        """
+        Current effective volumetric flow rate in the pipe in (ft³/s).
+
+        Considering leaks if any are present and not ignored.
+        """
+        return self._flow_rate
+
+    @property
+    def leaks(self) -> typing.Iterator[PipeLeak]:
+        """Iterable of active leaks in the pipe."""
+        return (leak for leak in self._leaks if leak.active)
+
+    @property
+    def leak_rate(self) -> PlainQuantity[float]:
+        """
+        Total volumetric leak rate from all active leaks in the pipe in (ft³/s).
+        """
+        if self._ignore_leaks or not self.fluid:
+            return Quantity(0.0, "ft^3/s")
+
+        total_leak_rate = sum(
+            leak.compute_rate(
+                # Use the estimated pressure at the leak location
+                pipe_pressure=self.estimate_pressure_at_location(leak.location),
+                ambient_pressure=Quantity(14.7, "psi"),
+                fluid_density=self.fluid.density,
+            )
+            .to("ft^3/s")
+            .magnitude
+            for leak in self.leaks
+        )
+        return Quantity(total_leak_rate, "ft^3/s")
+
+    @property
     def fluid(self) -> typing.Optional[Fluid]:
         """Fluid properties."""
         return self._fluid
@@ -1490,7 +1687,62 @@ class Pipe:
         """Flow type."""
         return self._flow_type
 
-    def set_fluid(self, new_fluid: Fluid, sync: bool = True) -> Self:
+    @property
+    def is_leaking(self) -> bool:
+        """Whether the pipe has any active leaks."""
+        if self._ignore_leaks:
+            return False
+        return any(leak.active for leak in self._leaks)
+
+    def add_leak(self, leak: PipeLeak, *, sync: bool = False) -> Self:
+        """
+        Add a leak to the pipe and optionally recalculate flow rate.
+
+        :param leak: PipeLeak instance to add
+        :param sync: Whether to synchronize pipe properties after adding leak
+        :return: self or updated Pipe instance
+        """
+        # Check leak area is less than pipe cross-sectional area
+        if leak.leak_area.magnitude >= self.cross_sectional_area.magnitude:
+            raise ValueError(
+                "LeakInfo area must be less than the pipe's cross-sectional area"
+            )
+
+        self._leaks.append(leak)
+        if sync:
+            return self.sync()
+        return self
+
+    def remove_leak(self, index: int, *, sync: bool = False) -> Self:
+        """
+        Remove a leak from the pipe by index and optionally recalculate flow rate.
+
+        :param index: Index of the leak to remove
+        :param sync: Whether to synchronize pipe properties after removing leak
+        :return: self or updated Pipe instance
+        """
+        if index < 0 or index >= len(self._leaks):
+            raise IndexError("LeakInfo index out of range")
+
+        del self._leaks[index]
+        if sync:
+            return self.sync()
+        return self
+
+    def set_ignore_leaks(self, ignore: bool = True, *, sync: bool = False) -> Self:
+        """
+        Set whether to ignore leaks in flow calculations and optionally recalculate flow rate.
+
+        :param ignore: Whether to ignore leaks
+        :param sync: Whether to synchronize pipe properties after changing ignore setting
+        :return: self or updated Pipe instance
+        """
+        self._ignore_leaks = ignore
+        if sync:
+            return self.sync()
+        return self
+
+    def set_fluid(self, new_fluid: Fluid, *, sync: bool = True) -> Self:
         """
         Update pipe fluid and optionally recalculate flow rate.
 
@@ -1503,7 +1755,7 @@ class Pipe:
             return self.sync()
         return self
 
-    def set_flow_type(self, flow_type: FlowType, sync: bool = True) -> Self:
+    def set_flow_type(self, flow_type: FlowType, *, sync: bool = True) -> Self:
         """
         Update flow type and optionally recalculate flow rate.
 
@@ -1517,7 +1769,7 @@ class Pipe:
         return self
 
     def set_max_flow_rate(
-        self, max_flow_rate: PlainQuantity[float], update_viz: bool = True
+        self, max_flow_rate: PlainQuantity[float], *, update_viz: bool = True
     ) -> Self:
         """
         Update maximum expected flow rate and optionally update visualization.
@@ -1531,7 +1783,7 @@ class Pipe:
             return self.update_viz()
         return self
 
-    def set_scale_factor(self, scale_factor: float, update_viz: bool = True) -> Self:
+    def set_scale_factor(self, scale_factor: float, *, update_viz: bool = True) -> Self:
         """
         Update display scale factor and optionally update visualization.
 
@@ -1545,7 +1797,7 @@ class Pipe:
         return self
 
     def set_fluid_temperature(
-        self, temperature: PlainQuantity[float], sync: bool = True
+        self, temperature: PlainQuantity[float], *, sync: bool = True
     ) -> Self:
         """
         Update pipe fluid temperature and optionally recalculate flow rate.
@@ -1657,6 +1909,15 @@ class Pipe:
 
         :return: SVG string representing the pipe visualization
         """
+        if not self._ignore_leaks:
+            leaks = []
+            for leak in self.leaks:
+                leaks.append(
+                    LeakInfo(location=leak.location, severity=leak.get_severity())
+                )
+        else:
+            leaks = None
+
         if self.direction in [PipeDirection.NORTH, PipeDirection.SOUTH]:
             pipe_component = build_vertical_pipe(
                 direction=self.direction,
@@ -1667,6 +1928,7 @@ class Pipe:
                 scale_factor=self.scale_factor,
                 canvas_width=100.0,
                 canvas_height=400.0,
+                leaks=leaks,
             )
         else:
             pipe_component = build_horizontal_pipe(
@@ -1678,10 +1940,24 @@ class Pipe:
                 scale_factor=self.scale_factor,
                 canvas_width=400.0,
                 canvas_height=100.0,
+                leaks=leaks,
             )
 
         svg_component = pipe_component.get_svg_component()
         return svg_component.main_svg
+
+    def estimate_pressure_at_location(self, location: float) -> PlainQuantity[float]:
+        """
+        Calculate pressure at a specific location along the pipe.
+
+        Assumes linear pressure drop along pipe length.
+        """
+        if not (0.0 <= location <= 1.0):
+            raise ValueError("Location fraction must be between 0.0 and 1.0")
+
+        pressure_drop_total = self.upstream_pressure - self.downstream_pressure
+        pressure_at_location = self.upstream_pressure - (pressure_drop_total * location)
+        return pressure_at_location
 
     def set_flow_rate(
         self, flow_rate: typing.Union[PlainQuantity[float], float]
@@ -1704,7 +1980,7 @@ class Pipe:
             raise ValueError(
                 "Cannot set a positive flow rate without defining fluid properties. Flow cannot occur in an empty pipe."
             )
-        self.flow_rate = flow_rate_q
+        self._flow_rate = flow_rate_q
         return self
 
     def sync(self) -> Self:
@@ -1944,6 +2220,7 @@ class Pipeline:
         flow_type: FlowType = FlowType.COMPRESSIBLE,
         connector_length: PlainQuantity[float] = Quantity(0.1, "m"),
         alert_errors: bool = True,
+        ignore_leaks: bool = False,
     ) -> None:
         """
         Initialize a Pipeline component.
@@ -1959,6 +2236,7 @@ class Pipeline:
         :param flow_type: Flow type for the pipeline (compressible or incompressible)
         :param connector_length: Physical length of connectors between pipes (e.g., mm, cm)
         :param alert_errors: Whether to alert on connection errors between pipes
+        :param ignore_leaks: Whether to ignore leaks in all pipes in the pipeline
         """
         self.name = name or f"Pipeline-{id(self)}"
         self._pipes: typing.List[Pipe] = []
@@ -1969,6 +2247,7 @@ class Pipeline:
         self.connector_length = connector_length
         self._fluid = fluid
         self.alert_errors = alert_errors
+        self._ignore_leaks = ignore_leaks
         self._upstream_pressure = None
         self._downstream_pressure = None
         self._upstream_temperature = upstream_temperature
@@ -1991,7 +2270,14 @@ class Pipeline:
         """Get the fluid in the pipeline."""
         return self._fluid
 
-    def set_fluid(self, value: Fluid, sync: bool = True) -> Self:
+    @property
+    def is_leaking(self) -> bool:
+        """Whether any pipe in the pipeline has active leaks."""
+        if self._ignore_leaks:
+            return False
+        return any(pipe.is_leaking for pipe in self._pipes)
+
+    def set_fluid(self, value: Fluid, *, sync: bool = True) -> Self:
         """Set the fluid in the pipeline and update all pipes."""
         self._fluid = value
         for pipe in self._pipes:
@@ -2000,7 +2286,16 @@ class Pipeline:
             self.sync()
         return self
 
-    def set_flow_type(self, flow_type: FlowType, sync: bool = True) -> Self:
+    def set_ignore_leaks(self, ignore: bool = True, *, sync: bool = True) -> Self:
+        """Set whether to ignore leaks in all pipes in the pipeline."""
+        self._ignore_leaks = ignore
+        for pipe in self._pipes:
+            pipe.set_ignore_leaks(ignore, sync=False)
+        if sync:
+            self.sync()
+        return self
+
+    def set_flow_type(self, flow_type: FlowType, *, sync: bool = True) -> Self:
         """Set the flow type for the pipeline and all pipes."""
         self._flow_type = flow_type
         for pipe in self._pipes:
@@ -2010,7 +2305,7 @@ class Pipeline:
         return self
 
     def set_max_flow_rate(
-        self, max_flow_rate: PlainQuantity[float], update_viz: bool = True
+        self, max_flow_rate: PlainQuantity[float], *, update_viz: bool = True
     ) -> Self:
         """Set the maximum expected flow rate for the pipeline and all pipes."""
         self.max_flow_rate = max_flow_rate
@@ -2020,7 +2315,7 @@ class Pipeline:
             self.update_viz()
         return self
 
-    def set_scale_factor(self, scale_factor: float, update_viz: bool = True) -> Self:
+    def set_scale_factor(self, scale_factor: float, *, update_viz: bool = True) -> Self:
         """Set the scale factor for the pipeline and all pipes."""
         self.scale_factor = scale_factor
         for pipe in self._pipes:
@@ -2071,6 +2366,20 @@ class Pipeline:
         if self._pipes:
             return self._pipes[-1].flow_rate.to("ft^3/s")
         return Quantity(0, "ft^3/s")
+
+    @property
+    def inlet_mass_rate(self) -> PlainQuantity[float]:
+        """The inlet/upstream mass flow rate (lb/s) of the pipeline (from the first pipe)."""
+        if self._pipes:
+            return self._pipes[0].mass_rate.to("lb/s")
+        return Quantity(0, "lb/s")
+
+    @property
+    def outlet_mass_rate(self) -> PlainQuantity[float]:
+        """The outlet/downstream mass flow rate (lb/s) of the pipeline (from the last pipe)."""
+        if self._pipes:
+            return self._pipes[-1].mass_rate.to("lb/s")
+        return Quantity(0, "lb/s")
 
     def __iter__(self) -> typing.Iterator[Pipe]:
         """Iterate over the pipes in the pipeline."""
@@ -2167,6 +2476,14 @@ class Pipeline:
         modular_components: typing.List[PipeComponent] = []
 
         for i, pipe in enumerate(self._pipes):
+            if not self._ignore_leaks:
+                leaks = []
+                for leak in pipe.leaks:
+                    leaks.append(
+                        LeakInfo(location=leak.location, severity=leak.get_severity())
+                    )
+            else:
+                leaks = None
             # Add the pipe component
             if pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
                 # Horizontal pipe
@@ -2179,6 +2496,7 @@ class Pipeline:
                     scale_factor=pipe.scale_factor,
                     canvas_width=400.0,
                     canvas_height=100.0,
+                    leaks=leaks,
                 )
             else:
                 # Vertical pipe
@@ -2191,13 +2509,23 @@ class Pipeline:
                     scale_factor=pipe.scale_factor,
                     canvas_width=100.0,
                     canvas_height=400.0,
+                    leaks=leaks,
                 )
             modular_components.append(pipe_component)
 
             # Add connector to next pipe (if not the last pipe)
             if i < (pipe_count - 1):
                 next_pipe = self._pipes[i + 1]
-
+                if not self._ignore_leaks:
+                    leaks = []
+                    for leak in next_pipe.leaks:
+                        leaks.append(
+                            LeakInfo(
+                                location=leak.location, severity=leak.get_severity()
+                            )
+                        )
+                else:
+                    leaks = None
                 # Build next pipe component first
                 if next_pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
                     next_pipe_component = build_horizontal_pipe(
@@ -2209,6 +2537,7 @@ class Pipeline:
                         scale_factor=next_pipe.scale_factor,
                         canvas_width=400.0,
                         canvas_height=100.0,
+                        leaks=leaks,
                     )
                 else:
                     next_pipe_component = build_vertical_pipe(
@@ -2220,6 +2549,7 @@ class Pipeline:
                         scale_factor=next_pipe.scale_factor,
                         canvas_width=100.0,
                         canvas_height=400.0,
+                        leaks=leaks,
                     )
 
                 # Determine if we need an elbow or straight connector
@@ -2417,7 +2747,7 @@ class Pipeline:
                 raise
         return self.sync()
 
-    def add_pipe(self, pipe: Pipe, index: int = -1, sync: bool = True) -> Self:
+    def add_pipe(self, pipe: Pipe, index: int = -1, *, sync: bool = True) -> Self:
         """
         Add a new pipe to the end of the pipeline.
 
@@ -2455,6 +2785,8 @@ class Pipeline:
         if self.fluid is not None:
             pipe.set_fluid(self.fluid, sync=False)
 
+        # Set the pipe to ignore leaks if the pipeline is set to ignore leaks
+        pipe.set_ignore_leaks(self._ignore_leaks, sync=False)
         # Ensure the pipe's flow type matches the pipeline's flow type
         pipe.set_flow_type(self._flow_type, sync=False)
 
@@ -2475,7 +2807,7 @@ class Pipeline:
                 raise
         return self
 
-    def remove_pipe(self, index: int = -1, sync: bool = True) -> Self:
+    def remove_pipe(self, index: int = -1, *, sync: bool = True) -> Self:
         """
         Remove a pipe from the pipeline at the specified index.
 
@@ -2522,6 +2854,60 @@ class Pipeline:
                 raise
         return self
 
+    def add_leak(
+        self,
+        pipe_index: int,
+        leak: PipeLeak,
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Add a leak to a specific pipe in the pipeline.
+
+        :param pipe_index: Index of the pipe to add the leak to
+        :param leak: `PipeLeak` instance to add
+        :param sync: Whether to synchronize pipes properties after adding the leak (default is True)
+        :return: self for method chaining
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if 0 <= pipe_index < len(self._pipes):
+            self._pipes[pipe_index].add_leak(leak, sync=sync)
+        else:
+            raise IndexError("Pipe index out of range.")
+
+        if sync:
+            self.sync()
+        return self
+
+    def remove_leak(
+        self,
+        pipe_index: int,
+        leak_index: int,
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Remove a leak from a specific pipe in the pipeline.
+
+        :param pipe_index: Index of the pipe to remove the leak from
+        :param leak_index: Index of the leak to remove
+        :param sync: Whether to synchronize pipes properties after removing the leak (default is True)
+        :return: self for method chaining
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if 0 <= pipe_index < len(self._pipes):
+            self._pipes[pipe_index].remove_leak(leak_index, sync=sync)
+        else:
+            raise IndexError("Pipe index out of range.")
+
+        if sync:
+            self.sync()
+        return self
+
     def _compute_outlet_pressure(
         self, mass_flow_rate: PlainQuantity[float], set_pressures: bool = False
     ) -> PlainQuantity[float]:
@@ -2542,7 +2928,7 @@ class Pipeline:
                 "Fluid properties must be defined to compute pressure drops."
             )
 
-        logger.info(
+        logger.debug(
             "Starting outlet pressure calculation for pipeline %r with mass flow rate: %s",
             self.name,
             mass_flow_rate,
@@ -2553,7 +2939,7 @@ class Pipeline:
         for i in range(len(self._pipes)):
             current_pipe = self._pipes[i]
 
-            logger.info("Pipe %d Upstream Pressure: %s", i + 1, current_pressure)
+            logger.debug("Pipe %d Upstream Pressure: %s", i + 1, current_pressure)
             # If the pressure drops to zero or below, flow cannot continue
             # return zero to notify the root solver to try another mass rate
             if current_pressure.magnitude <= 0:
@@ -2572,11 +2958,30 @@ class Pipeline:
                 molecular_weight=fluid.molecular_weight,
             )
 
+            if not self._ignore_leaks and (
+                leak_rate := current_pipe.leak_rate.magnitude > 0
+            ):
+                leak_mass_rate = leak_rate.to(
+                    "ft^3/s"
+                ) * fluid_at_pipe_inlet.density.to("lb/ft^3")
+                effective_mass_flow_rate = mass_flow_rate.to("lb/s") - leak_mass_rate
+            else:
+                effective_mass_flow_rate = mass_flow_rate.to("lb/s")
+
+            if effective_mass_flow_rate.magnitude <= 0:
+                logger.warning(
+                    "Pipe %d effective mass flow rate dropped to zero or below due to leaks. Flow cannot continue.",
+                    i + 1,
+                )
+                return Quantity(0.0, "psi")
+
             # Calculate volumetric flow rate from mass flow rate
-            volumetric_flow_rate = mass_flow_rate.to(
+            volumetric_flow_rate = effective_mass_flow_rate.to(
                 "lb/s"
             ) / fluid_at_pipe_inlet.density.to("lb/ft^3")
-            logger.info("Pipe %d Volumetric Flow Rate: %s", i + 1, volumetric_flow_rate)
+            logger.debug(
+                "Pipe %d Volumetric Flow Rate: %s", i + 1, volumetric_flow_rate
+            )
 
             # 1. Calculate pressure drop across the pipe itself
             flow_equation = current_pipe.flow_equation
@@ -2601,7 +3006,7 @@ class Pipeline:
                 flow_equation=flow_equation,
             )
             downstream_pipe_pressure = current_pressure - pipe_pressure_drop
-            logger.info(
+            logger.debug(
                 "Pipe %d Pressure Drop: %s, Downstream Pressure: %s",
                 i + 1,
                 pipe_pressure_drop,
@@ -2653,7 +3058,7 @@ class Pipeline:
                 current_pipe.internal_diameter.to("m")
                 - next_pipe.internal_diameter.to("m")
             ) / current_pipe.internal_diameter.to("m")
-            logger.info(
+            logger.debug(
                 "Connector between Pipe %d and Pipe %d Relative Diameter Difference: %.4f",
                 i + 1,
                 i + 2,
@@ -2712,7 +3117,7 @@ class Pipeline:
                     pipe_relative_roughness=0.0001,  # Assume very smooth connector
                     gradual_angle_threshold_deg=15.0,  # Assume gradual if angle < 15 degrees
                 )
-            logger.info(
+            logger.debug(
                 "Connector Pressure Drop between Pipe %d and Pipe %d: %s",
                 i + 1,
                 i + 2,
@@ -2778,7 +3183,7 @@ class Pipeline:
             flow_equation=flow_equation,
         )
         max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
-        return 0.001, max(max_mass_flow_rate.magnitude, 10.0)
+        return 0.001, max(max_mass_flow_rate.magnitude, 50.0)
 
     def _compute_mass_rate_range_simple(self) -> typing.Tuple[float, float]:
         """
@@ -2871,7 +3276,7 @@ class Pipeline:
             calculated_downstream_pressure = self._compute_outlet_pressure(
                 mass_flow_rate
             )
-            logger.info(
+            logger.debug(
                 "Mass Flow Rate Guess: %s, Calculated Downstream Pressure: %s, target Downstream Pressure: %s",
                 mass_flow_rate,
                 calculated_downstream_pressure,
@@ -2882,7 +3287,7 @@ class Pipeline:
                 .to("psi")
                 .magnitude
             )
-            logger.info("Error (psi): %.4f", error_psi)
+            logger.debug("Error (psi): %.4f", error_psi)
             return error_psi
 
         min_mass_rate, max_mass_rate = self._compute_mass_rate_range()
@@ -2907,28 +3312,28 @@ class Pipeline:
 
             sign_change = (min_error * max_error) < 0
 
-            logger.info(
+            logger.debug(
                 f"Iteration {iteration + 1}: min_error = {min_error:.6f}, max_error = {max_error:.6f}"
             )
 
             if sign_change:
-                logger.info("Sign change detected! Proceeding with solver.")
+                logger.debug("Sign change detected! Proceeding with solver.")
                 break
 
             # Adjust the range based on the error signs
             if min_error > 0 and max_error > 0:
                 # Both errors positive - need to decrease mass flow rate range
-                logger.info("Both errors positive - decreasing mass flow rates")
+                logger.debug("Both errors positive - decreasing mass flow rates")
                 max_mass_rate = min_mass_rate
                 min_mass_rate = min_mass_rate * 0.1  # Reduce by factor of 10
             elif min_error < 0 and max_error < 0:
                 # Both errors negative - need to increase mass flow rate range
-                logger.info("Both errors negative - increasing mass flow rates")
+                logger.debug("Both errors negative - increasing mass flow rates")
                 min_mass_rate = max_mass_rate
                 max_mass_rate = max_mass_rate * 10  # Increase by factor of 10
             else:
                 # One is zero - slightly perturb the range
-                logger.info("One error is zero - perturbing range")
+                logger.debug("One error is zero - perturbing range")
                 if abs(min_error) < 1e-10:
                     min_mass_rate = min_mass_rate * 0.99
                 if abs(max_error) < 1e-10:
@@ -2944,7 +3349,7 @@ class Pipeline:
                 max_mass_rate = min_mass_rate * 100
 
             iteration += 1
-            logger.info(
+            logger.debug(
                 f"Adjusted range: [{min_mass_rate:.6f}, {max_mass_rate:.6f}] kg/s"
             )
 
@@ -3050,21 +3455,12 @@ class Pipeline:
         :return: self for method chaining
         :raises TypeError: If other is not a Pipe or Pipeline instance
         """
-        try:
-            if isinstance(other, Pipe):
-                # Connect single pipe
-                return type(self)(self._pipes + [other])
-
-            elif isinstance(other, Pipeline):
-                # Connect another pipeline
-                return type(self)(self._pipes + other._pipes)
-        except Exception as e:
-            if self.alert_errors:
-                show_alert(
-                    f"Failed to connect pipes/pipelines to pipeline - {self.name!r}: {e}",
-                    severity="error",
-                )
-            raise
+        if isinstance(other, Pipe):
+            # Connect single pipe
+            return type(self)(self._pipes + [other])
+        elif isinstance(other, Pipeline):
+            # Connect another pipeline
+            return type(self)(self._pipes + other._pipes)
         raise TypeError("Can only connect to Pipe or Pipeline instances")
 
     def __and__(self, other: typing.Union[Pipe, "Pipeline"]) -> Self:
@@ -3091,9 +3487,10 @@ class FlowStation:
         height: str = "auto",
     ):
         """
-        Initialize a FlowStation instance.
+        Initialize a flow station instance.
 
-        :param pipeline: Pipeline instance to monitor
+        :param meters: Optional list of Meter instances to include in the flow station
+        :param regulators: Optional list of Regulator instances to include in the flow station
         :param name: Name of the flow station (default is "Flow Station")
         :param width: Width of the flow station display (default is "100%")
         :param height: Height of the flow station display (default is "200px")
@@ -3218,7 +3615,7 @@ class FlowStation:
                 for section_type, section_title, items, items_per_row in sections:
                     if not items and not show_empty_section:
                         continue
-                    self._render_section(
+                    self.render_section(
                         section_type=section_type,
                         section_title=section_title,
                         items=items,
@@ -3227,7 +3624,7 @@ class FlowStation:
 
         return container
 
-    def _render_section(
+    def render_section(
         self,
         section_type: str,
         section_title: str,
@@ -3274,11 +3671,11 @@ class FlowStation:
 
             # Content area
             if not items:
-                self._render_empty_grid(section_type)
+                self.render_empty_grid(section_type)
             else:
-                self._render_items_grid(items, items_per_row, section_type)
+                self.render_items_grid(items, items_per_row, section_type)
 
-    def _render_empty_grid(self, section_type: str):
+    def render_empty_grid(self, section_type: str):
         """
         Render empty state when no items are available.
 
@@ -3302,7 +3699,7 @@ class FlowStation:
                 "font-size: clamp(0.75rem, 2vw, 0.875rem);"
             )
 
-    def _render_items_grid(
+    def render_items_grid(
         self,
         items: typing.List[typing.Union[Meter, Regulator]],
         items_per_row: int,
@@ -3357,12 +3754,11 @@ class FlowStation:
 
     def _get_grid_classes(self, items_per_row: int) -> str:
         """
-        Get appropriate CSS classes for grid layout based on items per row.
+        Get appropriate CSS classes for flex layout based on items per row.
 
         :param items_per_row: Number of items per row
         :return: CSS classes string
         """
-        # Use flexbox with responsive behavior
         if items_per_row == 1:
             return "flex-col"
         elif items_per_row == 2:
