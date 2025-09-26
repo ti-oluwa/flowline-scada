@@ -97,6 +97,17 @@ class LeakInfo:
         }
         return color_map.get(self.severity, "#dc2626")
 
+    def get_spray_count(self) -> int:
+        """Get number of spray particles based on severity."""
+        severity_spray_map = {
+            "pinhole": 2,
+            "small": 3,
+            "moderate": 4,
+            "large": 6,
+            "critical": 8,
+        }
+        return severity_spray_map.get(self.severity, 3)
+
 
 @typing.runtime_checkable
 class PipeComponent(typing.Protocol):
@@ -332,7 +343,7 @@ class HorizontalPipe(PipeComponent):
             # Create leak indicator (crack/hole)
             leak_visuals += f'''
             <!-- LeakInfo indicator at {leak.location:.1%} -->
-            <g class="leak-indicator" data-severity="{leak.severity}" data-rate="{leak.rate}">
+            <g class="leak-indicator" data-severity="{leak.severity}">
                 <!-- Main leak hole -->
                 <ellipse cx="{leak_x}" cy="{center_y}" 
                          rx="{leak_size / 2}" ry="{leak_size / 3}" 
@@ -350,7 +361,7 @@ class HorizontalPipe(PipeComponent):
 
             # Generate spray particles for active leaks
             if leak.severity in ["moderate", "large", "critical"]:
-                spray_count = min(8, max(3, int(leak.rate.to("ft^3/s").magnitude * 10)))
+                spray_count = leak.get_spray_count()
                 for i in range(spray_count):
                     # Spray particles emanating from leak
                     angle = -45 + (
@@ -630,7 +641,7 @@ class VerticalPipe(PipeComponent):
             # Create leak indicator (crack/hole)
             leak_visuals += f'''
             <!-- LeakInfo indicator at {leak.location:.1%} -->
-            <g class="leak-indicator" data-severity="{leak.severity}" data-rate="{leak.rate}">
+            <g class="leak-indicator" data-severity="{leak.severity}">
                 <!-- Main leak hole -->
                 <ellipse cx="{center_x}" cy="{leak_y}" 
                          rx="{leak_size / 3}" ry="{leak_size / 2}" 
@@ -648,7 +659,7 @@ class VerticalPipe(PipeComponent):
 
             # Generate spray particles for active leaks
             if leak.severity in ["moderate", "large", "critical"]:
-                spray_count = min(8, max(3, int(leak.rate.to("ft^3/s").magnitude * 10)))
+                spray_count = leak.get_spray_count()
                 for i in range(spray_count):
                     # Spray particles emanating from leak (horizontal spray from vertical pipe)
                     angle = -135 + (i * 90 / max(1, spray_count - 1))  # Spray sideways

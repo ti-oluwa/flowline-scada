@@ -1650,7 +1650,9 @@ class Pipe:
 
         Considering leaks if any are present and not ignored.
         """
-        return self._flow_rate
+        if self._ignore_leaks or not self.fluid:
+            return self._flow_rate
+        return self._flow_rate - self.leak_rate
 
     @property
     def leaks(self) -> typing.Iterator[PipeLeak]:
@@ -1676,7 +1678,7 @@ class Pipe:
             .magnitude
             for leak in self.leaks
         )
-        return Quantity(total_leak_rate, "ft^3/s")
+        return min(Quantity(total_leak_rate, "ft^3/s"), self._flow_rate)
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
@@ -1711,7 +1713,17 @@ class Pipe:
 
         self._leaks.append(leak)
         if sync:
-            return self.sync()
+            self.sync()
+
+        if self.leak_rate.magnitude >= self._flow_rate.magnitude:
+            if self.alert_errors:
+                show_alert(
+                    f"Warning: Unphysical condition! Total leak rate in pipe - {self.name!r} exceeds or equals flow rate.",
+                    severity="warning",
+                )
+            logger.warning(
+                f"Total leak rate in pipe - {self.name!r} exceeds or equals flow rate."
+            )
         return self
 
     def remove_leak(self, index: int, *, sync: bool = False) -> Self:
@@ -1727,7 +1739,19 @@ class Pipe:
 
         del self._leaks[index]
         if sync:
-            return self.sync()
+            self.sync()
+        return self
+
+    def clear_leaks(self, *, sync: bool = False) -> Self:
+        """
+        Remove all leaks from the pipe and optionally recalculate flow rate.
+
+        :param sync: Whether to synchronize pipe properties after clearing leaks
+        :return: self or updated Pipe instance
+        """
+        self._leaks.clear()
+        if sync:
+            self.sync()
         return self
 
     def set_ignore_leaks(self, ignore: bool = True, *, sync: bool = False) -> Self:
@@ -1740,20 +1764,20 @@ class Pipe:
         """
         self._ignore_leaks = ignore
         if sync:
-            return self.sync()
+            self.sync()
         return self
 
-    def set_fluid(self, new_fluid: Fluid, *, sync: bool = True) -> Self:
+    def set_fluid(self, fluid: Fluid, *, sync: bool = True) -> Self:
         """
         Update pipe fluid and optionally recalculate flow rate.
 
-        :param new_fluid: New Fluid instance to set
+        :param fluid: New `Fluid` instance to set
         :param sync: Whether to synchronize pipe properties after changing fluid
         :return: self or updated Pipe instance
         """
-        self._fluid = evolve(new_fluid)
+        self._fluid = fluid
         if sync:
-            return self.sync()
+            self.sync()
         return self
 
     def set_flow_type(self, flow_type: FlowType, *, sync: bool = True) -> Self:
@@ -1766,7 +1790,7 @@ class Pipe:
         """
         self._flow_type = flow_type
         if sync:
-            return self.sync()
+            self.sync()
         return self
 
     def set_max_flow_rate(
@@ -1781,7 +1805,7 @@ class Pipe:
         """
         self.max_flow_rate = max_flow_rate
         if update_viz:
-            return self.update_viz()
+            self.update_viz()
         return self
 
     def set_scale_factor(self, scale_factor: float, *, update_viz: bool = True) -> Self:
@@ -1794,7 +1818,7 @@ class Pipe:
         """
         self.scale_factor = scale_factor
         if update_viz:
-            return self.update_viz()
+            self.update_viz()
         return self
 
     def set_fluid_temperature(
@@ -1810,7 +1834,7 @@ class Pipe:
         if self.fluid is not None:
             self._fluid = evolve(self.fluid, temperature=temperature)
         if sync:
-            return self.sync()
+            self.sync()
         return self
 
     @property
@@ -1848,7 +1872,8 @@ class Pipe:
             return Quantity(0.0, "lb/s")
         density = self.fluid.density.to("lb/ft^3").magnitude
         volumetric_rate = self.flow_rate.to("ft^3/s").magnitude
-        return Quantity(density * volumetric_rate, "lb/s")
+        mass_rate = Quantity(density * volumetric_rate, "lb/s")
+        return mass_rate
 
     @property
     def flow_velocity(self) -> PlainQuantity[float]:
@@ -2086,7 +2111,7 @@ class Pipe:
 
         self.upstream_pressure = pressure_q
         if sync:
-            return self.sync()
+            self.sync()
         return self
 
     def set_downstream_pressure(
@@ -2134,7 +2159,7 @@ class Pipe:
 
         self.downstream_pressure = pressure_q
         if sync:
-            return self.sync()
+            self.sync()
         return self
 
     def get_pipeline_type(self) -> typing.Type["Pipeline"]:
@@ -2190,6 +2215,10 @@ class Pipe:
         return self.connect(other)
 
     __add__ = __and__
+
+    def copy(self) -> "Pipe":
+        """Create a copy of the pipe."""
+        return copy.deepcopy(self)
 
 
 class _MockSolution:
@@ -2252,7 +2281,6 @@ class Pipeline:
         self._upstream_pressure = None
         self._downstream_pressure = None
         self._upstream_temperature = upstream_temperature
-        self._mass_rate = Quantity(0.0, "lb/s")
 
         if upstream_pressure is not None:
             self.set_upstream_pressure(upstream_pressure)
@@ -2273,18 +2301,17 @@ class Pipeline:
         return self._fluid
 
     @property
-    def mass_rate(self) -> PlainQuantity[float]:
-        """The mass flow rate of the pipeline in lb/s."""
-        if self._fluid is None:
-            return Quantity(0.0, "lb/s")
-        return self._mass_rate.to("lb/s")
-
-    @property
     def is_leaking(self) -> bool:
         """Whether any pipe in the pipeline has active leaks."""
         if self._ignore_leaks:
             return False
         return any(pipe.is_leaking for pipe in self._pipes)
+
+    @property
+    def leaks(self) -> typing.Iterator[PipeLeak]:
+        """Iterable of all active leaks in the pipeline."""
+        for pipe in self._pipes:
+            yield from pipe.leaks
 
     def set_fluid(self, value: Fluid, *, sync: bool = True) -> Self:
         """Set the fluid in the pipeline and update all pipes."""
@@ -2754,7 +2781,7 @@ class Pipeline:
                         severity="error",
                     )
                 raise
-        return self.sync()
+        self.sync()
 
     def add_pipe(self, pipe: Pipe, index: int = -1, *, sync: bool = True) -> Self:
         """
@@ -2779,7 +2806,7 @@ class Pipeline:
                     show_alert(error_msg, severity="error")
                 raise PipelineConnectionError(error_msg)
 
-        pipe = copy.deepcopy(pipe)
+        pipe = pipe.copy()  # Work with a copy to avoid modifying the original
         # Set pipe to not alert errors individually. Alerts will be handled by the pipeline
         pipe.alert_errors = False
         # Apply the pipeline's scale factor and max flow rate to the pipe
@@ -2863,13 +2890,7 @@ class Pipeline:
                 raise
         return self
 
-    def add_leak(
-        self,
-        pipe_index: int,
-        leak: PipeLeak,
-        *,
-        sync: bool = True,
-    ) -> Self:
+    def add_leak(self, pipe_index: int, leak: PipeLeak, *, sync: bool = True) -> Self:
         """
         Add a leak to a specific pipe in the pipeline.
 
@@ -2891,11 +2912,7 @@ class Pipeline:
         return self
 
     def remove_leak(
-        self,
-        pipe_index: int,
-        leak_index: int,
-        *,
-        sync: bool = True,
+        self, pipe_index: int, leak_index: int, *, sync: bool = True
     ) -> Self:
         """
         Remove a leak from a specific pipe in the pipeline.
@@ -2912,6 +2929,20 @@ class Pipeline:
             self._pipes[pipe_index].remove_leak(leak_index, sync=sync)
         else:
             raise IndexError("Pipe index out of range.")
+
+        if sync:
+            self.sync()
+        return self
+
+    def clear_leaks(self, *, sync: bool = True) -> Self:
+        """
+        Clear all leaks from all pipes in the pipeline.
+
+        :param sync: Whether to synchronize pipes properties after clearing leaks (default is True)
+        :return: self for method chaining
+        """
+        for pipe in self._pipes:
+            pipe.clear_leaks(sync=False)
 
         if sync:
             self.sync()
@@ -2944,6 +2975,7 @@ class Pipeline:
         )
         current_pressure = self.upstream_pressure
         current_temp = fluid.temperature  # Assume constant temperature for simplicity
+        current_mass_flow_rate = mass_flow_rate.to("lb/s")
 
         for i in range(len(self._pipes)):
             current_pipe = self._pipes[i]
@@ -2967,17 +2999,18 @@ class Pipeline:
                 molecular_weight=fluid.molecular_weight,
             )
 
-            if not self._ignore_leaks and (
-                leak_rate := current_pipe.leak_rate.magnitude > 0
-            ):
-                leak_mass_rate = leak_rate.to(
+            mass_rate_in = current_mass_flow_rate
+
+            if not self._ignore_leaks and (current_pipe.leak_rate.magnitude > 0):
+                leak_mass_rate = current_pipe.leak_rate.to(
                     "ft^3/s"
                 ) * fluid_at_pipe_inlet.density.to("lb/ft^3")
-                effective_mass_flow_rate = mass_flow_rate.to("lb/s") - leak_mass_rate
+                mass_rate_out = mass_rate_in - min(leak_mass_rate, mass_rate_in)
             else:
-                effective_mass_flow_rate = mass_flow_rate.to("lb/s")
+                mass_rate_out = mass_rate_in
 
-            if effective_mass_flow_rate.magnitude <= 0:
+            average_mass_rate = (mass_rate_in + mass_rate_out) / 2
+            if average_mass_rate.magnitude <= 0:
                 logger.warning(
                     "Pipe %d effective mass flow rate dropped to zero or below due to leaks. Flow cannot continue.",
                     i + 1,
@@ -2985,7 +3018,7 @@ class Pipeline:
                 return Quantity(0.0, "psi")
 
             # Calculate volumetric flow rate from mass flow rate
-            volumetric_flow_rate = effective_mass_flow_rate.to(
+            volumetric_flow_rate = average_mass_rate.to(
                 "lb/s"
             ) / fluid_at_pipe_inlet.density.to("lb/ft^3")
             logger.debug(
@@ -3135,6 +3168,7 @@ class Pipeline:
 
             # Update the pressure for the start of the next pipe
             current_pressure = downstream_pipe_pressure - connector_pressure_drop
+            current_mass_flow_rate = mass_rate_out
 
         # This part should ideally not be reached if the loop returns
         return current_pressure
@@ -3442,7 +3476,6 @@ class Pipeline:
             )
         )
         actual_mass_flow_rate = Quantity(mass_flow_solution, "kg/s")
-        self._mass_rate = actual_mass_flow_rate
         logger.info("Actual Mass Flow Rate: %s", actual_mass_flow_rate)
         logger.info(f"System solved! Mass Flow Rate: {actual_mass_flow_rate:.4f}")
         # Now we run the calculation one last time with the correct flow rate
@@ -3483,6 +3516,14 @@ class Pipeline:
         return self.connect(other)
 
     __add__ = __and__
+
+    def copy(self) -> Self:
+        """
+        Create a deep copy of the pipeline.
+
+        :return: A new Pipeline instance that is a deep copy of the current instance
+        """
+        return copy.deepcopy(self)
 
 
 class FlowStation:
@@ -3727,7 +3768,7 @@ class FlowStation:
         grid_container = (
             ui.column()
             .classes("w-full gap-3")
-            .style("gap: clamp(0.5rem, 1.5vw, 0.75rem);")
+            .style("gap: clamp(1.5rem, 1.5vw, 1.75rem);")
         )
 
         with grid_container:
@@ -3739,7 +3780,7 @@ class FlowStation:
                 row_container = (
                     ui.row()
                     .classes(f"{grid_classes} gap-3 w-full")
-                    .style("gap: clamp(0.5rem, 1.5vw, 0.75rem);")
+                    .style("gap: clamp(1.5rem, 1.5vw, 1.75rem);")
                 )
 
                 with row_container:

@@ -4,6 +4,7 @@ Pipeline Management UI
 
 import typing
 import logging
+import attrs
 from functools import partial
 from typing_extensions import Self
 from nicegui import ui
@@ -134,7 +135,6 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         pressure_unit = unit_system["pressure"]
         temperature_unit = unit_system["temperature"]
         flow_unit = unit_system["flow_rate"]
-        mass_flow_unit = unit_system["mass_flow_rate"]
 
         pressure_gauge = PressureGauge(
             value=pipeline.upstream_pressure.to(pressure_unit.unit).magnitude,
@@ -214,17 +214,11 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
         pressure_unit = unit_system["pressure"]
         temperature_unit = unit_system["temperature"]
 
-        def set_pressure(value: float):
-            pipeline.set_upstream_pressure(
-                Quantity(value, pressure_unit.unit), sync=True
-            ).update_viz()
-            manager.sync()
+        def _set_pressure(value: float):
+            manager.set_upstream_pressure(Quantity(value, pressure_unit.unit))
 
-        def set_temperature(value: float):
-            pipeline.set_upstream_temperature(
-                Quantity(value, temperature_unit.unit)
-            ).update_viz()
-            manager.sync()
+        def _set_temperature(value: float):
+            manager.set_upstream_temperature(Quantity(value, temperature_unit.unit))
 
         pressure_regulator = Regulator(
             value=pipeline.upstream_pressure.to(pressure_unit.unit).magnitude,
@@ -236,7 +230,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             width=cfg.pressure_regulator.width,
             height=cfg.pressure_regulator.height,
             precision=cfg.pressure_regulator.precision,
-            setter_func=set_pressure,
+            setter_func=_set_pressure,
             alarm_high=cfg.pressure_regulator.alarm_high,
             alarm_low=cfg.pressure_regulator.alarm_low,
             alert_errors=cfg.pressure_regulator.alert_errors,
@@ -254,7 +248,7 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             width=cfg.temperature_regulator.width,
             height=cfg.temperature_regulator.height,
             precision=cfg.temperature_regulator.precision,
-            setter_func=set_temperature,
+            setter_func=_set_temperature,
             alarm_high=cfg.temperature_regulator.alarm_high,
             alarm_low=cfg.temperature_regulator.alarm_low,
             alert_errors=cfg.temperature_regulator.alert_errors,
@@ -374,7 +368,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             theme_color=theme_color,
         )
         mass_flow_meter = MassFlowMeter(
-            value=pipeline.mass_rate.to(mass_flow_unit.unit).magnitude,
+            value=pipeline.outlet_mass_rate.to(mass_flow_unit.unit).magnitude,
             min_value=cfg.mass_flow_meter.min_value,
             max_value=cfg.mass_flow_meter.max_value,
             units=mass_flow_unit.display,
@@ -389,13 +383,99 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             flow_direction=str(pipeline.pipes[0].direction)
             if pipeline.pipes
             else "east",  # type: ignore
-            update_func=lambda: pipeline.mass_rate.to(
+            update_func=lambda: pipeline.outlet_mass_rate.to(
                 mass_flow_unit.unit
             ).magnitude,
             update_interval=cfg.mass_flow_meter.update_interval,
             theme_color=theme_color,
         )
-        return [pressure_gauge, temperature_gauge, flow_meter, mass_flow_meter]
+        meters = [pressure_gauge, temperature_gauge, flow_meter, mass_flow_meter]
+
+        # If pipeline has leaks, the meters above will show the flow properties with the leak losses
+        # But we also want to show the expected flow properties assuming no leaks
+        if pipeline.is_leaking:
+            # Make a copy of the pipeline and disable leaks on it to get the no-leak flow rates
+            no_leak_pipeline = pipeline.copy()
+            no_leak_pipeline.set_ignore_leaks(True, sync=True)
+
+            no_leak_pressure_gauge = PressureGauge(
+                value=no_leak_pipeline.downstream_pressure.to(
+                    pressure_unit.unit
+                ).magnitude,
+                min_value=cfg.pressure_guage.min_value,
+                max_value=cfg.pressure_guage.max_value,
+                units=pressure_unit.display,
+                label=cfg.pressure_guage.label + " [Expected]",
+                width=cfg.pressure_guage.width,
+                height=cfg.pressure_guage.height,
+                precision=cfg.pressure_guage.precision,
+                alarm_high=cfg.pressure_guage.alarm_high,
+                alarm_low=cfg.pressure_guage.alarm_low,
+                animation_speed=cfg.pressure_guage.animation_speed,
+                animation_interval=cfg.pressure_guage.animation_interval,
+                update_func=lambda: no_leak_pipeline.downstream_pressure.to(
+                    pressure_unit.unit
+                ).magnitude,
+                update_interval=cfg.pressure_guage.update_interval,
+                theme_color=theme_color,
+            )
+            no_leak_flow_meter = FlowMeter(
+                value=no_leak_pipeline.outlet_flow_rate.to(flow_unit.unit).magnitude,
+                min_value=cfg.flow_meter.min_value,
+                max_value=max(
+                    cfg.flow_meter.max_value,
+                    pipeline.max_flow_rate.to(flow_unit.unit).magnitude,
+                ),
+                units=flow_unit.display,
+                label=cfg.flow_meter.label + " [Expected]",
+                width=cfg.flow_meter.width,
+                height=cfg.flow_meter.height,
+                precision=cfg.flow_meter.precision,
+                alarm_high=cfg.flow_meter.alarm_high,
+                alarm_low=cfg.flow_meter.alarm_low,
+                animation_speed=cfg.flow_meter.animation_speed,
+                animation_interval=cfg.flow_meter.animation_interval,
+                flow_direction=str(pipeline.pipes[-1].direction)
+                if pipeline.pipes
+                else "east",  # type: ignore
+                update_func=lambda: no_leak_pipeline.outlet_flow_rate.to(
+                    flow_unit.unit
+                ).magnitude,
+                update_interval=cfg.flow_meter.update_interval,
+                theme_color=theme_color,
+            )
+            no_leak_mass_flow_meter = MassFlowMeter(
+                value=no_leak_pipeline.outlet_mass_rate.to(
+                    mass_flow_unit.unit
+                ).magnitude,
+                min_value=cfg.mass_flow_meter.min_value,
+                max_value=cfg.mass_flow_meter.max_value,
+                units=mass_flow_unit.display,
+                label=cfg.mass_flow_meter.label + " [Expected]",
+                width=cfg.mass_flow_meter.width,
+                height=cfg.mass_flow_meter.height,
+                precision=cfg.mass_flow_meter.precision,
+                alarm_high=cfg.mass_flow_meter.alarm_high,
+                alarm_low=cfg.mass_flow_meter.alarm_low,
+                animation_speed=cfg.mass_flow_meter.animation_speed,
+                animation_interval=cfg.mass_flow_meter.animation_interval,
+                flow_direction=str(pipeline.pipes[0].direction)
+                if pipeline.pipes
+                else "east",  # type: ignore
+                update_func=lambda: no_leak_pipeline.outlet_mass_rate.to(
+                    mass_flow_unit.unit
+                ).magnitude,
+                update_interval=cfg.mass_flow_meter.update_interval,
+                theme_color=theme_color,
+            )
+            meters.extend(
+                [
+                    no_leak_pressure_gauge,
+                    no_leak_flow_meter,
+                    no_leak_mass_flow_meter,
+                ]
+            )
+        return meters
 
     def build_regulators(
         self, manager: "PipelineManager[PipelineT]"
@@ -407,11 +487,8 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         theme_color = manager.config.state.global_.theme_color
         pressure_unit = unit_system["pressure"]
 
-        def set_pressure(value: float):
-            pipeline.set_downstream_pressure(
-                Quantity(value, pressure_unit.unit), sync=True
-            ).update_viz()
-            manager.sync()
+        def _set_pressure(value: float):
+            manager.set_downstream_pressure(Quantity(value, pressure_unit.unit))
 
         pressure_regulator = Regulator(
             value=pipeline.downstream_pressure.to(pressure_unit.unit).magnitude,
@@ -424,7 +501,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             precision=cfg.pressure_regulator.precision,
             alarm_high=cfg.pressure_regulator.alarm_high,
             alarm_low=cfg.pressure_regulator.alarm_low,
-            setter_func=set_pressure,
+            setter_func=_set_pressure,
             theme_color=theme_color,
         )
         return [pressure_regulator]
@@ -464,7 +541,8 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         :param pipeline: The Pipeline instance to manage.
         :param config: Configuration manager for global and pipeline settings.
-        :param validator: Function to validate the pipeline configurations.
+        :param validators: Callables to validate the pipeline configurations.
+        :param flow_station_factories: Callables to create flow stations for the pipeline.
         """
         self._pipeline = pipeline
         self._pipe_configs: typing.List[PipeConfig] = []
@@ -488,18 +566,19 @@ class PipelineManager(typing.Generic[PipelineT]):
         """The current configuration state."""
         return self._config.state
 
-    def sync(self):
+    def sync(self, *, validate: bool = True) -> Self:
         """
-        Synchronize pipe and fluid configs from the current pipeline state.
+        Synchronize pipe and fluid configs from the current pipeline state and validate the synchronized state.
         This ensures that the internal representation matches the actual Pipeline instance.
 
         *Called internally after any modification to the pipeline.*
+
+        :param validate: Whether to run validation after synchronization.
+        :return: Self for method chaining.
         """
         logger.info(
             f"Synchronizing pipeline manager state with pipeline {self._pipeline.name}"
         )
-        old_pipe_configs = self._pipe_configs
-        old_fluid_config = self._fluid_config
         self._pipe_configs = []
 
         if self._pipeline.fluid:
@@ -507,7 +586,6 @@ class PipelineManager(typing.Generic[PipelineT]):
                 name=self._pipeline.fluid.name,
                 phase=self._pipeline.fluid.phase,
                 temperature=self._pipeline.fluid.temperature,  # type: ignore
-                pressure=self._pipeline.upstream_pressure,  # type: ignore
                 molecular_weight=self._pipeline.fluid.molecular_weight,  # type: ignore
             )
 
@@ -542,21 +620,8 @@ class PipelineManager(typing.Generic[PipelineT]):
             )
             self._pipe_configs.append(pipe_config)
 
-        # Notify subscribers if there are changes
-        if (
-            old_pipe_configs != self._pipe_configs
-            or old_fluid_config != self._fluid_config
-        ):
-            self.notify(
-                "pipeline.synced",
-                {
-                    "old_pipe_configs": old_pipe_configs,
-                    "new_pipe_configs": self._pipe_configs,
-                    "old_fluid_config": old_fluid_config,
-                    "new_fluid_config": self._fluid_config,
-                },
-            )
-
+        if validate:
+            self.validate()
         logger.info(
             f"Synchronized {len(self._pipe_configs)} pipes and fluid '{self._fluid_config.name}'"
         )
@@ -642,11 +707,14 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._pipeline.set_connector_length(
             pipeline_config.connector_length, sync=False
         )
-        # Update the visualization after all changes
-        self._pipeline.sync().update_viz()
-        self.sync()
-        self.validate()
-        self.notify("pipeline.properties.updated", {"pipeline_config": pipeline_config})
+        # Synchronize the pipeline state after applying all config changes
+        self._pipeline.sync()
+        self.sync(validate=True)
+        if self.is_valid():
+            self.notify(
+                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+            )
+        logger.info(f"Updated pipeline configuration: {pipeline_config.name}")
 
     def build_fluid(self, fluid_config: FluidConfig) -> Fluid:
         """
@@ -659,7 +727,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             fluid_name=fluid_config.name,
             phase=fluid_config.phase,
             temperature=fluid_config.temperature,
-            pressure=fluid_config.pressure,
+            pressure=self._pipeline.upstream_pressure,
             molecular_weight=fluid_config.molecular_weight,
         )
 
@@ -720,13 +788,12 @@ class PipelineManager(typing.Generic[PipelineT]):
         pipe = self.build_pipe(pipe_config)
         self._pipeline.add_pipe(pipe, index, sync=True)
 
-        self.sync()
-        self.validate()
+        self.sync(validate=True)
         if self.is_valid():
             self.notify(
                 "pipeline.pipe.added", {"pipe_config": pipe_config, "index": index}
             )
-            logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
+        logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
         return self
 
     def remove_pipe(self, index: int) -> Self:
@@ -743,14 +810,13 @@ class PipelineManager(typing.Generic[PipelineT]):
             # Remove from pipeline using its remove_pipe method
             self._pipeline.remove_pipe(index, sync=True)
 
-            self.sync()
-            self.validate()
+            self.sync(validate=True)
             if self.is_valid():
                 self.notify(
                     "pipeline.pipe.removed",
                     {"index": index},
                 )
-                logger.info(f"Removed pipe from index {index}")
+            logger.info(f"Removed pipe from index {index}")
         return self
 
     def move_pipe(self, from_index: int, to_index: int) -> Self:
@@ -784,8 +850,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                     self._pipeline.add_pipe(pipe, from_index, sync=True)
                 raise
 
-            self.sync()
-            self.validate()
+            self.sync(validate=True)
             if self.is_valid():
                 self.notify(
                     "pipeline.pipe.moved",
@@ -795,7 +860,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                         "pipe_config": pipe_config,
                     },
                 )
-                logger.info(f"Moved pipe from index {from_index} to {to_index}")
+            logger.info(f"Moved pipe from index {from_index} to {to_index}")
         return self
 
     def update_pipe(self, index: int, pipe_config: PipeConfig) -> Self:
@@ -814,20 +879,20 @@ class PipelineManager(typing.Generic[PipelineT]):
             pipe = self.build_pipe(pipe_config)
             self._pipeline.add_pipe(pipe, index, sync=True)
 
-            self.sync()
-            self.validate()
+            self.sync(validate=True)
             if self.is_valid():
                 self.notify(
                     "pipeline.pipe.updated",
                     {"pipe_config": pipe_config, "index": index},
                 )
-                logger.info(f"Updated pipe at index {index}")
+            logger.info(f"Updated pipe at index {index}")
         return self
 
     def set_fluid_config(self, fluid_config: FluidConfig) -> Self:
         """Set the fluid configuration."""
+        logger.info(f"Updating fluid to {fluid_config}")
         try:
-            fluid = self.build_fluid(self._fluid_config)
+            fluid = self.build_fluid(fluid_config)
             self._pipeline.set_fluid(fluid, sync=True)
         except Exception as exc:
             ui.notify(
@@ -839,12 +904,244 @@ class PipelineManager(typing.Generic[PipelineT]):
             return self
 
         # Sync to update internal fluid config state from pipeline
-        self.sync()
-        self.validate()
+        self.sync(validate=True)
         if self.is_valid():
-            self.notify("pipeline.fluid.updated", {"fluid_config": fluid_config})
-            logger.info(f"Updated fluid configuration: {fluid_config.name}")
+            self.notify(
+                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+            )
+        logger.info(f"Updated fluid configuration: {fluid_config.name}")
         return self
+
+    def set_upstream_pressure(self, pressure: Quantity) -> Self:
+        """Set the upstream pressure of the pipeline."""
+        self._pipeline.set_upstream_pressure(pressure, sync=True)
+        self.sync(validate=True)
+        if self.is_valid():
+            self.notify(
+                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+            )
+        logger.info(f"Set upstream pressure to {pressure}")
+        return self
+
+    def set_downstream_pressure(self, pressure: Quantity) -> Self:
+        """Set the downstream pressure of the pipeline."""
+        self._pipeline.set_downstream_pressure(pressure, sync=True)
+        self.sync(validate=True)
+        if self.is_valid():
+            self.notify(
+                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+            )
+        logger.info(f"Set downstream pressure to {pressure}")
+        return self
+
+    def set_upstream_temperature(self, temperature: Quantity) -> Self:
+        """Set the upstream temperature of the pipeline fluid."""
+        if self._pipeline.fluid is None:
+            ui.notify(
+                "Cannot set temperature: No fluid is set in the pipeline.",
+                type="warning",
+                position="top",
+            )
+            logger.warning("Attempted to set temperature with no fluid in pipeline")
+            return self
+
+        self._pipeline.fluid.set_temperature(temperature, sync=True)
+        self.sync(validate=True)
+        if self.is_valid():
+            self.notify(
+                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+            )
+        logger.info(f"Set upstream temperature to {temperature}")
+        return self
+
+    def add_pipe_leak(self, pipe_index: int, leak_config: PipeLeakConfig) -> Self:
+        """
+        Add a leak to a specific pipe.
+
+        :param pipe_index: Index of the pipe to add leak to.
+        :param leak_config: The leak configuration to add.
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        # Update pipe config with new leak
+        pipe_config = self._pipe_configs[pipe_index]
+        updated_leaks = list(pipe_config.leaks) + [leak_config]
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
+
+        # Update the actual pipe
+        self.update_pipe(pipe_index, updated_pipe_config)
+        logger.info(f"Added leak to pipe '{pipe_config.name}' at index {pipe_index}")
+        return self
+
+    def remove_pipe_leak(self, pipe_index: int, leak_index: int) -> Self:
+        """
+        Remove a leak from a specific pipe.
+
+        :param pipe_index: Index of the pipe to remove leak from.
+        :param leak_index: Index of the leak to remove.
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        if not (0 <= leak_index < len(pipe_config.leaks)):
+            raise ValueError(f"Invalid leak index: {leak_index}")
+
+        # Remove leak from config
+        updated_leaks = list(pipe_config.leaks)
+        updated_leaks.pop(leak_index)
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
+
+        # Update the actual pipe
+        self.update_pipe(pipe_index, updated_pipe_config)
+        logger.info(
+            f"Removed leak from pipe '{pipe_config.name}' at index {pipe_index}"
+        )
+        return self
+
+    def update_pipe_leak(
+        self, pipe_index: int, leak_index: int, leak_config: PipeLeakConfig
+    ) -> Self:
+        """
+        Update a specific leak in a pipe.
+
+        :param pipe_index: Index of the pipe containing the leak.
+        :param leak_index: Index of the leak to update.
+        :param leak_config: New leak configuration.
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        if not (0 <= leak_index < len(pipe_config.leaks)):
+            raise ValueError(f"Invalid leak index: {leak_index}")
+
+        # Update leak in config
+        updated_leaks = list(pipe_config.leaks)
+        updated_leaks[leak_index] = leak_config
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
+
+        # Update the actual pipe
+        self.update_pipe(pipe_index, updated_pipe_config)
+        logger.info(f"Updated leak in pipe '{pipe_config.name}' at index {pipe_index}")
+        return self
+
+    def clear_pipe_leaks(self, pipe_index: int) -> Self:
+        """
+        Remove all leaks from a specific pipe.
+
+        :param pipe_index: Index of the pipe to clear leaks from.
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+        leak_count = len(pipe_config.leaks)
+
+        if leak_count == 0:
+            ui.notify(
+                f"Pipe '{pipe_config.name}' has no leaks to clear",
+                type="info",
+                position="top",
+            )
+            return self
+
+        # Clear all leaks
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=[])
+        # Update the actual pipe
+        self.update_pipe(pipe_index, updated_pipe_config)
+        logger.info(f"Cleared {leak_count} leaks from pipe '{pipe_config.name}'")
+        return self
+
+    def clear_all_leaks(self) -> Self:
+        """
+        Remove all leaks from all pipes in the pipeline.
+
+        :return: Self for method chaining.
+        """
+        total_leaks = sum(len(pc.leaks) for pc in self._pipe_configs)
+        if total_leaks == 0:
+            ui.notify("Pipeline has no leaks to clear", type="info", position="top")
+            return self
+
+        # Clear leaks from all pipes
+        for i, pipe_config in enumerate(self._pipe_configs):
+            if pipe_config.leaks:
+                updated_pipe_config = attrs.evolve(pipe_config, leaks=[])
+                pipe = self.build_pipe(updated_pipe_config)
+                self._pipeline.remove_pipe(i, sync=False)
+                self._pipeline.add_pipe(pipe, i, sync=False)
+
+        # Sync once after all changes
+        self._pipeline.sync()
+        self.sync(validate=True)
+
+        if self.is_valid():
+            self.notify(
+                "pipeline.leaks.cleared",
+                {"total_leaks_removed": total_leaks},
+            )
+        logger.info(f"Cleared all {total_leaks} leaks from pipeline")
+        return self
+
+    def toggle_leak(self, pipe_index: int, leak_index: int) -> Self:
+        """
+        Toggle the active state of a specific leak.
+
+        :param pipe_index: Index of the pipe containing the leak.
+        :param leak_index: Index of the leak to toggle.
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        if not (0 <= leak_index < len(pipe_config.leaks)):
+            raise ValueError(f"Invalid leak index: {leak_index}")
+
+        # Toggle leak active state
+        leak_config = pipe_config.leaks[leak_index]
+        updated_leak_config = attrs.evolve(leak_config, active=not leak_config.active)
+        return self.update_pipe_leak(pipe_index, leak_index, updated_leak_config)
+
+    def get_pipe_leaks(self, pipe_index: int) -> typing.List[PipeLeakConfig]:
+        """
+        Get all leaks for a specific pipe.
+
+        :param pipe_index: Index of the pipe.
+        :return: List of leak configurations for the pipe.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+        return list(self._pipe_configs[pipe_index].leaks)
+
+    def get_all_leaks(self) -> typing.Dict[int, typing.List[PipeLeakConfig]]:
+        """
+        Get all leaks in the pipeline organized by pipe index.
+
+        :return: Dictionary mapping pipe indices to their leak configurations.
+        """
+        return {
+            i: list(pipe_config.leaks)
+            for i, pipe_config in enumerate(self._pipe_configs)
+            if pipe_config.leaks
+        }
+
+    def has_leaks(self) -> bool:
+        """Check if the pipeline has any leaks."""
+        return any(pipe_config.leaks for pipe_config in self._pipe_configs)
+
+    def get_leak_count(self) -> int:
+        """Get the total number of leaks in the pipeline."""
+        return sum(len(pipe_config.leaks) for pipe_config in self._pipe_configs)
 
     def validate(self):
         """Validate the current pipeline configuration."""
@@ -1035,14 +1332,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.manager.subscribe("pipeline.pipe.removed", self.on_pipe_removed)
         self.manager.subscribe("pipeline.pipe.moved", self.on_pipe_moved)
         self.manager.subscribe("pipeline.pipe.updated", self.on_pipe_updated)
-        self.manager.subscribe("pipeline.fluid.updated", self.on_fluid_updated)
         self.manager.subscribe(
             "pipeline.properties.updated", self.on_properties_updated
         )
         self.manager.subscribe(
             "pipeline.validation.changed", self.on_validation_changed
         )
-        self.manager.subscribe("pipeline.synced", self.on_pipeline_synced)
+        self.manager.subscribe("pipeline.leaks.cleared", self.on_leaks_cleared)
 
         # Observe configuration changes
         self.manager.config.observe(self.on_config_change)
@@ -1064,6 +1360,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Cached current pipeline for comparison."""
         self.current_flow_stations: typing.Optional[typing.List[FlowStation]] = None
         """Cached current flow stations for comparison."""
+
+        # Leak management UI state
+        self.leak_form_container = None
+        self.leak_form_dialog = None
+        self.selected_leak_index: typing.Optional[int] = None
+        """Index of the currently selected leak, or None if no selection."""
+        self.leak_edit_mode: bool = False
+        """Whether we're in leak edit mode or add mode."""
 
     # For easy access to configuration properties
     @property
@@ -1153,20 +1457,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.refresh_flow_stations()
         self.refresh_properties_panel()
 
-    def on_fluid_updated(self, event: str, data: typing.Any):
-        """Handle fluid updated events."""
-        ui.notify("Fluid updated successfully", type="success", position="top")
-        self.refresh_pipes_list()
-        self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
-        self.refresh_properties_panel()
-
     def on_properties_updated(self, event: str, data: typing.Any):
         """Handle general properties updated events."""
         ui.notify(
             "Pipeline properties updated successfully", type="success", position="top"
         )
         self.refresh_pipes_list()
+        self.refresh_properties_panel()
         self.refresh_pipeline_preview()
         self.refresh_flow_stations()
 
@@ -1177,10 +1474,16 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         if self.manager.is_valid():
             self.refresh_flow_stations()
 
-    def on_pipeline_synced(self, event: str, data: typing.Any):
-        """Handle pipeline synced events."""
+    def on_leaks_cleared(self, event: str, data: typing.Any):
+        """Handle leaks cleared from pipe events."""
+        ui.notify(
+            f"Cleared {data['leak_count']} leaks from pipe '{data['pipe_name']}'",
+            type="success",
+            position="top",
+        )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
+        self.refresh_flow_stations()
         self.refresh_properties_panel()
 
     def on_config_change(self, config_state: ConfigurationState):
@@ -1198,11 +1501,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.manager.unsubscribe_all(self.on_pipe_removed)
             self.manager.unsubscribe_all(self.on_pipe_moved)
             self.manager.unsubscribe_all(self.on_pipe_updated)
-            self.manager.unsubscribe_all(self.on_fluid_updated)
             self.manager.unsubscribe_all(self.on_properties_updated)
             self.manager.unsubscribe_all(self.on_validation_changed)
-            self.manager.unsubscribe_all(self.on_pipeline_synced)
-
+            self.manager.unsubscribe_all(self.on_leaks_cleared)
             self.manager.config.unobserve(self.on_config_change)
             logger.info("Pipeline Manager UI cleaned up successfully")
         except Exception as exc:
@@ -1448,6 +1749,18 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             f"Flow: {flow_str}"
                         ).classes("text-xs sm:text-sm text-gray-600")
 
+                        # Add leak indicator if pipe has leaks
+                        if pipe_config.leaks:
+                            active_leaks = sum(
+                                1 for leak in pipe_config.leaks if leak.active
+                            )
+                            total_leaks = len(pipe_config.leaks)
+                            leak_color = "red" if active_leaks > 0 else "gray"
+                            leak_text = f"⚠ {active_leaks}/{total_leaks} leaks active"
+                            ui.label(leak_text).classes(
+                                f"text-xs text-{leak_color}-600 font-medium"
+                            )
+
                     # Action buttons
                     actions = ui.row().classes("gap-1 flex-wrap sm:flex-nowrap")
                     with actions:
@@ -1531,22 +1844,26 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         pipe_configs[self.selected_pipe_index]
                     )
             else:
-                # Show placeholder when no pipe is selected
-                placeholder_card = ui.card().classes(
-                    "w-full p-4 border-2 border-dashed border-gray-300"
-                )
-                with placeholder_card:
-                    placeholder_column = ui.column().classes(
-                        "items-center justify-center gap-2 w-full h-24 sm:h-48"
+                # Show pipeline leak summary when no pipe is selected
+                if self.manager.has_leaks():
+                    self.show_pipeline_leak_summary()
+                else:
+                    # Show placeholder when no pipe is selected and no leaks exist
+                    placeholder_card = ui.card().classes(
+                        "w-full p-4 border-2 border-dashed border-gray-300"
                     )
-                    with placeholder_column:
-                        ui.icon("edit", size="2rem").classes("text-gray-400")
-                        ui.label("Select a pipe to edit").classes(
-                            "text-gray-500 text-center"
+                    with placeholder_card:
+                        placeholder_column = ui.column().classes(
+                            "items-center justify-center gap-2 w-full h-24 sm:h-48"
                         )
-                        ui.label("Click 'Edit' button on any pipe").classes(
-                            "text-xs text-gray-400 text-center"
-                        )
+                        with placeholder_column:
+                            ui.icon("edit", size="2rem").classes("text-gray-400")
+                            ui.label("Select a pipe to edit").classes(
+                                "text-gray-500 text-center"
+                            )
+                            ui.label("Click 'Edit' button on any pipe").classes(
+                                "text-xs text-gray-400 text-center"
+                            )
 
     def refresh_pipeline_preview(self):
         """Refresh the pipeline preview."""
@@ -1576,7 +1893,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 self.current_flow_stations = flow_stations
                 if flow_stations:
                     for station in flow_stations:
-                        station.show()
+                        station.show(meters_per_row=4, regulators_per_row=4)
                 else:
                     # Create a simple station if no factories are registered
                     ui.label("Flow stations will appear here when configured").classes(
@@ -1979,6 +2296,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     self.get_accent_button_classes("px-4 py-2 flex-1 sm:flex-none")
                 )
 
+        # Add leak management section
+        ui.separator().classes("my-4")
+        self.show_leak_management_panel(self.selected_pipe_index)
+
     def show_fluid_properties_form(self):
         """Create form for editing fluid properties."""
         # Header with better styling
@@ -2010,20 +2331,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             )
             with temp_pressure_row:
                 temp_unit = self.unit_system["temperature"]
-                pressure_unit = self.unit_system["pressure"]
 
                 temperature_input = ui.number(
                     f"Temperature ({temp_unit})",
                     value=fluid_config.temperature.to(temp_unit.unit).magnitude,
                     step=1,
                     precision=2,
-                ).classes("flex-1 min-w-0")
-                pressure_input = ui.number(
-                    f"Pressure ({pressure_unit})",
-                    value=fluid_config.pressure.to(pressure_unit.unit).magnitude,
-                    min=0,
-                    step=1,
-                    precision=4,
                 ).classes("flex-1 min-w-0")
 
             # Molecular weight and specific gravity row
@@ -2048,7 +2361,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     name_input,
                     phase_select,
                     temperature_input,
-                    pressure_input,
                     molecular_weight_input,
                 ),
                 color=self.theme_color,
@@ -2103,20 +2415,17 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         name_input,
         phase_select,
         temperature_input,
-        pressure_input,
         molecular_weight_input,
     ):
         """Update fluid configuration from form inputs."""
         try:
             temp_unit = self.unit_system["temperature"].unit
-            pressure_unit = self.unit_system["pressure"].unit
             mol_weight_unit = self.unit_system["molecular_weight"].unit
 
             updated_config = FluidConfig(
                 name=name_input.value,
                 phase=phase_select.value,
                 temperature=Quantity(temperature_input.value, temp_unit),  # type: ignore
-                pressure=Quantity(pressure_input.value, pressure_unit),  # type: ignore
                 molecular_weight=Quantity(
                     molecular_weight_input.value,
                     mol_weight_unit,  # type: ignore
@@ -2126,6 +2435,469 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         except Exception as exc:
             logger.error(f"Error updating fluid: {exc}", exc_info=True)
+
+    def show_leak_management_panel(self, pipe_index: int) -> ui.column:
+        """
+        Show leak management panel for a specific pipe.
+
+        :param pipe_index: Index of the pipe to manage leaks for.
+        :return: The leak management panel container.
+        """
+        pipe_config = self.manager.get_pipe_configs()[pipe_index]
+
+        # Main leak management container
+        leak_panel = ui.column().classes("w-full gap-2 sm:gap-3")
+
+        with leak_panel:
+            # Header with pipe name and leak summary
+            header_row = ui.row().classes("w-full items-center justify-between")
+            with header_row:
+                ui.label(f"Leaks in {pipe_config.name}").classes(
+                    "text-lg font-semibold"
+                )
+                leak_count = len(pipe_config.leaks)
+                ui.badge(
+                    str(leak_count), color="red" if leak_count > 0 else "gray"
+                ).classes("ml-2")
+
+            # Action buttons
+            action_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
+            with action_row:
+                ui.button(
+                    "Add Leak",
+                    icon="add",
+                    color=self.theme_color,
+                ).classes("flex-1").on(
+                    "click", lambda: self.show_add_leak_dialog(pipe_index)
+                )
+
+                if leak_count > 0:
+                    ui.button(
+                        "Clear All",
+                        icon="clear_all",
+                        color="orange",
+                    ).classes("flex-1").on(
+                        "click", lambda: self.confirm_clear_all_leaks(pipe_index)
+                    )
+
+            # Leak list
+            if leak_count > 0:
+                ui.separator()
+                leak_list_container = ui.column().classes("w-full gap-2")
+                with leak_list_container:
+                    for leak_index, leak_config in enumerate(pipe_config.leaks):
+                        self.show_leak_item(pipe_index, leak_index, leak_config)
+            else:
+                ui.label("No leaks in this pipe").classes(
+                    "text-gray-500 text-center py-4 italic"
+                )
+
+        return leak_panel
+
+    def show_leak_item(
+        self, pipe_index: int, leak_index: int, leak_config: PipeLeakConfig
+    ) -> None:
+        """
+        Show a single leak item with controls.
+
+        :param pipe_index: Index of the pipe containing the leak.
+        :param leak_index: Index of the leak.
+        :param leak_config: The leak configuration.
+        """
+        leak_card = (
+            ui.card()
+            .classes("w-full p-2 sm:p-3 border-l-4")
+            .style(
+                f"border-left-color: {'#ef4444' if leak_config.active else '#6b7280'}"
+            )
+        )
+        with leak_card:
+            # Header row with leak info and status
+            header_row = ui.row().classes("w-full items-center justify-between")
+            with header_row:
+                info_col = ui.column().classes("flex-1")
+                with info_col:
+                    leak_name = leak_config.name or f"Leak {leak_index + 1}"
+                    ui.label(leak_name).classes("font-medium")
+
+                    # Leak details
+                    diameter_unit = self.unit_system["diameter"]
+                    diameter_value = leak_config.diameter.to(
+                        diameter_unit.unit
+                    ).magnitude
+                    location_percent = leak_config.location * 100
+
+                    details_text = f"⌀{diameter_value:.1f}{diameter_unit.display} • {location_percent:.0f}% • Cd={leak_config.discharge_coefficient:.2f}"
+                    ui.label(details_text).classes("text-xs text-gray-600")
+
+                # Status and actions
+                actions_col = ui.column().classes("items-end gap-1")
+                with actions_col:
+                    # Active status toggle
+                    ui.chip(
+                        "Active" if leak_config.active else "Inactive",
+                        color="red" if leak_config.active else "gray",
+                        icon="leak_add" if leak_config.active else "leak_remove",
+                    ).classes("cursor-pointer").on(
+                        "click",
+                        lambda p=pipe_index,
+                        leak_idx=leak_index: self.toggle_leak_status(p, leak_idx),
+                    )
+
+                    # Action buttons
+                    button_row = ui.row().classes("gap-1")
+                    with button_row:
+                        ui.button(
+                            icon="edit",
+                            color=self.theme_color,
+                        ).props("size=sm").on(
+                            "click",
+                            lambda p=pipe_index,
+                            leak_idx=leak_index,
+                            cfg=leak_config: self.show_edit_leak_dialog(
+                                p, leak_idx, cfg
+                            ),
+                        ).tooltip("Edit leak")
+
+                        ui.button(
+                            icon="delete",
+                            color="red",
+                        ).props("size=sm").on(
+                            "click",
+                            lambda p=pipe_index,
+                            leak_idx=leak_index: self.confirm_remove_leak(p, leak_idx),
+                        ).tooltip("Remove leak")
+
+    def show_add_leak_dialog(self, pipe_index: int) -> None:
+        """Show dialog to add a new leak to a pipe."""
+        self.leak_edit_mode = False
+        self.selected_pipe_index = pipe_index
+        self.selected_leak_index = None
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-md"):
+            pipe_name = self.manager.get_pipe_configs()[pipe_index].name
+            ui.label(f"Add Leak to {pipe_name}").classes("text-lg font-semibold mb-3")
+            self.show_leak_form(dialog)
+
+    def show_edit_leak_dialog(
+        self, pipe_index: int, leak_index: int, leak_config: PipeLeakConfig
+    ) -> None:
+        """Show dialog to edit an existing leak."""
+        self.leak_edit_mode = True
+        self.selected_pipe_index = pipe_index
+        self.selected_leak_index = leak_index
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-md"):
+            pipe_name = self.manager.get_pipe_configs()[pipe_index].name
+            leak_name = leak_config.name or f"Leak {leak_index + 1}"
+            ui.label(f"Edit {leak_name} in {pipe_name}").classes(
+                "text-lg font-semibold mb-3"
+            )
+            self.show_leak_form(dialog, leak_config)
+
+    def show_leak_form(
+        self, dialog: ui.dialog, existing_leak: typing.Optional[PipeLeakConfig] = None
+    ) -> None:
+        """
+        Show the leak form with input fields.
+
+        :param dialog: The dialog containing the form.
+        :param existing_leak: Existing leak config for editing, or None for new leak.
+        """
+        diameter_unit = self.unit_system["diameter"]
+
+        # Default values
+        if existing_leak:
+            name_default = existing_leak.name or ""
+            diameter_default = existing_leak.diameter.to(diameter_unit.unit).magnitude
+            location_default = existing_leak.location
+            cd_default = existing_leak.discharge_coefficient
+            active_default = existing_leak.active
+        else:
+            name_default = ""
+            diameter_default = 1.0  # 1mm default
+            location_default = 0.5  # Middle of pipe
+            cd_default = 0.6  # Standard orifice coefficient
+            active_default = True
+
+        form_container = ui.column().classes("w-full gap-3")
+        with form_container:
+            # Leak name
+            name_input = ui.input(
+                "Leak Name (optional)",
+                value=name_default,
+                placeholder="e.g., Main Leak, Valve Leak",
+            ).classes("w-full")
+
+            # Diameter
+            diameter_input = (
+                ui.number(
+                    f"Leak Diameter ({diameter_unit.display})",
+                    value=diameter_default,
+                    min=0.1,
+                    max=100,
+                    step=0.1,
+                    format="%.1f",
+                )
+                .classes("w-full")
+                .tooltip("Physical diameter of the leak opening")
+            )
+
+            # Location
+            location_input = (
+                ui.number(
+                    "Location (fraction of pipe length)",
+                    value=location_default,
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    format="%.2f",
+                )
+                .classes("w-full")
+                .tooltip("0.0 = start of pipe, 1.0 = end of pipe")
+            )
+
+            # Location as percentage display
+            location_percent_label = ui.label().classes("text-xs text-gray-600")
+
+            def update_location_display():
+                percent = (
+                    location_input.value * 100
+                    if location_input.value is not None
+                    else 0
+                )
+                location_percent_label.text = f"({percent:.0f}% along pipe)"
+
+            location_input.on("input", lambda: update_location_display())
+            update_location_display()
+
+            # Discharge coefficient
+            cd_input = (
+                ui.number(
+                    "Discharge Coefficient",
+                    value=cd_default,
+                    min=0.1,
+                    max=1.0,
+                    step=0.01,
+                    format="%.2f",
+                )
+                .classes("w-full")
+                .tooltip("Flow coefficient for the orifice (0.6 is typical)")
+            )
+
+            # Active status
+            active_switch = ui.switch("Active", value=active_default).classes("mb-2")
+
+            # Action buttons
+            button_row = ui.row().classes("w-full justify-end gap-2 mt-4")
+            with button_row:
+                ui.button("Cancel", color="gray").on("click", dialog.close)
+
+                ui.button(
+                    "Update" if existing_leak else "Add",
+                    color=self.theme_color,
+                ).on(
+                    "click",
+                    lambda: self.save_leak_form(
+                        dialog,
+                        name_input.value,
+                        diameter_input.value,
+                        location_input.value,
+                        cd_input.value,
+                        active_switch.value,
+                        diameter_unit,
+                    ),
+                )
+
+        dialog.open()
+
+    def save_leak_form(
+        self,
+        dialog: ui.dialog,
+        name: str,
+        diameter_value: float,
+        location: float,
+        discharge_coefficient: float,
+        active: bool,
+        diameter_unit,
+    ) -> None:
+        """Save the leak form data."""
+        try:
+            # Validation
+            if diameter_value <= 0:
+                ui.notify("Leak diameter must be positive", type="negative")
+                return
+
+            if not (0.0 <= location <= 1.0):
+                ui.notify("Location must be between 0.0 and 1.0", type="negative")
+                return
+
+            if not (0.1 <= discharge_coefficient <= 1.0):
+                ui.notify(
+                    "Discharge coefficient must be between 0.1 and 1.0", type="negative"
+                )
+                return
+
+            # Create leak config
+            leak_config = PipeLeakConfig(
+                name=name if name.strip() else None,
+                diameter=Quantity(diameter_value, diameter_unit.unit),
+                location=location,
+                discharge_coefficient=discharge_coefficient,
+                active=active,
+            )
+
+            # Add or update leak
+            if self.leak_edit_mode and self.selected_leak_index is not None:
+                self.manager.update_pipe_leak(
+                    self.selected_pipe_index,
+                    self.selected_leak_index,
+                    leak_config,
+                )
+            else:
+                self.manager.add_pipe_leak(self.selected_pipe_index, leak_config)
+
+            dialog.close()
+            self.refresh_properties_panel()  # Refresh to show updated leak list
+
+        except Exception as exc:
+            ui.notify(f"Error saving leak: {str(exc)}", type="negative")
+            logger.error(f"Error saving leak: {exc}", exc_info=True)
+
+    def toggle_leak_status(self, pipe_index: int, leak_index: int) -> None:
+        """Toggle the active status of a leak."""
+        try:
+            self.manager.toggle_leak(pipe_index, leak_index)
+            self.refresh_properties_panel()
+        except Exception as exc:
+            ui.notify(f"Error toggling leak status: {str(exc)}", type="negative")
+            logger.error(f"Error toggling leak status: {exc}", exc_info=True)
+
+    def confirm_remove_leak(self, pipe_index: int, leak_index: int) -> None:
+        """Show confirmation dialog for removing a leak."""
+        pipe_config = self.manager.get_pipe_configs()[pipe_index]
+        leak_config = pipe_config.leaks[leak_index]
+        leak_name = leak_config.name or f"Leak {leak_index + 1}"
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-sm"):
+            ui.label(f"Remove {leak_name}?").classes("text-lg font-semibold mb-3")
+            ui.label(
+                f"This will permanently remove the leak from {pipe_config.name}."
+            ).classes("text-gray-600 mb-4")
+
+            button_row = ui.row().classes("w-full justify-end gap-2")
+            with button_row:
+                ui.button("Cancel", color="gray").on("click", dialog.close)
+                ui.button("Remove", color="red").on(
+                    "click",
+                    lambda: (
+                        self.manager.remove_pipe_leak(pipe_index, leak_index),
+                        dialog.close(),
+                        self.refresh_properties_panel(),
+                    ),
+                )
+
+        dialog.open()
+
+    def confirm_clear_all_leaks(self, pipe_index: int) -> None:
+        """Show confirmation dialog for clearing all leaks from a pipe."""
+        pipe_config = self.manager.get_pipe_configs()[pipe_index]
+        leak_count = len(pipe_config.leaks)
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-sm"):
+            ui.label("Clear All Leaks?").classes("text-lg font-semibold mb-3")
+            ui.label(
+                f"This will remove all {leak_count} leaks from {pipe_config.name}."
+            ).classes("text-gray-600 mb-4")
+
+            button_row = ui.row().classes("w-full justify-end gap-2")
+            with button_row:
+                ui.button("Cancel", color="gray").on("click", dialog.close)
+                ui.button("Clear All", color="red").on(
+                    "click",
+                    lambda: (
+                        self.manager.clear_pipe_leaks(pipe_index),
+                        dialog.close(),
+                        self.refresh_properties_panel(),
+                    ),
+                )
+        dialog.open()
+
+    def show_pipeline_leak_summary(self) -> ui.column:
+        """Show a summary of all leaks in the pipeline."""
+        summary_container = ui.column().classes("w-full gap-2")
+
+        with summary_container:
+            # Header
+            header_row = ui.row().classes("w-full items-center justify-between")
+            with header_row:
+                ui.label("Pipeline Leak Summary").classes("text-lg font-semibold")
+
+                total_leaks = self.manager.get_leak_count()
+                if total_leaks > 0:
+                    ui.button(
+                        "Clear All Leaks",
+                        icon="clear_all",
+                        color="red",
+                    ).props("size=sm").on(
+                        "click", self.confirm_clear_all_pipeline_leaks
+                    )
+
+            # Summary cards
+            if total_leaks > 0:
+                all_leaks = self.manager.get_all_leaks()
+
+                for pipe_index, leak_configs in all_leaks.items():
+                    pipe_config = self.manager.get_pipe_configs()[pipe_index]
+                    active_leaks = sum(1 for leak in leak_configs if leak.active)
+
+                    leak_summary_card = (
+                        ui.card()
+                        .classes("w-full p-2 border-l-4")
+                        .style(
+                            f"border-left-color: {'#ef4444' if active_leaks > 0 else '#6b7280'}"
+                        )
+                    )
+
+                    with leak_summary_card:
+                        summary_row = ui.row().classes(
+                            "w-full items-center justify-between"
+                        )
+                        with summary_row:
+                            ui.label(pipe_config.name).classes("font-medium")
+                            ui.label(
+                                f"{active_leaks}/{len(leak_configs)} active"
+                            ).classes("text-sm text-gray-600")
+            else:
+                ui.label("No leaks in pipeline").classes(
+                    "text-gray-500 text-center py-4 italic"
+                )
+
+        return summary_container
+
+    def confirm_clear_all_pipeline_leaks(self) -> None:
+        """Show confirmation dialog for clearing all leaks from the entire pipeline."""
+        total_leaks = self.manager.get_leak_count()
+
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-sm"):
+            ui.label("Clear All Pipeline Leaks?").classes("text-lg font-semibold mb-3")
+            ui.label(
+                f"This will remove all {total_leaks} leaks from the entire pipeline."
+            ).classes("text-gray-600 mb-4")
+
+            button_row = ui.row().classes("w-full justify-end gap-2")
+            with button_row:
+                ui.button("Cancel", color="gray").on("click", dialog.close)
+                ui.button("Clear All", color="red").on(
+                    "click",
+                    lambda: (
+                        self.manager.clear_all_leaks(),
+                        dialog.close(),
+                        self.refresh_properties_panel(),
+                    ),
+                )
+
+        dialog.open()
 
     def clear_pipe_selection(self):
         """Clear pipe selection and return to fluid properties."""

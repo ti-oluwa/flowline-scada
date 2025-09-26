@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["ConfigurationUI"]
 
+
 class ConfigurationUI:
     """Multi-tab configuration interface"""
 
@@ -189,7 +190,7 @@ class ConfigurationUI:
                         ).classes(
                             f"text-xs text-{'green' if auto_save_enabled else 'orange'}-600 font-medium"
                         )
-                        if not auto_save_enabled and self.config.state.changed:
+                        if not auto_save_enabled:
                             ui.chip("Unsaved changes", color="orange").classes(
                                 "text-xs"
                             )
@@ -393,16 +394,6 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline.fluid",
                             temperature=Quantity(e.value, temperature_unit.unit),
-                        ),
-                    ).classes("w-full")
-
-                    ui.number(
-                        label=f"Pressure ({pressure_unit.display})",
-                        value=fluid_config.pressure.to(pressure_unit.unit).magnitude,
-                        format="%.2f",
-                        on_change=lambda e: self.config.update(
-                            "pipeline.fluid",
-                            pressure=Quantity(e.value, pressure_unit.unit),
                         ),
                     ).classes("w-full")
 

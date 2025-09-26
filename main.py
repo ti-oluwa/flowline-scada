@@ -15,13 +15,14 @@ from nicegui import Client, ui
 from src.config import ConfigurationState, Configuration
 from src.storages import JSONFileStorage, RedisStorage
 from src.flow import FlowType, Fluid
-from src.pipeline.components import Pipeline
+from src.pipeline.components import Pipeline, PipeLeak
 from src.pipeline.manage import (
     DownstreamStationFactory,
     PipelineManager,
     PipelineManagerUI,
     UpstreamStationFactory,
 )
+from src.units import Quantity
 
 load_dotenv(find_dotenv(".env"))
 
@@ -127,6 +128,7 @@ def root(client: Client) -> ui.element:
             )
 
             if last_state:
+                print(last_state)
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
                 try:
                     pipeline_manager = PipelineManager.load_state(
@@ -140,19 +142,10 @@ def root(client: Client) -> ui.element:
 
             if not last_state:
                 logger.info(f"Creating new pipeline for session {session_id!r}")
-                fluid_config = pipeline_config.fluid
-                fluid = Fluid.from_coolprop(
-                    fluid_name=fluid_config.name,
-                    phase=fluid_config.phase,
-                    temperature=fluid_config.temperature,
-                    pressure=fluid_config.pressure,
-                    molecular_weight=fluid_config.molecular_weight,
-                )
-
                 flow_type = FlowType(pipeline_config.flow_type)
                 pipeline = Pipeline(
                     pipes=[],
-                    fluid=fluid,
+                    fluid=None,
                     name=pipeline_config.name,
                     max_flow_rate=pipeline_config.max_flow_rate,
                     flow_type=flow_type,
@@ -160,6 +153,17 @@ def root(client: Client) -> ui.element:
                     connector_length=pipeline_config.connector_length,
                     alert_errors=pipeline_config.alert_errors,
                 )
+
+                fluid_config = pipeline_config.fluid
+                fluid = Fluid.from_coolprop(
+                    fluid_name=fluid_config.name,
+                    phase=fluid_config.phase,
+                    temperature=fluid_config.temperature,
+                    pressure=pipeline.upstream_pressure or Quantity(101.325, "kPa"),
+                    molecular_weight=fluid_config.molecular_weight,
+                )
+                pipeline.set_fluid(fluid)
+
                 # Build pipeline manager
                 pipeline_manager = PipelineManager(
                     pipeline,
@@ -230,6 +234,7 @@ def main():
         favicon="🔧",
         dark=False,
         storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
+        native=False,
     )
 
 

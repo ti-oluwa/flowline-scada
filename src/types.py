@@ -204,8 +204,6 @@ class FluidConfig:
     """Phase of the fluid - gas or liquid"""
     temperature: Quantity = attrs.field(factory=lambda: Quantity(60, "degF"))  # type: ignore
     """Temperature of the fluid"""
-    pressure: Quantity = attrs.field(factory=lambda: Quantity(100, "psi"))  # type: ignore
-    """Pressure of the fluid"""
     molecular_weight: Quantity = attrs.field(factory=lambda: Quantity(16.04, "g/mol"))  # type: ignore
     """Molecular weight of the fluid"""
 
@@ -329,7 +327,7 @@ class GlobalConfig:
         factory=lambda: dict(imperial=IMPERIAL, si=SI, oil_field=OIL_FIELD)
     )
     """Custom unit systems defined by user"""
-    auto_save: bool = True
+    auto_save: bool = False
     """Whether to auto-save configurations"""
 
 
