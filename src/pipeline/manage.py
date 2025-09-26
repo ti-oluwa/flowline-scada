@@ -1829,7 +1829,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.fluid_form_container.clear()
         # Always show fluid properties in the right container
         with self.fluid_form_container:
-            self.show_fluid_properties_form()
+            self.show_fluid_form()
 
         if self.pipe_form_container is None:
             return
@@ -1840,9 +1840,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             if self.selected_pipe_index is not None:
                 pipe_configs = self.manager.get_pipe_configs()
                 if self.selected_pipe_index < len(pipe_configs):
-                    self.show_pipe_properties_form(
-                        pipe_configs[self.selected_pipe_index]
-                    )
+                    self.show_pipe_form(pipe_configs[self.selected_pipe_index])
             else:
                 # Show pipeline leak summary when no pipe is selected
                 if self.manager.has_leaks():
@@ -2068,87 +2066,97 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     )
                     ui.button(
                         "Add Pipe",
-                        on_click=lambda: self._add_pipe_from_dialog(
-                            dialog,
-                            name_input,
-                            length_input,
-                            diameter_input,
-                            upstream_pressure_input,
-                            downstream_pressure_input,
-                            direction_select,
-                            material_input,
-                            roughness_input,
-                            elevation_input,
-                            efficiency_input,
-                            position_select,
+                        on_click=lambda: self.save_pipe_add_form(
+                            dialog=dialog,
+                            name=name_input.value,
+                            length=length_input.value,
+                            diameter=diameter_input.value,
+                            upstream_pressure=upstream_pressure_input.value,
+                            downstream_pressure=downstream_pressure_input.value,
+                            direction=direction_select.value,
+                            material=material_input.value,
+                            roughness=roughness_input.value,
+                            elevation=elevation_input.value,
+                            efficiency=efficiency_input.value,
+                            position=position_select.value,
+                            length_unit=length_unit.unit,
+                            diameter_unit=diameter_unit.unit,
+                            pressure_unit=pressure_unit.unit,
+                            roughness_unit=roughness_unit.unit,
+                            elevation_unit=elevation_unit.unit,
                         ),
                         color=self.theme_color,
                     ).classes(
                         self.get_primary_button_classes("px-4 py-2 flex-1 sm:flex-none")
                     )
-
         dialog.open()
 
-    def _add_pipe_from_dialog(
+    def save_pipe_add_form(
         self,
-        dialog,
-        name_input: ui.input,
-        length_input: ui.number,
-        diameter_input: ui.number,
-        upstream_pressure_input: ui.number,
-        downstream_pressure_input: ui.number,
-        direction_select: ui.select,
-        material_input: ui.input,
-        roughness_input: ui.number,
-        elevation_input: ui.number,
-        efficiency_input: ui.number,
-        position_select: ui.select,
+        dialog: ui.dialog,
+        name: typing.Optional[str],
+        length: float,
+        diameter: float,
+        upstream_pressure: float,
+        downstream_pressure: float,
+        direction: str,
+        material: str,
+        roughness: float,
+        elevation: float,
+        efficiency: float,
+        position: str,
+        length_unit: str = "m",
+        diameter_unit: str = "m",
+        pressure_unit: str = "Pa",
+        roughness_unit: str = "m",
+        elevation_unit: str = "m",
     ):
         """
-        Add pipe from dialog inputs.
+        Add pipe from pipe add dialog data.
 
         :param dialog: The dialog instance to close after adding.
-        :param name_input: Input for pipe name.
-        :param length_input: Input for pipe length.
-        :param diameter_input: Input for pipe diameter.
-        :param upstream_pressure_input: Input for upstream pressure.
-        :param downstream_pressure_input: Input for downstream pressure.
-        :param direction_select: Select for flow direction.
-        :param material_input: Input for pipe material.
-
+        :param name: Name of the pipe.
+        :param length: Length of the pipe.
+        :param diameter: Internal diameter of the pipe.
+        :param upstream_pressure: Upstream pressure of the pipe.
+        :param downstream_pressure: Downstream pressure of the pipe.
+        :param direction: Flow direction of the pipe.
+        :param material: Material of the pipe.
+        :param roughness: Roughness of the pipe.
+        :param elevation: Elevation difference of the pipe.
+        :param efficiency: Efficiency of the pipe.
+        :param position: Position to insert the pipe ("End" or "Before Pipe X").
+        :param length_unit: Unit for length.
+        :param diameter_unit: Unit for diameter.
+        :param pressure_unit: Unit for pressure.
+        :param roughness_unit: Unit for roughness.
+        :param elevation_unit: Unit for elevation.
         """
         try:
-            length_unit = self.unit_system["length"].unit
-            diameter_unit = self.unit_system["diameter"].unit
-            pressure_unit = self.unit_system["pressure"].unit
-            roughness_unit = self.unit_system["roughness"].unit
-            elevation_unit = self.unit_system["elevation"].unit
-
             pipe_config = PipeConfig(
-                name=name_input.value
-                or f"Pipe-{len(self.manager.get_pipe_configs()) + 1}",
-                length=Quantity(length_input.value, length_unit),  # type: ignore
-                internal_diameter=Quantity(diameter_input.value, diameter_unit),  # type: ignore
+                name=name.strip() or f"Pipe-{len(self.manager.get_pipe_configs()) + 1}",
+                length=Quantity(length, length_unit),  # type: ignore
+                internal_diameter=Quantity(diameter, diameter_unit),  # type: ignore
                 upstream_pressure=Quantity(
-                    upstream_pressure_input.value,
+                    upstream_pressure,
                     pressure_unit,  # type: ignore
                 ),
                 downstream_pressure=Quantity(
-                    downstream_pressure_input.value,
+                    downstream_pressure,
                     pressure_unit,  # type: ignore
                 ),
-                direction=PipeDirection(direction_select.value),
-                material=material_input.value or "Steel",
-                roughness=Quantity(roughness_input.value, roughness_unit),  # type: ignore
-                elevation_difference=Quantity(elevation_input.value, elevation_unit),  # type: ignore
-                efficiency=efficiency_input.value,
+                direction=PipeDirection(direction),
+                material=material or "Steel",
+                roughness=Quantity(roughness, roughness_unit),  # type: ignore
+                elevation_difference=Quantity(elevation, elevation_unit),  # type: ignore
+                efficiency=efficiency,
             )
 
             # Determine insertion index
             index = None
-            if position_select.value != "End":
+            if position.lower() != "end":
                 # Extract pipe number from "Before Pipe X"
-                pipe_num = int(position_select.value.split()[-1]) - 1  # type: ignore
+                pipe_num = int(position.split()[-1]) - 1  # type: ignore
                 index = pipe_num
 
             self.manager.add_pipe(pipe_config, index)
@@ -2187,7 +2195,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         except ValueError as exc:
             ui.notify(str(exc), type="warning")
 
-    def show_pipe_properties_form(self, pipe_config: PipeConfig):
+    def show_pipe_form(self, pipe_config: PipeConfig):
         """Create form for editing pipe properties."""
         pipe_header = ui.card().classes(
             f"w-full mb-3 bg-gradient-to-r from-{self.theme_color}-50 to-{self.theme_color}-100 border-l-4 border-{self.theme_color}-500"
@@ -2199,15 +2207,17 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
         with form_container:
+            length_unit = self.unit_system["length"]
+            diameter_unit = self.unit_system["diameter"]
+            roughness_unit = self.unit_system["roughness"]
+            elevation_unit = self.unit_system["elevation"]
+
             # Basic properties
             name_input = ui.input("Name", value=pipe_config.name).classes("w-full")
 
             # Dimensions row - side by side on larger screens
             dimensions_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with dimensions_row:
-                length_unit = self.unit_system["length"]
-                diameter_unit = self.unit_system["diameter"]
-
                 length_input = ui.number(
                     f"Length ({length_unit})",
                     value=pipe_config.length.to(length_unit.unit).magnitude,
@@ -2244,9 +2254,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 "w-full gap-2 flex-wrap sm:flex-nowrap"
             )
             with roughness_elevation_row:
-                roughness_unit = self.unit_system["roughness"]
-                elevation_unit = self.unit_system["elevation"]
-
                 roughness_input = ui.number(
                     f"Roughness ({roughness_unit})",
                     value=pipe_config.roughness.to(roughness_unit.unit).magnitude,
@@ -2273,15 +2280,19 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             with buttons_row:
                 ui.button(
                     "Update Pipe",
-                    on_click=lambda: self._update_pipe_from_form(
-                        name_input,
-                        length_input,
-                        diameter_input,
-                        direction_select,
-                        material_input,
-                        efficiency_input,
-                        roughness_input,
-                        elevation_input,
+                    on_click=lambda: self.save_pipe_form(
+                        name=name_input.value,
+                        length=length_input.value,
+                        diameter=diameter_input.value,
+                        direction=direction_select.value,
+                        material=material_input.value,
+                        efficiency=efficiency_input.value,
+                        roughness=roughness_input.value,
+                        elevation=elevation_input.value,
+                        length_unit=length_unit.unit,
+                        diameter_unit=diameter_unit.unit,
+                        roughness_unit=roughness_unit.unit,
+                        elevation_unit=elevation_unit.unit,
                     ),
                     color=self.theme_color,
                 ).classes(
@@ -2296,11 +2307,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     self.get_accent_button_classes("px-4 py-2 flex-1 sm:flex-none")
                 )
 
-        # Add leak management section
+        # Show leak management section
         ui.separator().classes("my-4")
         self.show_leak_management_panel(self.selected_pipe_index)
 
-    def show_fluid_properties_form(self):
+    def show_fluid_form(self):
         """Create form for editing fluid properties."""
         # Header with better styling
         fluid_header = ui.card().classes(
@@ -2312,6 +2323,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             )
 
         fluid_config = self.manager.get_fluid_config()
+        temp_unit = self.unit_system["temperature"]
+        mol_weight_unit = self.unit_system["molecular_weight"]
 
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
         with form_container:
@@ -2330,8 +2343,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 "w-full gap-2 flex-wrap sm:flex-nowrap"
             )
             with temp_pressure_row:
-                temp_unit = self.unit_system["temperature"]
-
                 temperature_input = ui.number(
                     f"Temperature ({temp_unit})",
                     value=fluid_config.temperature.to(temp_unit.unit).magnitude,
@@ -2342,8 +2353,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Molecular weight and specific gravity row
             mol_gravity_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with mol_gravity_row:
-                mol_weight_unit = self.unit_system["molecular_weight"]
-
                 molecular_weight_input = ui.number(
                     f"Molecular Weight ({mol_weight_unit})",
                     value=fluid_config.molecular_weight.to(
@@ -2357,82 +2366,103 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Update button - responsive
             ui.button(
                 "Update Fluid",
-                on_click=lambda: self._update_fluid_from_form(
-                    name_input,
-                    phase_select,
-                    temperature_input,
-                    molecular_weight_input,
+                on_click=lambda: self.save_fluid_form(
+                    name=name_input.value,
+                    phase=phase_select.value,
+                    temperature=temperature_input.value,
+                    molecular_weight=molecular_weight_input.value,
+                    temperature_unit=temp_unit.unit,
+                    molecular_weight_unit=mol_weight_unit.unit,
                 ),
                 color=self.theme_color,
             ).classes(
                 self.get_primary_button_classes("px-4 py-2 mt-3 w-full sm:w-auto")
             )
 
-    def _update_pipe_from_form(
+    def save_pipe_form(
         self,
-        name_input,
-        length_input,
-        diameter_input,
-        direction_select,
-        material_input,
-        efficiency_input,
-        roughness_input,
-        elevation_input,
+        name: str,
+        length: float,
+        diameter: float,
+        direction: str,
+        material: str,
+        efficiency: float,
+        roughness: float,
+        elevation: float,
+        length_unit: str = "m",
+        diameter_unit: str = "mm",
+        roughness_unit: str = "mm",
+        elevation_unit: str = "m",
     ):
-        """Update pipe configuration from form inputs."""
+        """
+        Save pipe form data.
+
+        :param name: Name of the pipe.
+        :param length: Length of the pipe.
+        :param diameter: Internal diameter of the pipe.
+        :param direction: Flow direction of the pipe.
+        :param material: Material of the pipe.
+        :param efficiency: Efficiency of the pipe.
+        :param roughness: Roughness of the pipe.
+        :param elevation: Elevation difference of the pipe.
+        :param length_unit: Unit for length.
+        :param diameter_unit: Unit for diameter.
+        :param roughness_unit: Unit for roughness.
+        :param elevation_unit: Unit for elevation.
+        """
         try:
             if self.selected_pipe_index is not None:
                 selected_pipe_config = self.manager.get_pipe_configs()[
                     self.selected_pipe_index
                 ]
-                length_unit = self.unit_system["length"].unit
-                diameter_unit = self.unit_system["diameter"].unit
-                roughness_unit = self.unit_system["roughness"].unit
-                elevation_unit = self.unit_system["elevation"].unit
-
                 updated_config = PipeConfig(
-                    name=name_input.value,
-                    length=Quantity(length_input.value, length_unit),  # type: ignore
-                    internal_diameter=Quantity(diameter_input.value, diameter_unit),  # type: ignore
+                    name=name.strip() or selected_pipe_config.name,
+                    length=Quantity(length, length_unit),  # type: ignore
+                    internal_diameter=Quantity(diameter, diameter_unit),  # type: ignore
                     # Pressures remain unchanged as they manage by the pipeline and flowstations
                     upstream_pressure=selected_pipe_config.upstream_pressure,
                     downstream_pressure=selected_pipe_config.downstream_pressure,
-                    direction=PipeDirection(direction_select.value),
-                    material=material_input.value,
-                    roughness=Quantity(roughness_input.value, roughness_unit),  # type: ignore
-                    elevation_difference=Quantity(
-                        elevation_input.value, elevation_unit
-                    ),  # type: ignore
-                    efficiency=efficiency_input.value,
+                    direction=PipeDirection(direction),
+                    material=material,
+                    roughness=Quantity(roughness, roughness_unit),  # type: ignore
+                    elevation_difference=Quantity(elevation, elevation_unit),  # type: ignore
+                    efficiency=efficiency,
                 )
                 self.manager.update_pipe(self.selected_pipe_index, updated_config)
 
         except Exception as exc:
             logger.error(f"Error updating pipe: {exc}", exc_info=True)
 
-    def _update_fluid_from_form(
+    def save_fluid_form(
         self,
-        name_input,
-        phase_select,
-        temperature_input,
-        molecular_weight_input,
+        name: str,
+        phase: str,
+        temperature: float,
+        molecular_weight: float,
+        temperature_unit: str,
+        molecular_weight_unit: str,
     ):
-        """Update fluid configuration from form inputs."""
-        try:
-            temp_unit = self.unit_system["temperature"].unit
-            mol_weight_unit = self.unit_system["molecular_weight"].unit
+        """
+        Save fluid from form data.
 
+        :param name: Name of the fluid.
+        :param phase: Phase of the fluid ("gas" or "liquid").
+        :param temperature: Temperature of the fluid.
+        :param molecular_weight: Molecular weight of the fluid.
+        :param temperature_unit: Unit for temperature.
+        :param molecular_weight_unit: Unit for molecular weight.
+        """
+        try:
             updated_config = FluidConfig(
-                name=name_input.value,
-                phase=phase_select.value,
-                temperature=Quantity(temperature_input.value, temp_unit),  # type: ignore
+                name=name.strip() or "Methane",
+                phase=phase,
+                temperature=Quantity(temperature, temperature_unit),  # type: ignore
                 molecular_weight=Quantity(
-                    molecular_weight_input.value,
-                    mol_weight_unit,  # type: ignore
+                    molecular_weight,
+                    molecular_weight_unit,  # type: ignore
                 ),
             )
             self.manager.set_fluid_config(updated_config)
-
         except Exception as exc:
             logger.error(f"Error updating fluid: {exc}", exc_info=True)
 
@@ -2699,13 +2729,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ).on(
                     "click",
                     lambda: self.save_leak_form(
-                        dialog,
-                        name_input.value,
-                        diameter_input.value,
-                        location_input.value,
-                        cd_input.value,
-                        active_switch.value,
-                        diameter_unit,
+                        dialog=dialog,
+                        name=name_input.value,
+                        diameter=diameter_input.value,
+                        location=location_input.value,
+                        discharge_coefficient=cd_input.value,
+                        active=active_switch.value,
+                        diameter_unit=diameter_unit.unit,
                     ),
                 )
 
@@ -2715,16 +2745,26 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self,
         dialog: ui.dialog,
         name: str,
-        diameter_value: float,
+        diameter: float,
         location: float,
         discharge_coefficient: float,
         active: bool,
-        diameter_unit,
+        diameter_unit: str = "mm",
     ) -> None:
-        """Save the leak form data."""
+        """
+        Save the leak form data.
+
+        :param dialog: The dialog instance to close after saving.
+        :param name: Name of the leak.
+        :param diameter: Diameter of the leak.
+        :param location: Location of the leak as a fraction of pipe length (0.0 to 1.0).
+        :param discharge_coefficient: Discharge coefficient of the leak (0.1 to 1.0).
+        :param active: Whether the leak is active.
+        :param diameter_unit: Unit for diameter.
+        """
         try:
             # Validation
-            if diameter_value <= 0:
+            if diameter <= 0:
                 ui.notify("Leak diameter must be positive", type="negative")
                 return
 
@@ -2738,15 +2778,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 )
                 return
 
-            # Create leak config
             leak_config = PipeLeakConfig(
                 name=name if name.strip() else None,
-                diameter=Quantity(diameter_value, diameter_unit.unit),
+                diameter=Quantity(diameter, diameter_unit),
                 location=location,
                 discharge_coefficient=discharge_coefficient,
                 active=active,
             )
-
             # Add or update leak
             if self.leak_edit_mode and self.selected_leak_index is not None:
                 self.manager.update_pipe_leak(
@@ -2756,9 +2794,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 )
             else:
                 self.manager.add_pipe_leak(self.selected_pipe_index, leak_config)
-
             dialog.close()
-            self.refresh_properties_panel()  # Refresh to show updated leak list
 
         except Exception as exc:
             ui.notify(f"Error saving leak: {str(exc)}", type="negative")
@@ -2768,7 +2804,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Toggle the active status of a leak."""
         try:
             self.manager.toggle_leak(pipe_index, leak_index)
-            self.refresh_properties_panel()
         except Exception as exc:
             ui.notify(f"Error toggling leak status: {str(exc)}", type="negative")
             logger.error(f"Error toggling leak status: {exc}", exc_info=True)
@@ -2793,7 +2828,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     lambda: (
                         self.manager.remove_pipe_leak(pipe_index, leak_index),
                         dialog.close(),
-                        self.refresh_properties_panel(),
                     ),
                 )
 
@@ -2815,11 +2849,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ui.button("Cancel", color="gray").on("click", dialog.close)
                 ui.button("Clear All", color="red").on(
                     "click",
-                    lambda: (
-                        self.manager.clear_pipe_leaks(pipe_index),
-                        dialog.close(),
-                        self.refresh_properties_panel(),
-                    ),
+                    lambda: (self.manager.clear_pipe_leaks(pipe_index), dialog.close()),
                 )
         dialog.open()
 
@@ -2890,11 +2920,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ui.button("Cancel", color="gray").on("click", dialog.close)
                 ui.button("Clear All", color="red").on(
                     "click",
-                    lambda: (
-                        self.manager.clear_all_leaks(),
-                        dialog.close(),
-                        self.refresh_properties_panel(),
-                    ),
+                    lambda: (self.manager.clear_all_leaks(), dialog.close()),
                 )
 
         dialog.open()

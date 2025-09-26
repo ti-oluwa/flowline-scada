@@ -15,7 +15,7 @@ from nicegui import Client, ui
 from src.config import ConfigurationState, Configuration
 from src.storages import JSONFileStorage, RedisStorage
 from src.flow import FlowType, Fluid
-from src.pipeline.components import Pipeline, PipeLeak
+from src.pipeline.components import Pipeline
 from src.pipeline.manage import (
     DownstreamStationFactory,
     PipelineManager,
