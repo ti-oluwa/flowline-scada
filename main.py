@@ -39,8 +39,8 @@ if redis_url := os.getenv("REDIS_URL"):
     try:
         redis_client = redis.Redis.from_url(redis_url)
         redis_client.ping()
-        config_file_storage = RedisStorage(redis_client)
-        state_file_storage = RedisStorage(redis_client)
+        config_file_storage = RedisStorage(redis_client, namespace="config")
+        state_file_storage = RedisStorage(redis_client, namespace="state")
         redis_available = True
         logger.info("Using `RedisStorage` for config and state storage")
     except redis.RedisError as exc:
@@ -51,8 +51,12 @@ if redis_url := os.getenv("REDIS_URL"):
         redis_available = False
 
 if not redis_available:
-    config_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/configs")
-    state_file_storage = JSONFileStorage(Path.cwd() / ".pipeline-scada/states")
+    config_file_storage = JSONFileStorage(
+        storage_dir=Path.cwd() / ".pipeline-scada/configs", namespace="config"
+    )
+    state_file_storage = JSONFileStorage(
+        storage_dir=Path.cwd() / ".pipeline-scada/states", namespace="state"
+    )
     logger.info("Using `JSONFileStorage` for config and state storage")
 
 
@@ -70,14 +74,12 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    config = Configuration(
-        session_id,
-        storages=[config_file_storage],
-    )
+    config = Configuration(session_id, storages=[config_file_storage], save_throttle=5.0)
 
     # Get current configuration
     theme_color = config.state.global_.theme_color
-    last_state = state_file_storage.read(session_id)
+    client_state_key = state_file_storage.get_key(session_id)
+    last_state = state_file_storage.read(client_state_key)
 
     # Main layout container
     main_container = (
@@ -128,7 +130,6 @@ def root(client: Client) -> ui.element:
             )
 
             if last_state:
-                print(last_state)
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
                 try:
                     pipeline_manager = PipelineManager.load_state(
@@ -171,14 +172,12 @@ def root(client: Client) -> ui.element:
                     flow_station_factories=[upstream_factory, downstream_factory],
                 )
 
-            session_id_in_storage = state_file_storage.read(session_id) is not None
-            logger.info(
-                f"Session ID {session_id!r} in storage: {session_id_in_storage}"
-            )
+            has_stored_state = state_file_storage.read(client_state_key) is not None
+            logger.info(f"Session ID {session_id!r} in storage: {has_stored_state}")
 
             def pipeline_state_observer(_: str, __: typing.Any) -> None:
                 """Handle pipeline state changes."""
-                nonlocal session_id_in_storage
+                nonlocal has_stored_state
 
                 logger.debug(
                     f"Pipeline state changed, updating storage for session {session_id!r}"
@@ -188,10 +187,10 @@ def root(client: Client) -> ui.element:
                     return
 
                 state = pipeline_manager.dump_state()
-                if not session_id_in_storage:
-                    state_file_storage.create(session_id, state)
+                if not has_stored_state:
+                    state_file_storage.create(client_state_key, state)
                 else:
-                    state_file_storage.update(session_id, state, overwrite=True)
+                    state_file_storage.update(client_state_key, state, overwrite=True)
                 logger.debug(
                     f"Pipeline state storage updated for session {session_id!r}"
                 )

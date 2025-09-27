@@ -110,9 +110,9 @@ class Meter:
         :param update_interval: Interval in seconds to call `update_func`
         :param alert_errors: Whether to show alerts on for meter update errors.
         """
-        self.value = value
         self.min = min_value
         self.max = max_value
+        self.value = 0.0
         self.theme_color = theme_color
         self.units = units
         self.label = label
@@ -135,6 +135,7 @@ class Meter:
         self._animation_timer = None
         self._update_timer = None
         self.alert_errors = alert_errors
+        self.set_value(value, immediate=True)  # Use setter to clamp initial value
 
     def show(
         self,
@@ -356,7 +357,7 @@ class Meter:
         diff = self._target_value - self.value
         # Base step on both animation speed and difference magnitude
         base_step = self.animation_speed * self.animation_interval
-        magnitude_factor = min(abs(diff) * 0.1, 100.0)  # Scale with difference size
+        magnitude_factor = min(abs(diff) * 0.15, 100.0)  # Scale with difference size
         step = min(abs(diff), base_step * (1 + magnitude_factor))
 
         if diff < 0:
@@ -375,7 +376,7 @@ class Meter:
             try:
                 new_value = self.update_func()
                 if new_value is not None:
-                    self.set_value(new_value)
+                    self.set_value(new_value, immediate=False)
             except Exception as exc:
                 if self.alert_errors:
                     show_alert(f"Error updating {self.label}: {exc}", severity="error")
@@ -1061,7 +1062,7 @@ class Regulator:
         :param precision: Number of decimal places to display
         :param alert_errors: Whether to show alerts on setter function errors
         """
-        self.value = value
+        self.value = 0.0
         self.min = min_value
         self.max = max_value
         self.step = step
@@ -1082,6 +1083,7 @@ class Regulator:
         self.input_element = None
         self.status_indicator = None
         self.alert_errors = alert_errors
+        self.set_value(value)  # Use setter to ensure value is within bounds
 
     def show(
         self,
@@ -1306,10 +1308,10 @@ class Regulator:
 
         # Connect events
         self.slider_element.on(
-            "update:model-value", lambda e: update_value(e.args), throttle=1
+            "update:model-value", lambda e: update_value(e.args), throttle=1.5
         )
         self.input_element.on(
-            "update:model-value", lambda e: update_value(e.args), throttle=1
+            "update:model-value", lambda e: update_value(e.args), throttle=3.0
         )
 
     def get_status_color(self) -> str:
@@ -1671,14 +1673,14 @@ class Pipe:
             leak.compute_rate(
                 # Use the estimated pressure at the leak location
                 pipe_pressure=self.estimate_pressure_at_location(leak.location),
-                ambient_pressure=Quantity(14.7, "psi"),
+                ambient_pressure=self.ambient_pressure,
                 fluid_density=self.fluid.density,
             )
             .to("ft^3/s")
             .magnitude
             for leak in self.leaks
         )
-        return min(Quantity(total_leak_rate, "ft^3/s"), self._flow_rate)
+        return Quantity(total_leak_rate, "ft^3/s")
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
@@ -1715,7 +1717,10 @@ class Pipe:
         if sync:
             self.sync()
 
-        if self.leak_rate.magnitude >= self._flow_rate.magnitude:
+        if (
+            self._flow_rate.magnitude > 0
+            and self.leak_rate.magnitude >= self._flow_rate.magnitude
+        ):
             if self.alert_errors:
                 show_alert(
                     f"Warning: Unphysical condition! Total leak rate in pipe - {self.name!r} exceeds or equals flow rate.",
@@ -1981,8 +1986,8 @@ class Pipe:
         if not (0.0 <= location <= 1.0):
             raise ValueError("Location fraction must be between 0.0 and 1.0")
 
-        pressure_drop_total = self.upstream_pressure - self.downstream_pressure
-        pressure_at_location = self.upstream_pressure - (pressure_drop_total * location)
+        pressure_drop = self.upstream_pressure - self.downstream_pressure
+        pressure_at_location = self.upstream_pressure - (pressure_drop * location)
         return pressure_at_location
 
     def set_flow_rate(
@@ -2224,7 +2229,7 @@ class Pipe:
 class _MockSolution:
     """Helper class for consistent solution interface"""
 
-    def __init__(self, root, converged):
+    def __init__(self, root: float, converged: bool) -> None:
         self.root = root
         self.converged = converged
 
@@ -2312,6 +2317,17 @@ class Pipeline:
         """Iterable of all active leaks in the pipeline."""
         for pipe in self._pipes:
             yield from pipe.leaks
+
+    @property
+    def leak_rate(self) -> PlainQuantity[float]:
+        """Total leak rate from all pipes in the pipeline."""
+        if self._ignore_leaks:
+            return Quantity(0.0, "ft^3/s")
+
+        total_leak_rate = sum(
+            pipe.leak_rate.to("ft^3/s").magnitude for pipe in self._pipes
+        )
+        return Quantity(total_leak_rate, "ft^3/s")
 
     def set_fluid(self, value: Fluid, *, sync: bool = True) -> Self:
         """Set the fluid in the pipeline and update all pipes."""
@@ -2979,12 +2995,11 @@ class Pipeline:
 
         for i in range(len(self._pipes)):
             current_pipe = self._pipes[i]
-
             logger.debug("Pipe %d Upstream Pressure: %s", i + 1, current_pressure)
             # If the pressure drops to zero or below, flow cannot continue
             # return zero to notify the root solver to try another mass rate
             if current_pressure.magnitude <= 0:
-                logger.warning(
+                logger.debug(
                     "Pipe %d upstream pressure dropped to zero or below. Flow cannot continue.",
                     i + 1,
                 )
@@ -3057,7 +3072,7 @@ class Pipeline:
             # If the pressure drops to zero or below, flow cannot continue
             # return zero to notify the root solver to try another mass rate
             if downstream_pipe_pressure.magnitude <= 0:
-                logger.warning(
+                logger.debug(
                     "Pipe %d downstream pressure dropped to zero or below. Flow cannot continue.",
                     i + 1,
                 )
@@ -3156,7 +3171,7 @@ class Pipeline:
                     pipe_length=connector_length,  # Your connector length
                     fluid_density=fluid_at_connector_inlet.density,
                     fluid_dynamic_viscosity=fluid_at_connector_inlet.viscosity,
-                    pipe_relative_roughness=0.0001,  # Assume very smooth connector
+                    pipe_relative_roughness=0.000001,  # Assume very smooth connector
                     gradual_angle_threshold_deg=15.0,  # Assume gradual if angle < 15 degrees
                 )
             logger.debug(
@@ -3228,45 +3243,6 @@ class Pipeline:
         max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
         return 0.001, max(max_mass_flow_rate.magnitude, 50.0)
 
-    def _compute_mass_rate_range_simple(self) -> typing.Tuple[float, float]:
-        """
-        Estimates a reasonable mass flow rate range using the "Wide Net" approach.
-
-        This method provides a broad range to ensure the root-finding algorithm can find a valid solution.
-
-        Logic:
-        1. Lower Bound: A small, non-zero number to avoid division by zero or no-flow scenarios.
-        2. Upper Bound: Based on a generously high fluid velocity through the largest pipe diameter.
-
-        :return: Tuple of (min_mass_flow_rate, max_mass_flow_rate) in kg/s
-        """
-        if not self._pipes or self.fluid is None:
-            return 0.001, 1000.0
-
-        # 1. Lower Bound: A small, non-zero number.
-        min_mass_rate = 1e-3  # 1 g/s
-
-        # 2. Upper Bound: Based on a generously high fluid velocity.
-        try:
-            inlet_density_kg_m3 = self.fluid.density.to("kg/m^3").magnitude
-            max_diameter_m = max(
-                p.internal_diameter.to("m").magnitude for p in self._pipes
-            )
-            max_area_m2 = (math.pi * max_diameter_m**2) / 4
-            # 100 m/s is a very high velocity for most pipeline flows, making it a safe upper limit.
-            max_sane_velocity_m_s = 100.0
-            max_mass_rate = inlet_density_kg_m3 * max_area_m2 * max_sane_velocity_m_s
-
-            # Ensure max is significantly larger than min
-            if max_mass_rate <= min_mass_rate:
-                max_mass_rate = min_mass_rate * 1000.0
-
-            return min_mass_rate, max_mass_rate
-
-        except Exception:
-            # Fallback in case of any calculation errors
-            return 0.001, 1000.0
-
     def sync(self) -> Self:
         """
         Synchronize pipe properties based on the current pressure, fluid and flow conditions of the system.
@@ -3296,6 +3272,7 @@ class Pipeline:
 
         # Use a root-finding algorithm to determine the mass flow rate that achieves the desired downstream pressure
         target_downstream_pressure = self.downstream_pressure
+        logger.info("Target Downstream Pressure: %s", target_downstream_pressure)
 
         def error_function(mass_flow_rate_guess: float) -> float:
             """
@@ -3334,8 +3311,8 @@ class Pipeline:
             return error_psi
 
         min_mass_rate, max_mass_rate = self._compute_mass_rate_range()
-        logger.info("Initial Min Mass Flow Rate: %s", min_mass_rate)
-        logger.info("Initial Max Mass Flow Rate: %s", max_mass_rate)
+        logger.info("Min Mass Flow Rate Guess: %s", min_mass_rate)
+        logger.info("Max Mass Flow Rate Guess: %s", max_mass_rate)
 
         # Iteratively adjust the mass rate range until we get a sign change
         max_iterations = 20
@@ -3412,6 +3389,7 @@ class Pipeline:
                     method="brentq",
                     xtol=1e-5,
                 )
+                solution = _MockSolution(solution.root, solution.converged)
             except ValueError as e:
                 logger.error(f"Bracket method failed: {e}", exc_info=True)
                 # Fall back to scipy.optimize.fsolve if bracket fails
@@ -3477,7 +3455,6 @@ class Pipeline:
         )
         actual_mass_flow_rate = Quantity(mass_flow_solution, "kg/s")
         logger.info("Actual Mass Flow Rate: %s", actual_mass_flow_rate)
-        logger.info(f"System solved! Mass Flow Rate: {actual_mass_flow_rate:.4f}")
         # Now we run the calculation one last time with the correct flow rate
         # to update all the intermediate pressures in your pipe objects.
         computed_downstream_pressure = self._compute_outlet_pressure(
@@ -3536,15 +3513,15 @@ class FlowStation:
         name: str = "Flow Station",
         width: str = "100%",
         height: str = "auto",
-    ):
+    ) -> None:
         """
         Initialize a flow station instance.
 
         :param meters: Optional list of Meter instances to include in the flow station
         :param regulators: Optional list of Regulator instances to include in the flow station
-        :param name: Name of the flow station (default is "Flow Station")
-        :param width: Width of the flow station display (default is "100%")
-        :param height: Height of the flow station display (default is "200px")
+        :param name: Name of the flow station
+        :param width: Width of the flow station display
+        :param height: Height of the flow station display
         """
         self.name = name
         self.width = width
@@ -3564,6 +3541,42 @@ class FlowStation:
         """Get the list of regulators in the flow station."""
         return self._regulators
 
+    def add_meter(self, meter: Meter) -> Self:
+        """Add a meter to the flow station."""
+        self._meters.append(meter)
+        return self
+
+    def add_regulator(self, regulator: Regulator) -> Self:
+        """Add a regulator to the flow station."""
+        self._regulators.append(regulator)
+        return self
+
+    def remove_meter(self, index: int) -> Self:
+        """Remove a meter by index."""
+        if 0 <= index < len(self._meters):
+            self._meters.pop(index)
+        return self
+
+    def remove_regulator(self, index: int) -> Self:
+        """Remove a regulator by index."""
+        if 0 <= index < len(self._regulators):
+            self._regulators.pop(index)
+        return self
+
+    def clear_meters(self) -> Self:
+        """Clear all meters from the flow station."""
+        self._meters.clear()
+        return self
+
+    def clear_regulators(self) -> Self:
+        """Clear all regulators from the flow station."""
+        self._regulators.clear()
+        return self
+
+    def get_total_count(self) -> int:
+        """Get the total count of meters and regulators."""
+        return len(self._meters) + len(self._regulators)
+
     def show(
         self,
         width: str = "100%",
@@ -3577,105 +3590,76 @@ class FlowStation:
         show_empty_section: bool = False,
     ) -> ui.card:
         """
-        Display the flow station as a UI component with responsive grid layout.
+        Display the flow station as a UI component with proper grid layout.
 
         :param width: Width of the container (CSS units)
         :param height: Height of the container (CSS units)
-        :param show_meters_first: Whether to show meters before regulators (default is True)
-        :param meters_per_row: Number of meters per row (auto-calculated if None)
-        :param regulators_per_row: Number of regulators per row (auto-calculated if None)
+        :param show_meters_first: Whether to show meters before regulators
+        :param meters_per_row: Number of meters per row
+        :param regulators_per_row: Number of regulators per row
         :param label: Title label for the flow station (uses self.name if None)
         :param show_label: Whether to display the label above the flow station
         :param section_titles: Optional tuple to customize section titles (meters, regulators)
-        :param show_empty_section: Whether to show sections even if empty (default is False)
+        :param show_empty_section: Whether to show sections even if empty
         :return: ui.card component containing the flow station visualization
         """
         container = (
             ui.card()
-            .classes(
-                "w-full h-auto p-4 bg-gray-50 flex flex-col items-center space-y-4 "
-                "border border-gray-200 rounded-lg shadow-sm"
-            )
-            .style(
-                f"""
-                width: {width}; 
-                height: {height}; 
-                min-height: 200px;
-                overflow-y: auto; 
-                overflow-x: hidden;
-                scrollbar-width: thin;
-                """
-            )
+            .classes("w-full p-3 sm:p-4 lg:p-6")
+            .style(f"width: {width}; height: {height}; min-height: 200px;")
         )
-
         with container:
             # Header section
             if show_label:
                 display_label = label or self.name
                 ui.label(display_label).classes(
-                    "text-xl font-bold text-gray-800 text-center w-full"
-                ).style(
-                    "font-size: clamp(1rem, 3vw, 1.5rem); "
-                    "margin-bottom: clamp(0.5rem, 2vw, 1rem);"
+                    "text-lg sm:text-xl lg:text-2xl font-semibold mb-3 sm:mb-4 lg:mb-5 text-center sm:text-left"
                 )
 
-            # Main content container with vertical layout
-            content_container = (
-                ui.column()
-                .classes("w-full gap-4 flex-1")
-                .style("gap: clamp(0.75rem, 2vw, 1.5rem);")
-            )
-
+            content_container = ui.column().classes("w-full gap-3 sm:gap-4 lg:gap-6")
             with content_container:
-                # Determine display order
-                sections = []
-                if show_meters_first:
-                    meters_section_title = (
-                        section_titles[0] if section_titles else "Meters"
-                    )
-                    regulators_section_title = (
-                        section_titles[1] if section_titles else "Regulators"
-                    )
-                    sections = [
-                        ("meters", meters_section_title, self._meters, meters_per_row),
-                        (
-                            "regulators",
-                            regulators_section_title,
-                            self._regulators,
-                            regulators_per_row,
-                        ),
-                    ]
-                else:
-                    regulators_section_title = (
-                        section_titles[0] if section_titles else "Regulators"
-                    )
-                    meters_section_title = (
-                        section_titles[1] if section_titles else "Meters"
-                    )
-                    sections = [
-                        (
-                            "regulators",
-                            regulators_section_title,
-                            self._regulators,
-                            regulators_per_row,
-                        ),
-                        ("meters", meters_section_title, self._meters, meters_per_row),
-                    ]
+                # Build sections list
+                sections = self._build_sections_list(
+                    show_meters_first,
+                    section_titles,
+                    meters_per_row,
+                    regulators_per_row,
+                )
 
                 # Render each section
                 for section_type, section_title, items, items_per_row in sections:
                     if not items and not show_empty_section:
                         continue
-                    self.render_section(
-                        section_type=section_type,
-                        section_title=section_title,
-                        items=items,
-                        items_per_row=items_per_row,
+                    self._render_section(
+                        section_type, section_title, items, items_per_row
                     )
 
         return container
 
-    def render_section(
+    def _build_sections_list(
+        self,
+        show_meters_first: bool,
+        section_titles: typing.Optional[typing.Tuple[str, str]],
+        meters_per_row: int,
+        regulators_per_row: int,
+    ) -> typing.List[typing.Tuple[str, str, typing.List, int]]:
+        """Build the sections list based on display order."""
+        if show_meters_first:
+            meters_title = section_titles[0] if section_titles else "Meters"
+            regulators_title = section_titles[1] if section_titles else "Regulators"
+            return [
+                ("meters", meters_title, self._meters, meters_per_row),
+                ("regulators", regulators_title, self._regulators, regulators_per_row),
+            ]
+        else:
+            regulators_title = section_titles[0] if section_titles else "Regulators"
+            meters_title = section_titles[1] if section_titles else "Meters"
+            return [
+                ("regulators", regulators_title, self._regulators, regulators_per_row),
+                ("meters", meters_title, self._meters, meters_per_row),
+            ]
+
+    def _render_section(
         self,
         section_type: str,
         section_title: str,
@@ -3683,138 +3667,90 @@ class FlowStation:
         items_per_row: int,
     ):
         """
-        Render a section (meters or regulators) with responsive grid layout.
+        Render a section (meters or regulators) with proper grid layout.
 
         :param section_type: Type of section ("meters" or "regulators")
         :param section_title: Display title for the section
         :param items: List of items to display
-        :param items_per_row: Number of items per row (auto-calculated if None)
+        :param items_per_row: Number of items per row
         """
-        # Section container
-        section_container = (
-            ui.column()
-            .classes("w-full bg-white rounded-lg border border-gray-200 shadow-sm")
-            .style("padding: clamp(0.75rem, 2vw, 1.5rem);")
-        )
-
-        with section_container:
-            # Section header with count
-            header_container = (
-                ui.row()
-                .classes("w-full items-center justify-between mb-3")
-                .style("margin-bottom: clamp(0.5rem, 1.5vw, 0.75rem);")
-            )
-
-            with header_container:
-                ui.label(section_title).classes(
-                    "text-lg font-semibold text-gray-800"
-                ).style("font-size: clamp(0.875rem, 2.5vw, 1.125rem);")
-
-                # Count badge
-                count_color = (
-                    "bg-blue-100 text-blue-800"
-                    if section_type == "meters"
-                    else "bg-green-100 text-green-800"
-                )
-                ui.badge(str(len(items))).classes(
-                    f"{count_color} px-2 py-1 rounded-full text-xs font-medium"
-                ).style("font-size: clamp(0.625rem, 1.5vw, 0.75rem);")
+        section_card = ui.card().classes("w-full p-3 sm:p-4 lg:p-5")
+        with section_card:
+            # Section header
+            self._render_section_header(section_type, section_title, items)
 
             # Content area
             if not items:
-                self.render_empty_grid(section_type)
+                self._render_empty_state(section_type)
             else:
-                self.render_items_grid(items, items_per_row, section_type)
+                self._render_items_grid(items, items_per_row)
 
-    def render_empty_grid(self, section_type: str):
+    def _render_section_header(
+        self,
+        section_type: str,
+        section_title: str,
+        items: typing.List[typing.Union[Meter, Regulator]],
+    ):
+        """Render section header with title and count badge."""
+        header_row = ui.row().classes(
+            "w-full items-center justify-between mb-3 sm:mb-4 lg:mb-5"
+        )
+        with header_row:
+            ui.label(section_title).classes(
+                "text-base sm:text-lg lg:text-xl font-semibold"
+            )
+
+            # Count badge with theme-appropriate colors
+            badge_color = "blue" if section_type == "meters" else "green"
+            ui.badge(str(len(items)), color=badge_color)
+
+    def _render_empty_state(self, section_type: str):
         """
         Render empty state when no items are available.
 
         :param section_type: Type of section ("meters" or "regulators")
         """
-        icon = "📊" if section_type == "meters" else "🎛️"
+        icon = "speed" if section_type == "meters" else "tune"
         message = f"No {section_type} configured"
 
-        empty_container = (
-            ui.column()
-            .classes("w-full items-center justify-center py-8 text-gray-500")
-            .style("padding: clamp(2rem, 4vw, 3rem) clamp(1rem, 2vw, 1.5rem);")
+        empty_container = ui.column().classes(
+            "w-full items-center justify-center py-6 sm:py-8 lg:py-12"
         )
-
         with empty_container:
-            ui.label(icon).classes("text-4xl mb-2").style(
-                "font-size: clamp(2rem, 4vw, 2.5rem); "
-                "margin-bottom: clamp(0.5rem, 1vw, 0.75rem);"
-            )
-            ui.label(message).classes("text-center font-medium").style(
-                "font-size: clamp(0.75rem, 2vw, 0.875rem);"
-            )
+            ui.icon(icon, size="2rem").classes("text-gray-400 mb-2 sm:mb-3")
+            ui.label(message).classes("text-gray-500 text-center text-sm sm:text-base")
 
-    def render_items_grid(
+    def _render_items_grid(
         self,
         items: typing.List[typing.Union[Meter, Regulator]],
         items_per_row: int,
-        section_type: str,
     ):
         """
-        Render items in a responsive grid layout.
+        Render items in a responsive grid layout respecting items_per_row.
 
         :param items: List of items to display
-        :param items_per_row: Number of items per row (auto-calculated if None)
-        :param section_type: Type of section for styling
+        :param items_per_row: Number of items per row (desktop)
         """
-        # Create responsive grid container
-        grid_classes = self._get_grid_classes(items_per_row)
-        grid_container = (
-            ui.column()
-            .classes("w-full gap-3")
-            .style("gap: clamp(1.5rem, 1.5vw, 1.75rem);")
+        grid_container = ui.row().classes(
+            "w-full gap-2 sm:gap-3 flex-wrap justify-center sm:justify-start"
         )
 
         with grid_container:
-            # Split items into rows
-            for i in range(0, len(items), items_per_row):
-                row_items = items[i : i + items_per_row]
-
-                # Create row container
-                row_container = (
-                    ui.row()
-                    .classes(f"{grid_classes} gap-3 w-full")
-                    .style("gap: clamp(1.5rem, 1.5vw, 1.75rem);")
+            # Add each item with responsive sizing
+            for item in items:
+                # Item container with responsive flex basis and increased padding
+                # On small screens: 1 item per row (100% width) centered
+                # On medium screens: 2 items per row (50% width minus gap)
+                # On large screens: respect items_per_row parameter
+                item_container = (
+                    ui.column()
+                    .classes(
+                        f"flex-none w-full sm:w-[calc(50%-0.375rem)] "
+                        f"lg:w-[calc({100 / items_per_row}%-{(items_per_row - 1) * 0.75 / items_per_row}rem)] "
+                        f"px-3 sm:px-4 lg:px-2 flex justify-center items-center"
+                    )
+                    .style("min-width: 280px; max-width: 400px;")
                 )
 
-                with row_container:
-                    for item in row_items:
-                        # Create responsive item wrapper
-                        item_wrapper = (
-                            ui.column()
-                            .classes(
-                                "flex-row justify-center align-center flex-1 min-w-0"  # min-w-0 allows flex items to shrink
-                            )
-                            .style(
-                                "min-width: clamp(200px, 25vw, 300px); max-width: 100%;"
-                            )
-                        )
-
-                        with item_wrapper:
-                            # Show the item (both Meter and Regulator have show() method)
-                            item_display = item.show()
-                            item_display.style(
-                                "max-width: 100%;"  # Ensure it fills the wrapper
-                            )
-
-    def _get_grid_classes(self, items_per_row: int) -> str:
-        """
-        Get appropriate CSS classes for flex layout based on items per row.
-
-        :param items_per_row: Number of items per row
-        :return: CSS classes string
-        """
-        if items_per_row == 1:
-            return "flex-col"
-        elif items_per_row == 2:
-            return "flex-row flex-wrap justify-center"
-        elif items_per_row == 3:
-            return "flex-row flex-wrap justify-center"
-        # 4 or more
-        return "flex-row flex-wrap justify-center"
+                with item_container:
+                    item.show()

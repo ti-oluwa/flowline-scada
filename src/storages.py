@@ -2,18 +2,20 @@
 Application storage backends.
 """
 
-import typing
-import orjson
+import hashlib
 import logging
-import redis
 from pathlib import Path
-from nicegui import App
+import typing
 
-from src.types import StorageBackend
+from nicegui import App
+import orjson
+import redis
+
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "StorageBackend",
     "InMemoryStorage",
     "UserSessionStorage",
     "JSONFileStorage",
@@ -22,11 +24,44 @@ __all__ = [
 ]
 
 
-class InMemoryStorage:
+class StorageBackend:
+    """Base storage backend interface"""
+
+    def __init__(self, namespace: str):
+        self.namespace = namespace
+
+    def get_key(self, key: str, *args, **kwargs) -> str:
+        base_key = f"{self.namespace}:{key}"
+        if args or kwargs:
+            hash_input = str(args) + str(sorted(kwargs.items()))
+            hash_suffix = hashlib.sha256(hash_input.encode()).hexdigest()[:8]
+            return f"{base_key}:{hash_suffix}"
+        return base_key
+
+    def read(self, key: str) -> typing.Optional[dict]:
+        raise NotImplementedError
+
+    def update(self, key: str, data: dict, overwrite: bool = False) -> None:
+        raise NotImplementedError
+
+    def create(self, key: str, data: dict) -> None:
+        raise NotImplementedError
+
+    def delete(self, key: str) -> None:
+        raise NotImplementedError
+
+
+class InMemoryStorage(StorageBackend):
     """In-memory storage backend"""
 
-    def __init__(self, defaults: typing.Optional[dict] = None):
+    def __init__(
+        self,
+        namespace: str,
+        *,
+        defaults: typing.Optional[dict] = None,
+    ):
         self._store: typing.Dict[str, dict] = defaults or {}
+        super().__init__(namespace)
 
     def read(self, key: str) -> typing.Optional[dict]:
         """Read entry by key"""
@@ -52,6 +87,7 @@ class InMemoryStorage:
 
     def delete(self, key: str) -> None:
         """Delete entry by key"""
+
         logger.debug(f"Deleting entry for key: {key}")
         if key in self._store:
             del self._store[key]
@@ -59,10 +95,11 @@ class InMemoryStorage:
         raise KeyError(f"Entry with key '{key}' does not exist.")
 
 
-class UserSessionStorage:
+class UserSessionStorage(StorageBackend):
     """Session storage backend using NiceGUI's `app.storage.user`"""
 
-    def __init__(self, app: App, session_key: str = "pipeline-scada"):
+    def __init__(self, app: App, session_key: str, namespace: str):
+        super().__init__(namespace)
         self.app = app
         self.session_key = session_key
         if not hasattr(app, "storage"):
@@ -100,10 +137,11 @@ class UserSessionStorage:
         raise KeyError(f"Entry with key '{key}' does not exist.")
 
 
-class BrowserLocalStorage:
+class BrowserLocalStorage(StorageBackend):
     """Browser local storage backend using NiceGUI's `app.storage.browser`"""
 
-    def __init__(self, app: App, storage_key: str = "pipeline-scada"):
+    def __init__(self, app: App, storage_key: str, namespace: str):
+        super().__init__(namespace)
         self.app = app
         self.storage_key = storage_key
         if not hasattr(app, "storage"):
@@ -141,10 +179,11 @@ class BrowserLocalStorage:
         raise KeyError(f"Entry with key '{key}' does not exist.")
 
 
-class JSONFileStorage:
+class JSONFileStorage(StorageBackend):
     """JSON file storage backend"""
 
-    def __init__(self, storage_dir: typing.Union[str, Path]):
+    def __init__(self, storage_dir: typing.Union[str, Path], namespace: str):
+        super().__init__(namespace)
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         logger.debug(
@@ -273,15 +312,16 @@ class HybridBrowserStorage:
         self._operation_count = 0
 
 
-class RedisStorage:
+class RedisStorage(StorageBackend):
     """Redis storage backend"""
 
-    def __init__(self, client: redis.Redis):
+    def __init__(self, client: redis.Redis, namespace: str):
         """
         Initialize Redis storage with a Redis client.
 
         :param client: An instance of `redis.Redis`
         """
+        super().__init__(namespace)
         self.client = client
         logger.debug(f"Initialized {self.__class__.__name__} with Redis client")
 

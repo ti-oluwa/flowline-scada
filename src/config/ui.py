@@ -103,7 +103,6 @@ class ConfigurationUI:
         self.dialog = (
             ui.dialog().classes("q-pa-none").style("width: 100vw; height: 100vh;")
         )
-
         with self.dialog:
             with (
                 ui.card()
@@ -289,7 +288,6 @@ class ConfigurationUI:
         flow_unit = unit_system["flow_rate"]
         length_unit = unit_system["length"]
         temperature_unit = unit_system["temperature"]
-        pressure_unit = unit_system["pressure"]
         diameter_unit = unit_system.get("diameter", length_unit)
 
         with ui.column().classes("w-full gap-4 config-panel-content"):
@@ -485,6 +483,9 @@ class ConfigurationUI:
                     )
                     with config_table:
                         for config_path, value in sorted(configs.items()):
+                            if "unit_systems" in config_path.lower():
+                                continue
+
                             with ui.row().classes(
                                 "w-full p-2 border-b border-gray-200 items-center gap-4"
                             ):
@@ -492,10 +493,7 @@ class ConfigurationUI:
                                     "text-sm font-mono text-blue-600 flex-1"
                                 )
 
-                                if "unit_systems" in config_path:
-                                    continue
-
-                                if config_path == "last_update_configd":
+                                if config_path == "last_updated":
                                     ui.label(str(value)).classes(
                                         "text-sm text-gray-600"
                                     )
@@ -647,7 +645,7 @@ class ConfigurationUI:
         """Apply changes (manual save when auto-save is disabled)"""
         if not self.config.state.global_.auto_save:
             self.config.save()
-            ui.notify("Configuration saved manually", type="positive")
+            ui.notify("Configuration saved.", type="positive")
         else:
             ui.notify(
                 "Auto-save is enabled - changes are saved automatically", type="info"

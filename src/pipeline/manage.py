@@ -398,6 +398,29 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             no_leak_pipeline = pipeline.copy()
             no_leak_pipeline.set_ignore_leaks(True, sync=True)
 
+            leak_rate_meter = FlowMeter(
+                value=pipeline.leak_rate.to(flow_unit.unit).magnitude,
+                min_value=cfg.flow_meter.min_value,
+                max_value=max(
+                    cfg.flow_meter.max_value,
+                    pipeline.max_flow_rate.to(flow_unit.unit).magnitude,
+                ),
+                units=flow_unit.display,
+                label=cfg.flow_meter.label + " [Leak Rate]",
+                width=cfg.flow_meter.width,
+                height=cfg.flow_meter.height,
+                precision=cfg.flow_meter.precision,
+                alarm_high=cfg.flow_meter.alarm_high,
+                alarm_low=cfg.flow_meter.alarm_low,
+                animation_speed=cfg.flow_meter.animation_speed,
+                animation_interval=cfg.flow_meter.animation_interval,
+                flow_direction=str(pipeline.pipes[-1].direction)
+                if pipeline.pipes
+                else "east",  # type: ignore
+                update_func=lambda: pipeline.leak_rate.to(flow_unit.unit).magnitude,
+                update_interval=cfg.flow_meter.update_interval,
+                theme_color=theme_color,
+            )
             no_leak_pressure_gauge = PressureGauge(
                 value=no_leak_pipeline.downstream_pressure.to(
                     pressure_unit.unit
@@ -470,6 +493,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             )
             meters.extend(
                 [
+                    leak_rate_meter,
                     no_leak_pressure_gauge,
                     no_leak_flow_meter,
                     no_leak_mass_flow_meter,
@@ -524,6 +548,12 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         self.set_config(flow_station_config)
 
 
+# Only manager should monitor config changes and update pipeline.
+# The UI should be subscribed to manager events.
+# The manager can then notify the UI to refresh as needed when properties or configs change.
+# This keeps things simple and avoids circular, repeated or redundant updates.
+
+
 class PipelineManager(typing.Generic[PipelineT]):
     """Manages a Pipeline instance."""
 
@@ -554,7 +584,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._config = config
         self._config.observe(self.on_config_change)
         # Synchronize initial state
-        self.sync()
+        self.sync(validate=True)
 
     @property
     def config(self) -> Configuration:
@@ -577,7 +607,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         :return: Self for method chaining.
         """
         logger.info(
-            f"Synchronizing pipeline manager state with pipeline {self._pipeline.name}"
+            f"Synchronizing pipeline manager state with pipeline {self._pipeline.name!r}"
         )
         self._pipe_configs = []
 
@@ -671,7 +701,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             sub for sub in self._subscriptions if sub.callback != callback
         ]
 
-    def notify(self, event: str, data: typing.Any = None):
+    def notify(self, event: str, data: typing.Optional[typing.Dict] = None):
         """
         Notify all subscribers whose event patterns match the given event
         (sequentially, as they registered).
@@ -679,6 +709,9 @@ class PipelineManager(typing.Generic[PipelineT]):
         :param event: The event name to notify.
         :param data: Optional data to pass to the callback.
         """
+        if data is not None and not isinstance(data, dict):
+            raise ValueError("Data must be a dictionary or None")
+
         for subscription in self._subscriptions:
             if subscription.matches(event):
                 try:
@@ -712,7 +745,8 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
-                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+                "pipeline.properties.updated",
+                {"pipeline": self.get_pipeline(), "refresh_flow_stations": True},
             )
         logger.info(f"Updated pipeline configuration: {pipeline_config.name}")
 
@@ -791,7 +825,12 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
-                "pipeline.pipe.added", {"pipe_config": pipe_config, "index": index}
+                "pipeline.pipe.added",
+                {
+                    "pipe_config": pipe_config,
+                    "index": index,
+                    "refresh_flow_stations": False,
+                },
             )
         logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
         return self
@@ -814,7 +853,10 @@ class PipelineManager(typing.Generic[PipelineT]):
             if self.is_valid():
                 self.notify(
                     "pipeline.pipe.removed",
-                    {"index": index},
+                    {
+                        "index": index,
+                        "refresh_flow_stations": False,
+                    },
                 )
             logger.info(f"Removed pipe from index {index}")
         return self
@@ -858,17 +900,21 @@ class PipelineManager(typing.Generic[PipelineT]):
                         "from_index": from_index,
                         "to_index": to_index,
                         "pipe_config": pipe_config,
+                        "refresh_flow_stations": False,
                     },
                 )
             logger.info(f"Moved pipe from index {from_index} to {to_index}")
         return self
 
-    def update_pipe(self, index: int, pipe_config: PipeConfig) -> Self:
+    def update_pipe(
+        self, index: int, pipe_config: PipeConfig, *, update_flow_stations: bool = False
+    ) -> Self:
         """
         Update a pipe configuration at the specified index.
 
         :param index: Index of the pipe to update.
         :param pipe_config: New `PipeConfig` to apply.
+        :param update_flow_stations: Whether to notify flow stations to refresh. Default is False.
         :return: Self for method chaining.
         """
         if 0 <= index < len(self._pipe_configs):
@@ -883,20 +929,30 @@ class PipelineManager(typing.Generic[PipelineT]):
             if self.is_valid():
                 self.notify(
                     "pipeline.pipe.updated",
-                    {"pipe_config": pipe_config, "index": index},
+                    {
+                        "pipe_config": pipe_config,
+                        "index": index,
+                        "refresh_flow_stations": update_flow_stations,
+                    },
                 )
             logger.info(f"Updated pipe at index {index}")
         return self
 
-    def set_fluid_config(self, fluid_config: FluidConfig) -> Self:
-        """Set the fluid configuration."""
+    def set_fluid(self, fluid_config: FluidConfig) -> Self:
+        """
+        Set the fluid for the pipeline using the given fluid configuration.
+
+        :param fluid_config: The `FluidConfig` to set.
+        :return: Self for method chaining.
+        """
         logger.info(f"Updating fluid to {fluid_config}")
         try:
             fluid = self.build_fluid(fluid_config)
             self._pipeline.set_fluid(fluid, sync=True)
         except Exception as exc:
             ui.notify(
-                f"Error updating fluid '{fluid_config.name}'. Keeping existing fluid.",
+                f"Error updating pipeline fluid '{fluid_config.name}'. Keeping existing fluid."
+                f"\n Error: {exc}",
                 type="warning",
                 position="top",
             )
@@ -907,7 +963,8 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
-                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+                "pipeline.properties.updated",
+                {"pipeline": self.get_pipeline(), "refresh_flow_stations": False},
             )
         logger.info(f"Updated fluid configuration: {fluid_config.name}")
         return self
@@ -918,7 +975,8 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
-                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+                "pipeline.properties.updated",
+                {"pipeline": self.get_pipeline(), "refresh_flow_stations": False},
             )
         logger.info(f"Set upstream pressure to {pressure}")
         return self
@@ -929,7 +987,8 @@ class PipelineManager(typing.Generic[PipelineT]):
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
-                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+                "pipeline.properties.updated",
+                {"pipeline": self.get_pipeline(), "refresh_flow_stations": False},
             )
         logger.info(f"Set downstream pressure to {pressure}")
         return self
@@ -945,11 +1004,12 @@ class PipelineManager(typing.Generic[PipelineT]):
             logger.warning("Attempted to set temperature with no fluid in pipeline")
             return self
 
-        self._pipeline.fluid.set_temperature(temperature, sync=True)
+        self._pipeline.set_upstream_temperature(temperature)
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
-                "pipeline.properties.updated", {"pipeline": self.get_pipeline()}
+                "pipeline.properties.updated",
+                {"pipeline": self.get_pipeline(), "refresh_flow_stations": False},
             )
         logger.info(f"Set upstream temperature to {temperature}")
         return self
@@ -971,7 +1031,11 @@ class PipelineManager(typing.Generic[PipelineT]):
         updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
 
         # Update the actual pipe
-        self.update_pipe(pipe_index, updated_pipe_config)
+        # Only update flow stations if this is the first leak being added
+        update_flow_stations = len(updated_leaks) == 1
+        self.update_pipe(
+            pipe_index, updated_pipe_config, update_flow_stations=update_flow_stations
+        )
         logger.info(f"Added leak to pipe '{pipe_config.name}' at index {pipe_index}")
         return self
 
@@ -997,7 +1061,11 @@ class PipelineManager(typing.Generic[PipelineT]):
         updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
 
         # Update the actual pipe
-        self.update_pipe(pipe_index, updated_pipe_config)
+        # Only update flow stations if this was the last leak being removed
+        update_flow_stations = len(updated_leaks) == 0
+        self.update_pipe(
+            pipe_index, updated_pipe_config, update_flow_stations=update_flow_stations
+        )
         logger.info(
             f"Removed leak from pipe '{pipe_config.name}' at index {pipe_index}"
         )
@@ -1056,7 +1124,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Clear all leaks
         updated_pipe_config = attrs.evolve(pipe_config, leaks=[])
         # Update the actual pipe
-        self.update_pipe(pipe_index, updated_pipe_config)
+        self.update_pipe(pipe_index, updated_pipe_config, update_flow_stations=True)
         logger.info(f"Cleared {leak_count} leaks from pipe '{pipe_config.name}'")
         return self
 
@@ -1066,8 +1134,8 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         :return: Self for method chaining.
         """
-        total_leaks = sum(len(pc.leaks) for pc in self._pipe_configs)
-        if total_leaks == 0:
+        leak_count = sum(len(pc.leaks) for pc in self._pipe_configs)
+        if leak_count == 0:
             ui.notify("Pipeline has no leaks to clear", type="info", position="top")
             return self
 
@@ -1086,9 +1154,9 @@ class PipelineManager(typing.Generic[PipelineT]):
         if self.is_valid():
             self.notify(
                 "pipeline.leaks.cleared",
-                {"total_leaks_removed": total_leaks},
+                {"leak_count": leak_count, "refresh_flow_stations": True},
             )
-        logger.info(f"Cleared all {total_leaks} leaks from pipeline")
+        logger.info(f"Cleared all {leak_count} leaks from pipeline")
         return self
 
     def toggle_leak(self, pipe_index: int, leak_index: int) -> Self:
@@ -1340,9 +1408,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         )
         self.manager.subscribe("pipeline.leaks.cleared", self.on_leaks_cleared)
 
-        # Observe configuration changes
-        self.manager.config.observe(self.on_config_change)
-
         # UI components
         self.add_pipe_button = None
         self.config_menu_button = None
@@ -1407,91 +1472,109 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         base_classes = "bg-red-500 hover:bg-red-600 text-white"
         return f"{base_classes} {additional_classes}".strip()
 
-    def on_pipe_added(self, event: str, data: typing.Any):
+    def on_pipe_added(self, event: str, data: typing.Optional[typing.Dict]):
         """Handle pipe added events."""
+        if data is None:
+            return
         ui.notify(
-            f"Pipe '{data['pipe_config'].name}' added successfully at index {data['index']}",
+            f"Pipe '{data['pipe_config'].name}' added at index {data['index']}",
             type="success",
             position="top",
         )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
+            self.refresh_flow_stations()
 
-    def on_pipe_removed(self, event: str, data: typing.Any):
+    def on_pipe_removed(self, event: str, data: typing.Optional[typing.Dict]):
         """Handle pipe removed events."""
+        if data is None:
+            return
         ui.notify(
-            f"Pipe at index {data['index']} removed successfully",
+            f"Pipe at index {data['index']} removed.",
             type="success",
             position="top",
         )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
+            self.refresh_flow_stations()
+
         if self.selected_pipe_index is not None and self.selected_pipe_index >= len(
             self.manager.get_pipe_configs()
         ):
             self.selected_pipe_index = None
             self.refresh_properties_panel()
 
-    def on_pipe_moved(self, event: str, data: typing.Any):
+    def on_pipe_moved(self, event: str, data: typing.Optional[typing.Dict]):
         """Handle pipe moved events."""
+        if data is None:
+            return
         ui.notify(
-            f"Pipe '{data['pipe_config'].name}' moved successfully",
+            f"Pipe '{data['pipe_config'].name}' moved.",
             type="success",
             position="top",
         )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
-
-    def on_pipe_updated(self, event: str, data: typing.Any):
-        """Handle pipe updated events."""
-        ui.notify(
-            f"Pipe '{data['pipe_config'].name}' updated successfully",
-            type="success",
-            position="top",
-        )
-        self.refresh_pipes_list()
-        self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
-        self.refresh_properties_panel()
-
-    def on_properties_updated(self, event: str, data: typing.Any):
-        """Handle general properties updated events."""
-        ui.notify(
-            "Pipeline properties updated successfully", type="success", position="top"
-        )
-        self.refresh_pipes_list()
-        self.refresh_properties_panel()
-        self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
-
-    def on_validation_changed(self, event: str, data: typing.Any):
-        """Handle validation changed events."""
-        self.refresh_validation_display()
-        # Only refresh flow station if validation is now valid
-        if self.manager.is_valid():
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
             self.refresh_flow_stations()
 
-    def on_leaks_cleared(self, event: str, data: typing.Any):
-        """Handle leaks cleared from pipe events."""
+    def on_pipe_updated(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle pipe updated events."""
+        if data is None:
+            return
         ui.notify(
-            f"Cleared {data['leak_count']} leaks from pipe '{data['pipe_name']}'",
+            f"Pipe '{data['pipe_config'].name}' updated.",
             type="success",
             position="top",
         )
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
-        self.refresh_flow_stations()
         self.refresh_properties_panel()
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
+            self.refresh_flow_stations()
 
-    def on_config_change(self, config_state: ConfigurationState):
-        """Handle configuration changes and update UI accordingly."""
-        # Refresh UI components that depend on configuration
-        self.refresh_properties_panel()
+    def on_properties_updated(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle general properties updated events."""
+        if data is None:
+            data = {}
         self.refresh_pipes_list()
-        self.refresh_flow_stations()
+        self.refresh_properties_panel()
+        self.refresh_pipeline_preview()
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
+            self.refresh_flow_stations()
+
+    def on_validation_changed(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle validation changed events."""
+        self.refresh_validation_display()
+
+    def on_leaks_cleared(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle leaks cleared from pipe events."""
+        if data is None:
+            return
+        ui.notify(
+            f"Cleared {data['leak_count']} leak(s) from pipeline.",
+            type="success",
+            position="top",
+        )
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        self.refresh_properties_panel()
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
+            self.refresh_flow_stations()
 
     def cleanup(self):
         """Clean up resources and remove observers."""
@@ -1504,8 +1587,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.manager.unsubscribe_all(self.on_properties_updated)
             self.manager.unsubscribe_all(self.on_validation_changed)
             self.manager.unsubscribe_all(self.on_leaks_cleared)
-            self.manager.config.unobserve(self.on_config_change)
-            logger.info("Pipeline Manager UI cleaned up successfully")
+            logger.info("Pipeline Manager UI cleaned up!")
         except Exception as exc:
             logger.error(
                 f"Error during Pipeline Manager UI cleanup: {exc}", exc_info=True
@@ -1695,6 +1777,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         if self.pipes_container is None:
             return
 
+        logger.debug("Refreshing pipes list...")
+
         self.pipes_container.clear()
         with self.pipes_container:
             pipe_configs = self.manager.get_pipe_configs()
@@ -1807,6 +1891,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Refresh the validation display."""
         if self.validation_container is None:
             return
+        logger.debug("Refreshing validation display...")
 
         self.validation_container.clear()
         with self.validation_container:
@@ -1825,6 +1910,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Refresh the properties panel."""
         if self.fluid_form_container is None:
             return
+
+        logger.debug("Refreshing properties panel...")
 
         self.fluid_form_container.clear()
         # Always show fluid properties in the right container
@@ -1867,6 +1954,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Refresh the pipeline preview."""
         if self.pipeline_preview is None:
             return
+        logger.debug("Refreshing pipeline preview...")
 
         self.pipeline_preview.clear()
         with self.pipeline_preview:
@@ -1883,6 +1971,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Refresh the flow station display."""
         if self.flow_station_container is None:
             return
+        logger.debug("Refreshing flow stations...")
 
         self.flow_station_container.clear()
         with self.flow_station_container:
@@ -2462,7 +2551,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     molecular_weight_unit,  # type: ignore
                 ),
             )
-            self.manager.set_fluid_config(updated_config)
+            self.manager.set_fluid(updated_config)
         except Exception as exc:
             logger.error(f"Error updating fluid: {exc}", exc_info=True)
 
@@ -2570,8 +2659,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         icon="leak_add" if leak_config.active else "leak_remove",
                     ).classes("cursor-pointer").on(
                         "click",
-                        lambda p=pipe_index,
-                        leak_idx=leak_index: self.toggle_leak_status(p, leak_idx),
+                        lambda p=pipe_index, leak_idx=leak_index: self.toggle_pipe_leak(
+                            p, leak_idx
+                        ),
                     )
 
                     # Action buttons
@@ -2595,7 +2685,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         ).props("size=sm").on(
                             "click",
                             lambda p=pipe_index,
-                            leak_idx=leak_index: self.confirm_remove_leak(p, leak_idx),
+                            leak_idx=leak_index: self.confirm_leak_removal(p, leak_idx),
                         ).tooltip("Remove leak")
 
     def show_add_leak_dialog(self, pipe_index: int) -> None:
@@ -2645,7 +2735,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             active_default = existing_leak.active
         else:
             name_default = ""
-            diameter_default = 1.0  # 1mm default
+            diameter_default = 0.01
             location_default = 0.5  # Middle of pipe
             cd_default = 0.6  # Standard orifice coefficient
             active_default = True
@@ -2664,10 +2754,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ui.number(
                     f"Leak Diameter ({diameter_unit.display})",
                     value=diameter_default,
-                    min=0.1,
+                    min=0.0,
                     max=100,
                     step=0.1,
-                    format="%.1f",
+                    format="%.6f",
                 )
                 .classes("w-full")
                 .tooltip("Physical diameter of the leak opening")
@@ -2697,8 +2787,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     else 0
                 )
                 location_percent_label.text = f"({percent:.0f}% along pipe)"
+                location_percent_label.update()
 
-            location_input.on("input", lambda: update_location_display())
+            location_input.on("input", lambda e: update_location_display())
             update_location_display()
 
             # Discharge coefficient
@@ -2706,10 +2797,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ui.number(
                     "Discharge Coefficient",
                     value=cd_default,
-                    min=0.1,
+                    min=0.001,
                     max=1.0,
                     step=0.01,
-                    format="%.2f",
+                    format="%.6f",
                 )
                 .classes("w-full")
                 .tooltip("Flow coefficient for the orifice (0.6 is typical)")
@@ -2800,7 +2891,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.notify(f"Error saving leak: {str(exc)}", type="negative")
             logger.error(f"Error saving leak: {exc}", exc_info=True)
 
-    def toggle_leak_status(self, pipe_index: int, leak_index: int) -> None:
+    def toggle_pipe_leak(self, pipe_index: int, leak_index: int) -> None:
         """Toggle the active status of a leak."""
         try:
             self.manager.toggle_leak(pipe_index, leak_index)
@@ -2808,7 +2899,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.notify(f"Error toggling leak status: {str(exc)}", type="negative")
             logger.error(f"Error toggling leak status: {exc}", exc_info=True)
 
-    def confirm_remove_leak(self, pipe_index: int, leak_index: int) -> None:
+    def confirm_leak_removal(self, pipe_index: int, leak_index: int) -> None:
         """Show confirmation dialog for removing a leak."""
         pipe_config = self.manager.get_pipe_configs()[pipe_index]
         leak_config = pipe_config.leaks[leak_index]

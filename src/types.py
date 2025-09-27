@@ -269,14 +269,16 @@ class FlowStationConfig:
     """Configuration for complete flow station setup"""
 
     pressure_guage: MeterConfig = attrs.field(
-        factory=lambda: MeterConfig(label="Pressure", max_value=5000.0, height="180px")
+        factory=lambda: MeterConfig(
+            label="Pressure", max_value=5000.0, height="240px", width="240px"
+        )
     )
     """Configuration for the pressure meter"""
     temperature_guage: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Temperature",
-            max_value=300.0,
-            width="160px",
+            max_value=700.0,
+            width="240px",
             height="240px",
             precision=2,
         )
@@ -286,7 +288,8 @@ class FlowStationConfig:
         factory=lambda: MeterConfig(
             label="Flow Rate",
             max_value=200.0,
-            height="220px",
+            width="240px",
+            height="240px",
             precision=3,
         )
     )
@@ -294,8 +297,9 @@ class FlowStationConfig:
     mass_flow_meter: MeterConfig = attrs.field(
         factory=lambda: MeterConfig(
             label="Mass Flow Rate",
-            max_value=5000.0,
-            height="220px",
+            max_value=10_000.0,
+            height="240px",
+            width="240px",
             precision=3,
         )
     )
@@ -308,7 +312,7 @@ class FlowStationConfig:
         factory=lambda: RegulatorConfig(
             label="Temperature Control",
             min_value=-40.0,
-            max_value=300.0,
+            max_value=700.0,
             precision=2,
         )
     )
@@ -359,26 +363,6 @@ class PipelineConfig:
         )
     )
     """Default pipe properties"""
-
-
-class StorageBackend(typing.Protocol):
-    """Protocol defining a storage backend interface"""
-
-    def read(self, key: str) -> typing.Optional[dict]:
-        """Read data by key"""
-        ...
-
-    def update(self, key: str, data: dict, overwrite: bool = ...) -> None:
-        """Update data by key"""
-        ...
-
-    def create(self, key: str, data: dict) -> None:
-        """Create new data"""
-        ...
-
-    def delete(self, key: str) -> None:
-        """Delete data by key"""
-        ...
 
 
 EventCallback = typing.Callable[[str, typing.Any], None]

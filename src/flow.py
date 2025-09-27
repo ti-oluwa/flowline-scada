@@ -16,6 +16,21 @@ AIR_DENSITY = Quantity(
 )  # Density of air at standard conditions - 1atm and 15°C
 
 
+def is_supported_fluid(fluid_name: str) -> bool:
+    """
+    Check if the given fluid is supported by CoolProp.
+
+    :param fluid_name: Name of the fluid to check.
+    :return: True if the fluid is supported, False otherwise.
+    """
+    try:
+        # Attempt to get a property to check if the fluid is supported
+        PropsSI("Dmass", "P", 101325, "T", 298.15, fluid_name)
+        return True
+    except ValueError:
+        return False
+
+
 @attrs.define
 class Fluid:
     """Model representing a fluid with its properties."""
@@ -38,6 +53,12 @@ class Fluid:
     def __attrs_post_init__(self):
         if self.phase == "gas" and self.compressibility_factor <= 0.0:
             raise ValueError("Compressibility factor must be provided for gas phase.")
+
+        if not is_supported_fluid(self.name):
+            raise ValueError(
+                f"Fluid '{self.name}' is not supported by CoolProp. Kindly check the fluid name."
+                "Use a valid fluid name as recognized by CoolProp, e.g 'Methane', 'CO2', 'Water', 'Nitrogen'."
+            )
 
     @property
     def specific_gravity(self) -> float:
@@ -70,6 +91,14 @@ class Fluid:
         :param phase: Phase of the fluid: 'liquid' or 'gas'.
         :return: Fluid instance with properties populated from CoolProp.
         """
+        if phase not in ("liquid", "gas"):
+            raise ValueError("Phase must be either 'liquid' or 'gas'.")
+        if not is_supported_fluid(fluid_name):
+            raise ValueError(
+                f"Fluid '{fluid_name}' is not supported by CoolProp. Kindly check the fluid name."
+                "Use a valid fluid name as recognized by CoolProp, e.g 'Methane', 'CO2', 'Water', 'Nitrogen'."
+            )
+
         density = compute_fluid_density(pressure, temperature, fluid_name)
         viscosity = compute_fluid_viscosity(pressure, temperature, fluid_name)
         if molecular_weight is None:

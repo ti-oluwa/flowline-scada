@@ -12,11 +12,11 @@ from datetime import datetime
 from src.units import UnitSystem, IMPERIAL
 from src.types import (
     converter,
-    StorageBackend,
     GlobalConfig,
     PipelineConfig,
     FlowStationConfig,
 )
+from src.storages import StorageBackend
 
 logger = logging.getLogger(__name__)
 
@@ -146,22 +146,28 @@ class Configuration:
         self,
         id: str,
         storages: typing.Optional[typing.List[StorageBackend]] = None,
+        save_throttle: float = 5.0,
     ) -> None:
         """
         Initialize configuration.
 
         :param id: Unique identifier for the configuration (e.g., user id or session id)
         :param storages: List of storage backends to use (session storage, file storage, etc.).
-        If multiple storages are provided, they will be tried in order for loading/saving.
-        It is advisable to use only two backends to avoid complexity. First should be
-        session-based (like `UserSessionStorage`) and second should be persistent
-        (like `JSONFileStorage` or `InMemoryStorage`).
+            If multiple storages are provided, they will be tried in order for loading/saving.
+            It is advisable to use only two backends to avoid complexity. First should be
+            session-based (like `UserSessionStorage`) and second should be persistent
+            (like `JSONFileStorage` or `InMemoryStorage`).
+
+        :param save_throttle: Minimum seconds between automatic saves (default: 5.0s)
         """
         self.id = id
         self.storages = storages or []
         self._state = ConfigurationState()
         self.load()
         self._observers: typing.List[typing.Callable[[ConfigurationState], None]] = []
+        self.save_throttle = save_throttle
+        self._last_saved_at = 0.0
+        logger.debug(f"Configuration initialized with ID: {self.id}")
 
     @property
     def state(self) -> ConfigurationState:
@@ -223,10 +229,12 @@ class Configuration:
 
     def update(self, path: str, /, **kwargs: typing.Any) -> None:
         """Update nested configuration using dot notation (e.g., 'pipeline.fluid.name')"""
-        print(f"Updating config at {path} with {kwargs}")
         self._state = self._state.update(path, **kwargs)
         if self._state.global_.auto_save:
-            self.save()
+            now = datetime.now().timestamp()
+            if now - self._last_saved_at >= self.save_throttle:
+                self._last_saved_at = now
+                self.save()
         self.notify()
 
     def load(self, storage: typing.Optional[StorageBackend] = None):
@@ -241,7 +249,8 @@ class Configuration:
             storages = self.storages
 
         for storage in storages:
-            data = storage.read(self.id)
+            key = storage.get_key(self.id)
+            data = storage.read(key)
             if data:
                 try:
                     self._state = converter.structure(data, ConfigurationState)
@@ -260,11 +269,12 @@ class Configuration:
         """Save current configuration to all storages"""
         data = converter.unstructure(self._state)
         for storage in self.storages:
+            key = storage.get_key(self.id)
             try:
-                if storage.read(self.id):
-                    storage.update(self.id, data, overwrite=True)
+                if storage.read(key):
+                    storage.update(key, data, overwrite=True)
                 else:
-                    storage.create(self.id, data)
+                    storage.create(key, data)
                 logger.debug(
                     f"Saved configuration to storage: {type(storage).__name__}"
                 )
