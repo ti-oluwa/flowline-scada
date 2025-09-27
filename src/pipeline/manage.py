@@ -829,7 +829,8 @@ class PipelineManager(typing.Generic[PipelineT]):
                 {
                     "pipe_config": pipe_config,
                     "index": index,
-                    "refresh_flow_stations": False,
+                    # Refresh flow stations only if this is the first pipe added
+                    "refresh_flow_stations": len(self._pipe_configs) == 1,
                 },
             )
         logger.info(f"Added pipe '{pipe_config.name}' at index {index}")
