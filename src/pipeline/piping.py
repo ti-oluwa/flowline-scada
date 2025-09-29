@@ -100,13 +100,13 @@ class LeakInfo:
     def get_spray_count(self) -> int:
         """Get number of spray particles based on severity."""
         severity_spray_map = {
-            "pinhole": 2,
-            "small": 3,
-            "moderate": 4,
-            "large": 6,
-            "critical": 8,
+            "pinhole": 4,
+            "small": 6,
+            "moderate": 8,
+            "large": 12,
+            "critical": 16,
         }
-        return severity_spray_map.get(self.severity, 3)
+        return severity_spray_map.get(self.severity, 6)
 
 
 @typing.runtime_checkable
@@ -336,7 +336,10 @@ class HorizontalPipe(PipeComponent):
         leak_visuals = ""
         for leak in self.leaks:
             # Calculate leak position along pipe
-            leak_x = pipe_x_start + (leak.location * pipe_length_pixels)
+            if self.direction == PipeDirection.EAST:
+                leak_x = pipe_x_start + (leak.location * pipe_length_pixels)
+            else:
+                leak_x = pipe_x_start + ((1 - leak.location) * pipe_length_pixels)
             leak_size = leak.get_visual_size(pipe_diameter_pixels)
             leak_color = leak.get_leak_color()
 
@@ -360,37 +363,36 @@ class HorizontalPipe(PipeComponent):
             '''
 
             # Generate spray particles for active leaks
-            if leak.severity in ["moderate", "large", "critical"]:
-                spray_count = leak.get_spray_count()
-                for i in range(spray_count):
-                    # Spray particles emanating from leak
-                    angle = -45 + (
-                        i * 90 / max(1, spray_count - 1)
-                    )  # Spray downward and sideways
-                    spray_distance = leak_size * (1.5 + i * 0.3)
-                    spray_x = (
-                        leak_x + spray_distance * math.cos(math.radians(angle)) * 0.3
-                    )
-                    spray_y = (
-                        center_y + spray_distance * math.sin(math.radians(angle)) * 0.3
-                    )
+            spray_count = leak.get_spray_count()
+            for i in range(spray_count):
+                # Spray particles emanating from leak
+                angle = -45 + (
+                    i * 90 / max(1, spray_count - 1)
+                )  # Spray downward and sideways
+                spray_distance = leak_size * (1.5 + i * 0.3)
+                spray_x = (
+                    leak_x + spray_distance * math.cos(math.radians(angle)) * 0.3
+                )
+                spray_y = (
+                    center_y + spray_distance * math.sin(math.radians(angle)) * 0.3
+                )
 
-                    leak_visuals += f'''
-                    <circle cx="{spray_x}" cy="{spray_y}" r="1" 
-                            fill="{leak_color}" opacity="0.4">
-                        <animate attributeName="opacity" 
-                                 values="0;0.7;0" 
-                                 dur="{1 + i * 0.2}s" 
-                                 repeatCount="indefinite" 
-                                 begin="{i * 0.1}s"/>
-                        <animateTransform attributeName="transform" 
-                                          type="translate" 
-                                          values="0,0; 0,{spray_distance / 3}" 
-                                          dur="{1 + i * 0.2}s" 
-                                          repeatCount="indefinite" 
-                                          begin="{i * 0.1}s"/>
-                    </circle>
-                    '''
+                leak_visuals += f'''
+                <circle cx="{spray_x}" cy="{spray_y}" r="1" 
+                        fill="{leak_color}" opacity="0.4">
+                    <animate attributeName="opacity" 
+                                values="0;0.7;0" 
+                                dur="{1 + i * 0.2}s" 
+                                repeatCount="indefinite" 
+                                begin="{i * 0.1}s"/>
+                    <animateTransform attributeName="transform" 
+                                        type="translate" 
+                                        values="0,0; 0,{spray_distance / 3}" 
+                                        dur="{1 + i * 0.2}s" 
+                                        repeatCount="indefinite" 
+                                        begin="{i * 0.1}s"/>
+                </circle>
+                '''
 
             leak_visuals += """
                 </g>
@@ -634,7 +636,10 @@ class VerticalPipe(PipeComponent):
         leak_visuals = ""
         for leak in self.leaks:
             # Calculate leak position along pipe (vertical)
-            leak_y = pipe_y_start + (leak.location * pipe_length_pixels)
+            if self.direction == PipeDirection.SOUTH:
+                leak_y = pipe_y_start + (leak.location * pipe_length_pixels)
+            else:
+                leak_y = pipe_y_start + ((1 - leak.location) * pipe_length_pixels)
             leak_size = leak.get_visual_size(pipe_diameter_pixels)
             leak_color = leak.get_leak_color()
 
@@ -658,35 +663,34 @@ class VerticalPipe(PipeComponent):
             '''
 
             # Generate spray particles for active leaks
-            if leak.severity in ["moderate", "large", "critical"]:
-                spray_count = leak.get_spray_count()
-                for i in range(spray_count):
-                    # Spray particles emanating from leak (horizontal spray from vertical pipe)
-                    angle = -135 + (i * 90 / max(1, spray_count - 1))  # Spray sideways
-                    spray_distance = leak_size * (1.5 + i * 0.3)
-                    spray_x = (
-                        center_x + spray_distance * math.cos(math.radians(angle)) * 0.5
-                    )
-                    spray_y = (
-                        leak_y + spray_distance * math.sin(math.radians(angle)) * 0.3
-                    )
+            spray_count = leak.get_spray_count()
+            for i in range(spray_count):
+                # Spray particles emanating from leak (horizontal spray from vertical pipe)
+                angle = -135 + (i * 90 / max(1, spray_count - 1))  # Spray sideways
+                spray_distance = leak_size * (1.5 + i * 0.3)
+                spray_x = (
+                    center_x + spray_distance * math.cos(math.radians(angle)) * 0.5
+                )
+                spray_y = (
+                    leak_y + spray_distance * math.sin(math.radians(angle)) * 0.3
+                )
 
-                    leak_visuals += f'''
-                    <circle cx="{spray_x}" cy="{spray_y}" r="1" 
-                            fill="{leak_color}" opacity="0.4">
-                        <animate attributeName="opacity" 
-                                 values="0;0.7;0" 
-                                 dur="{1 + i * 0.2}s" 
-                                 repeatCount="indefinite" 
-                                 begin="{i * 0.1}s"/>
-                        <animateTransform attributeName="transform" 
-                                          type="translate" 
-                                          values="0,0; {spray_distance / 3},0" 
-                                          dur="{1 + i * 0.2}s" 
-                                          repeatCount="indefinite" 
-                                          begin="{i * 0.1}s"/>
-                    </circle>
-                    '''
+                leak_visuals += f'''
+                <circle cx="{spray_x}" cy="{spray_y}" r="1" 
+                        fill="{leak_color}" opacity="0.4">
+                    <animate attributeName="opacity" 
+                                values="0;0.7;0" 
+                                dur="{1 + i * 0.2}s" 
+                                repeatCount="indefinite" 
+                                begin="{i * 0.1}s"/>
+                    <animateTransform attributeName="transform" 
+                                        type="translate" 
+                                        values="0,0; {spray_distance / 3},0" 
+                                        dur="{1 + i * 0.2}s" 
+                                        repeatCount="indefinite" 
+                                        begin="{i * 0.1}s"/>
+                </circle>
+                '''
 
             leak_visuals += """
                 </g>

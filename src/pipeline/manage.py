@@ -154,6 +154,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             ).magnitude,
             update_interval=cfg.pressure_guage.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The pressure at the inlet of the pipeline.
+            """,
         )
         temperature_gauge = TemperatureGauge(
             value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
@@ -177,6 +180,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             else 0,
             update_interval=cfg.temperature_guage.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The temperature of the fluid entering the pipeline.
+            """,
         )
         flow_meter = FlowMeter(
             value=pipeline.inlet_flow_rate.to(flow_unit.unit).magnitude,
@@ -200,6 +206,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             update_func=lambda: pipeline.inlet_flow_rate.to(flow_unit.unit).magnitude,
             update_interval=cfg.flow_meter.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The volumetric flow rate entering the pipeline.
+            """,
         )
         return [pressure_gauge, temperature_gauge, flow_meter]
 
@@ -235,6 +244,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.pressure_regulator.alarm_low,
             alert_errors=cfg.pressure_regulator.alert_errors,
             theme_color=theme_color,
+            help_text="""
+            Set the upstream pressure. Note that changing the upstream pressure may affect the flow rate through the pipeline.
+            """,
         )
         temperature_regulator = Regulator(
             value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
@@ -253,6 +265,9 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.temperature_regulator.alarm_low,
             alert_errors=cfg.temperature_regulator.alert_errors,
             theme_color=theme_color,
+            help_text="""
+            Set the fluid temperature. Note that changing the temperature may affect the fluid properties and flow characteristics.
+            """,
         )
         return [pressure_regulator, temperature_regulator]
 
@@ -320,6 +335,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             ).magnitude,
             update_interval=cfg.pressure_guage.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The pressure at the outlet of the pipeline.
+            """,
         )
         temperature_gauge = TemperatureGauge(
             value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
@@ -343,6 +361,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             else 0,
             update_interval=cfg.temperature_guage.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The temperature of the fluid exiting the pipeline.
+            """,
         )
         flow_meter = FlowMeter(
             value=pipeline.outlet_flow_rate.to(flow_unit.unit).magnitude,
@@ -366,6 +387,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             update_func=lambda: pipeline.outlet_flow_rate.to(flow_unit.unit).magnitude,
             update_interval=cfg.flow_meter.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The volumetric rate of the fluid exiting the pipeline.
+            """,
         )
         mass_flow_meter = MassFlowMeter(
             value=pipeline.outlet_mass_rate.to(mass_flow_unit.unit).magnitude,
@@ -388,6 +412,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             ).magnitude,
             update_interval=cfg.mass_flow_meter.update_interval,
             theme_color=theme_color,
+            help_text="""
+            The mass flow rate of the fluid exiting the pipeline.
+            """,
         )
         meters = [pressure_gauge, temperature_gauge, flow_meter, mass_flow_meter]
 
@@ -420,6 +447,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                 update_func=lambda: pipeline.leak_rate.to(flow_unit.unit).magnitude,
                 update_interval=cfg.flow_meter.update_interval,
                 theme_color=theme_color,
+                help_text="""
+                The total volumetric flow rate lost due to leaks in the pipeline.
+                """,
             )
             no_leak_pressure_gauge = PressureGauge(
                 value=no_leak_pipeline.downstream_pressure.to(
@@ -441,6 +471,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                 ).magnitude,
                 update_interval=cfg.pressure_guage.update_interval,
                 theme_color=theme_color,
+                help_text="""
+                The expected downstream pressure assuming no leaks in the pipeline.
+                """,
             )
             no_leak_flow_meter = FlowMeter(
                 value=no_leak_pipeline.outlet_flow_rate.to(flow_unit.unit).magnitude,
@@ -466,6 +499,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                 ).magnitude,
                 update_interval=cfg.flow_meter.update_interval,
                 theme_color=theme_color,
+                help_text="""
+                The expected volumetric flow rate exiting the pipeline assuming no leaks.
+                """,
             )
             no_leak_mass_flow_meter = MassFlowMeter(
                 value=no_leak_pipeline.outlet_mass_rate.to(
@@ -490,6 +526,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                 ).magnitude,
                 update_interval=cfg.mass_flow_meter.update_interval,
                 theme_color=theme_color,
+                help_text="""
+                The expected mass flow rate exiting the pipeline assuming no leaks.
+                """,
             )
             meters.extend(
                 [
@@ -527,6 +566,9 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.pressure_regulator.alarm_low,
             setter_func=_set_pressure,
             theme_color=theme_color,
+            help_text="""
+            Set the downstream pressure. Note that changing the downstream pressure may affect the flow rate through the pipeline.
+            """,
         )
         return [pressure_regulator]
 
@@ -1693,14 +1735,20 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Create the pipeline construction panel."""
         construction_card = ui.card().classes("w-full p-2 sm:p-4")
         with construction_card:
-            ui.label("Pipeline Construction").classes(
+            ui.label("Flowline Builder").classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
             )
 
             # Add pipe button
-            self.add_pipe_button = ui.button(
-                "+ Add Pipe", on_click=self.show_pipe_dialog, color=self.theme_color
-            ).classes(self.get_primary_button_classes("mb-2 sm:mb-4 w-full sm:w-auto"))
+            self.add_pipe_button = (
+                ui.button(
+                    "+ Add Pipe", on_click=self.show_pipe_dialog, color=self.theme_color
+                )
+                .classes(
+                    self.get_primary_button_classes("mb-2 sm:mb-4 w-full sm:w-auto")
+                )
+                .tooltip("Add a new pipe section to the flowline")
+            )
             # Pipes list
             self.pipes_container = ui.column().classes("w-full gap-1 sm:gap-2")
             # Validation display
@@ -1713,7 +1761,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Create the properties panel."""
         properties_card = ui.card().classes("w-full p-2 sm:p-4")
         with properties_card:
-            ui.label("Properties").classes(
+            ui.label("Configure Properties").classes(
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
             )
 
@@ -1740,7 +1788,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         self.refresh_properties_panel()
 
-    def show_preview_panel(self, pipeline_label: str = "Pipeline Preview"):
+    def show_preview_panel(self, pipeline_label: str = "Flowline Preview"):
         """Create the pipeline preview panel."""
         preview_card = (
             ui.card()
@@ -1857,7 +1905,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             self.get_primary_button_classes(
                                 "text-xs sm:text-sm px-2 py-1"
                             )
-                        )
+                        ).tooltip("Edit pipe properties and manage leaks")
                         ui.button(
                             "↑",
                             on_click=partial(self.move_pipe_up, i),
@@ -1866,7 +1914,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             self.get_secondary_button_classes(
                                 "text-xs sm:text-sm px-2 py-1"
                             )
-                        ).props("disabled" if i == 0 or (pipe_count < 3) else "")
+                        ).props(
+                            "disabled" if i == 0 or (pipe_count < 3) else ""
+                        ).tooltip(
+                            "Move pipe upstream" if i > 0 and pipe_count >= 3 else ""
+                        )
                         ui.button(
                             "↓",
                             on_click=partial(self.move_pipe_down, i),
@@ -1879,6 +1931,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             "disabled"
                             if (i == pipe_count - 1) or (pipe_count < 3)
                             else ""
+                        ).tooltip(
+                            "Move pipe downstream"
+                            if i < pipe_count - 1 and pipe_count >= 3
+                            else ""
                         )
                         ui.button(
                             "✕", on_click=partial(self.remove_pipe, i), color="red"
@@ -1886,7 +1942,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             self.get_danger_button_classes(
                                 "text-xs sm:text-sm px-2 py-1"
                             )
-                        ).props("disabled" if pipe_count <= 1 else "")
+                        ).props("disabled" if pipe_count <= 1 else "").tooltip(
+                            "Remove pipe from flowline" if pipe_count > 1 else ""
+                        )
 
     def refresh_validation_display(self):
         """Refresh the validation display."""
@@ -1903,7 +1961,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 for error in errors:
                     ui.label(f"• {error}").classes("text-sm text-red-600 ml-4")
             else:
-                ui.label("✓ Pipeline configuration is valid").classes(
+                ui.label("✓ Flowline configuration valid").classes(
                     "text-green-600 font-medium"
                 )
 
@@ -1998,7 +2056,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.dialog() as dialog,
             ui.card().classes("w-full max-w-md mx-2 sm:w-96 p-3 sm:p-4"),
         ):
-            ui.label("Add New Pipe").classes("text-lg font-semibold mb-3")
+            ui.label("Add a New Pipe").classes("text-lg font-semibold").style(
+                "margin-bottom: 4px;"
+            )
+            ui.html(
+                "<small class='text-gray-500'>Configure the new pipe below:</small>"
+            )
 
             pipe_count = len(self.manager.get_pipe_configs())
             # Form inputs
@@ -2026,18 +2089,30 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         diameter_unit.unit
                     ).magnitude
 
-                    length_input = ui.number(
-                        f"Length ({length_unit})",
-                        value=length_default,
-                        min=0.1,
-                        step=0.1,
-                    ).classes("flex-1 min-w-0")
-                    diameter_input = ui.number(
-                        f"Diameter ({diameter_unit})",
-                        value=diameter_default,
-                        min=0.1,
-                        step=0.1,
-                    ).classes("flex-1 min-w-0")
+                    length_input = (
+                        ui.number(
+                            f"Length ({length_unit})",
+                            value=length_default,
+                            min=0.1,
+                            step=0.1,
+                        )
+                        .classes("flex-1 min-w-0")
+                        .tooltip(
+                            "Length of the pipe segment. Affects pressure drop calculations."
+                        )
+                    )
+                    diameter_input = (
+                        ui.number(
+                            f"Diameter ({diameter_unit})",
+                            value=diameter_default,
+                            min=0.1,
+                            step=0.1,
+                        )
+                        .classes("flex-1 min-w-0")
+                        .tooltip(
+                            "Internal diameter of the pipe. Critical for flow rate and pressure drop calculations."
+                        )
+                    )
 
                 # Only allow pipe pressure to be set if there are no pipes yet.
                 # Pipe pressures will be managed by pipeline(flow equations) and flow stations
@@ -2048,22 +2123,34 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         "w-full gap-2 flex-wrap sm:flex-nowrap"
                     )
                     with pressure_row:
-                        upstream_pressure_input = ui.number(
-                            f"Upstream Pressure ({pressure_unit})",
-                            value=pipe_config.upstream_pressure.to(
-                                pressure_unit.unit
-                            ).magnitude,
-                            min=0,
-                            step=1,
-                        ).classes("flex-1 min-w-0")
-                        downstream_pressure_input = ui.number(
-                            f"Downstream Pressure ({pressure_unit})",
-                            value=pipe_config.downstream_pressure.to(
-                                pressure_unit.unit
-                            ).magnitude,
-                            min=0,
-                            step=1,
-                        ).classes("flex-1 min-w-0")
+                        upstream_pressure_input = (
+                            ui.number(
+                                f"Upstream Pressure ({pressure_unit})",
+                                value=pipe_config.upstream_pressure.to(
+                                    pressure_unit.unit
+                                ).magnitude,
+                                min=0,
+                                step=1,
+                            )
+                            .classes("flex-1 min-w-0")
+                            .tooltip(
+                                "Inlet pressure for the first pipe. Subsequent pipe pressures are calculated automatically."
+                            )
+                        )
+                        downstream_pressure_input = (
+                            ui.number(
+                                f"Downstream Pressure ({pressure_unit})",
+                                value=pipe_config.downstream_pressure.to(
+                                    pressure_unit.unit
+                                ).magnitude,
+                                min=0,
+                                step=1,
+                            )
+                            .classes("flex-1 min-w-0")
+                            .tooltip(
+                                "Outlet pressure for the last pipe. Must be less than upstream pressure."
+                            )
+                        )
                 else:
                     upstream_pressure_input = (
                         ui.number(
@@ -2097,14 +2184,24 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     "w-full gap-2 flex-wrap sm:flex-nowrap"
                 )
                 with material_dir_row:
-                    material_input = ui.input(
-                        "Material", value=pipe_config.material
-                    ).classes("flex-1 min-w-0")
-                    direction_select = ui.select(
-                        options=[d.value for d in PipeDirection],
-                        value=PipeDirection.EAST.value,
-                        label="Flow Direction",
-                    ).classes("flex-1 min-w-0")
+                    material_input = (
+                        ui.input("Material", value=pipe_config.material)
+                        .classes("flex-1 min-w-0")
+                        .tooltip(
+                            "Pipe material (e.g., Steel, PVC). Affects roughness and documentation."
+                        )
+                    )
+                    direction_select = (
+                        ui.select(
+                            options=[d.value for d in PipeDirection],
+                            value=PipeDirection.EAST.value,
+                            label="Flow Direction",
+                        )
+                        .classes("flex-1 min-w-0")
+                        .tooltip(
+                            "Flow direction for visualization. Opposing directions cannot be connected."
+                        )
+                    )
 
                 # Roughness and elevation row
                 roughness_elev_row = ui.row().classes(
@@ -2142,9 +2239,15 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 position_options = ["End"] + [
                     f"Before Pipe {i + 1}" for i in range(len(pipe_configs))
                 ]
-                position_select = ui.select(
-                    options=position_options, value="End", label="Insert Position"
-                ).classes("w-full")
+                position_select = (
+                    ui.select(
+                        options=position_options, value="End", label="Insert Position"
+                    )
+                    .classes("w-full")
+                    .tooltip(
+                        "Choose where to insert the new pipe in the flowline sequence."
+                    )
+                )
 
                 # Buttons - responsive
                 button_row = ui.row().classes("w-full justify-end gap-2 mt-4 flex-wrap")
@@ -2291,8 +2394,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             f"w-full mb-3 bg-gradient-to-r from-{self.theme_color}-50 to-{self.theme_color}-100 border-l-4 border-{self.theme_color}-500"
         )
         with pipe_header:
-            ui.label(f"Editing: {pipe_config.name}").classes(
+            ui.label(f"Editing: {pipe_config.name}'s Configuration").classes(
                 f"font-semibold text-{self.theme_color}-800 p-2"
+            )
+            ui.html(
+                "<small class='text-gray-500'>Modify pipe properties below.</small>"
             )
 
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
@@ -2408,8 +2514,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             f"w-full mb-3 bg-gradient-to-r from-{self.theme_color}-50 to-{self.theme_color}-100 border-l-4 border-{self.theme_color}-500"
         )
         with fluid_header:
-            ui.label("Fluid Properties").classes(
+            ui.label("Edit Fluid").classes(
                 f"font-semibold text-{self.theme_color}-800 p-2"
+            )
+            ui.html(
+                "<small class='text-gray-500'>Modify fluid properties below.</small>"
             )
 
         fluid_config = self.manager.get_fluid_config()
@@ -2421,37 +2530,61 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Name and phase row
             name_phase_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with name_phase_row:
-                name_input = ui.input("Fluid Name", value=fluid_config.name).classes(
-                    "flex-1 min-w-0"
+                name_input = (
+                    ui.input("Fluid Name", value=fluid_config.name)
+                    .classes("flex-1 min-w-0")
+                    .tooltip(
+                        "Name of the fluid being transported (e.g., Water, Methane, Octane). Must be supported by `CoolProp`"
+                    )
                 )
-                phase_select = ui.select(
-                    options=["gas", "liquid"], value=fluid_config.phase, label="Phase"
-                ).classes("flex-1 min-w-0")
+                phase_select = (
+                    ui.select(
+                        options=["gas", "liquid"],
+                        value=fluid_config.phase,
+                        label="Phase",
+                    )
+                    .classes("flex-1 min-w-0")
+                    .tooltip(
+                        "Physical phase affects flow equations and property calculations"
+                    )
+                )
 
             # Temperature and pressure row
             temp_pressure_row = ui.row().classes(
                 "w-full gap-2 flex-wrap sm:flex-nowrap"
             )
             with temp_pressure_row:
-                temperature_input = ui.number(
-                    f"Temperature ({temp_unit})",
-                    value=fluid_config.temperature.to(temp_unit.unit).magnitude,
-                    step=1,
-                    precision=2,
-                ).classes("flex-1 min-w-0")
+                temperature_input = (
+                    ui.number(
+                        f"Temperature ({temp_unit})",
+                        value=fluid_config.temperature.to(temp_unit.unit).magnitude,
+                        step=1,
+                        precision=3,
+                    )
+                    .classes("flex-1 min-w-0")
+                    .tooltip(
+                        "Operating temperature of the fluid. Defaults to flowline temperature if not specified."
+                    )
+                )
 
             # Molecular weight and specific gravity row
             mol_gravity_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with mol_gravity_row:
-                molecular_weight_input = ui.number(
-                    f"Molecular Weight ({mol_weight_unit})",
-                    value=fluid_config.molecular_weight.to(
-                        mol_weight_unit.unit
-                    ).magnitude,
-                    min=0.1,
-                    step=0.1,
-                    precision=4,
-                ).classes("flex-1 min-w-0")
+                molecular_weight_input = (
+                    ui.number(
+                        f"Molecular Weight ({mol_weight_unit})",
+                        value=fluid_config.molecular_weight.to(
+                            mol_weight_unit.unit
+                        ).magnitude,
+                        min=0.1,
+                        step=0.1,
+                        precision=4,
+                    )
+                    .classes("flex-1 min-w-0")
+                    .tooltip(
+                        "Molecular weight of the fluid (Optional). Will be estimated if not provided."
+                    )
+                )
 
             # Update button - responsive
             ui.button(
@@ -2591,7 +2724,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     color=self.theme_color,
                 ).classes("flex-1").on(
                     "click", lambda: self.show_add_leak_dialog(pipe_index)
-                )
+                ).tooltip("Add a new leak to this pipe")
 
                 if leak_count > 0:
                     ui.button(
@@ -2600,7 +2733,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         color="orange",
                     ).classes("flex-1").on(
                         "click", lambda: self.confirm_clear_all_leaks(pipe_index)
-                    )
+                    ).tooltip("Remove all leaks from this pipe")
 
             # Leak list
             if leak_count > 0:
@@ -2955,7 +3088,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Header
             header_row = ui.row().classes("w-full items-center justify-between")
             with header_row:
-                ui.label("Pipeline Leak Summary").classes("text-lg font-semibold")
+                ui.label("Leak Summary").classes("text-lg font-semibold")
 
                 total_leaks = self.manager.get_leak_count()
                 if total_leaks > 0:
@@ -2965,7 +3098,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         color="red",
                     ).props("size=sm").on(
                         "click", self.confirm_clear_all_pipeline_leaks
-                    )
+                    ).tooltip("Remove all leaks from the entire flowline")
 
             # Summary cards
             if total_leaks > 0:

@@ -290,7 +290,7 @@ class FlowStationConfig:
             max_value=200.0,
             width="240px",
             height="240px",
-            precision=3,
+            precision=5,
         )
     )
     """Configuration for the flow meter"""
@@ -300,7 +300,7 @@ class FlowStationConfig:
             max_value=10_000.0,
             height="240px",
             width="240px",
-            precision=3,
+            precision=5,
         )
     )
     """Configuration for the mass flow meter"""
@@ -313,7 +313,7 @@ class FlowStationConfig:
             label="Temperature Control",
             min_value=-40.0,
             max_value=700.0,
-            precision=2,
+            precision=3,
         )
     )
     """Configuration for the temperature regulator (mostly upstream only)"""

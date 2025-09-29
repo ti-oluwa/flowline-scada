@@ -89,6 +89,7 @@ class Meter:
         ] = None,
         update_interval: float = 1.0,
         alert_errors: bool = True,
+        help_text: typing.Optional[str] = None,
     ) -> None:
         """
         Initialize the meter.
@@ -109,6 +110,7 @@ class Meter:
         :param update_func: Optional function to fetch updated value
         :param update_interval: Interval in seconds to call `update_func`
         :param alert_errors: Whether to show alerts on for meter update errors.
+        :param help_text: Optional help text for the meter
         """
         self.min = min_value
         self.max = max_value
@@ -118,7 +120,7 @@ class Meter:
         self.label = label
         self.width = width
         self.height = height
-        self.precision = int(precision)
+        self.precision = int(precision) if precision else 0
         self.alarm_high = alarm_high
         self.alarm_low = alarm_low
         self._target_value = value
@@ -126,6 +128,7 @@ class Meter:
         self.animation_interval = animation_interval
         self.update_func = update_func
         self.update_interval = update_interval
+        self.help_text = help_text
 
         self.label_element = None
         self.value_element = None
@@ -143,6 +146,7 @@ class Meter:
         height: typing.Optional[str] = None,
         label: typing.Optional[str] = None,
         show_label: bool = True,
+        help_text: typing.Optional[str] = None,
     ) -> ui.card:
         """
         Display the meter as a UI component.
@@ -151,6 +155,7 @@ class Meter:
         :param height: Height of the meter (overrides default if provided)
         :param label: Label for the meter (overrides default if provided)
         :param show_label: Whether to display the label
+        :param help_text: Optional help text for the meter
         :return: UI card element containing the meter visualization
         """
         display_width = width or self.width
@@ -169,7 +174,7 @@ class Meter:
                 min-height: {display_height}; 
                 background: linear-gradient(145deg, #ffffff 0%, #f8fafc 100%);
                 border: 2px dotted {self.theme_color};
-                border-radius: 16px;
+                border-radius: 8px;
                 box-shadow: 
                     0 10px 25px -5px rgba(0, 0, 0, 0.1),
                     0 8px 10px -6px rgba(0, 0, 0, 0.1),
@@ -185,6 +190,7 @@ class Meter:
                 """
             )
         )
+        self.container.tooltip(help_text or self.help_text or display_label)
 
         # Add hover effects for Meter
         def on_mouseenter():
@@ -449,6 +455,7 @@ class FlowMeter(Meter):
         update_interval: float = 1.0,
         precision: int = 2,
         theme_color: str = "blue",
+        help_text: typing.Optional[str] = None,
     ) -> None:
         self.flow_direction = flow_direction
         self.flow_viz = None  # Placeholder for flow visualization element
@@ -468,6 +475,7 @@ class FlowMeter(Meter):
             update_interval=update_interval,
             precision=precision,
             theme_color=theme_color,
+            help_text=help_text,
         )
 
     def display(self) -> None:
@@ -687,6 +695,7 @@ class MassFlowMeter(FlowMeter):
         update_interval: float = 1.0,
         precision: int = 2,
         theme_color: str = "blue",
+        help_text: typing.Optional[str] = None,
     ) -> None:
         super().__init__(
             value=value,
@@ -705,6 +714,7 @@ class MassFlowMeter(FlowMeter):
             update_interval=update_interval,
             precision=precision,
             theme_color=theme_color,
+            help_text=help_text,
         )
 
 
@@ -732,6 +742,7 @@ class PressureGauge(Meter):
         update_interval: float = 1.0,
         precision: int = 2,
         theme_color: str = "blue",
+        help_text: typing.Optional[str] = None,
     ) -> None:
         self.gauge_element = None  # Placeholder for gauge element
         super().__init__(
@@ -750,6 +761,7 @@ class PressureGauge(Meter):
             update_interval=update_interval,
             precision=precision,
             theme_color=theme_color,
+            help_text=help_text,
         )
 
     def display(self):
@@ -887,6 +899,7 @@ class TemperatureGauge(Meter):
         update_interval: float = 1.0,
         precision: int = 1,
         theme_color: str = "blue",
+        help_text: typing.Optional[str] = None,
     ):
         self.thermo_element = None
         super().__init__(
@@ -905,6 +918,7 @@ class TemperatureGauge(Meter):
             update_interval=update_interval,
             precision=precision,
             theme_color=theme_color,
+            help_text=help_text,
         )
 
     def display(self):
@@ -1044,6 +1058,7 @@ class Regulator:
         precision: int = 3,
         alert_errors: bool = True,
         theme_color: str = "blue",
+        help_text: typing.Optional[str] = None,
     ) -> None:
         """
         Initialize the regulator.
@@ -1061,6 +1076,8 @@ class Regulator:
         :param alarm_low: Low alarm threshold for color coding
         :param precision: Number of decimal places to display
         :param alert_errors: Whether to show alerts on setter function errors
+        :param theme_color: Theme color for styling
+        :param help_text: Optional help text to display as a tooltip
         """
         self.value = 0.0
         self.min = min_value
@@ -1074,7 +1091,8 @@ class Regulator:
         self.alarm_high = alarm_high
         self.alarm_low = alarm_low
         self.theme_color = theme_color
-        self.precision = int(precision)
+        self.precision = int(precision) if precision else 0
+        self.help_text = help_text
 
         # UI elements
         self.container = None
@@ -1091,6 +1109,7 @@ class Regulator:
         height: typing.Optional[str] = None,
         label: typing.Optional[str] = None,
         show_label: bool = True,
+        help_text: typing.Optional[str] = None,
     ) -> ui.card:
         """
         Display the regulator as a UI component.
@@ -1099,6 +1118,7 @@ class Regulator:
         :param height: Height of the regulator (overrides default if provided)
         :param label: Label for the regulator (overrides default if provided)
         :param show_label: Whether to display the label
+        :param help_text: Optional help text to display as a tooltip
         :return: UI card element containing the regulator
         """
         display_width = width or self.width
@@ -1115,7 +1135,7 @@ class Regulator:
                 height: {display_height}; 
                 background: linear-gradient(145deg, #f8fafc 0%, #ffffff 100%);
                 border: 2px solid #e2e8f0;
-                border-radius: 16px;
+                border-radius: 8px;
                 box-shadow: 
                     0 10px 25px -5px rgba(0, 0, 0, 0.1),
                     0 8px 10px -6px rgba(0, 0, 0, 0.1),
@@ -1131,6 +1151,7 @@ class Regulator:
                 """
             )
         )
+        self.container.tooltip(help_text or self.help_text or display_label)
 
         # Add hover effects for Regulator
         def on_mouseenter():

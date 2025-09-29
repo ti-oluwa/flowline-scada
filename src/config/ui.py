@@ -14,6 +14,31 @@ logger = logging.getLogger(__name__)
 __all__ = ["ConfigurationUI"]
 
 
+THEMES = [
+    "blue",
+    "green",
+    "red",
+    "purple",
+    "indigo",
+    "teal",
+    "orange",
+    "pink",
+    "cyan",
+    "amber",
+    "lime",
+    "emerald",
+    "fuchsia",
+    "rose",
+    "violet",
+    "sky",
+    "slate",
+    "gray",
+    "zinc",
+    "neutral",
+    "stone",
+]
+
+
 class ConfigurationUI:
     """Multi-tab configuration interface"""
 
@@ -115,11 +140,13 @@ class ConfigurationUI:
                 with ui.row().classes(
                     "w-full items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-gray-100 border-b"
                 ):
-                    ui.icon("settings").classes("text-2xl text-gray-600")
+                    ui.icon("settings").classes("text-2xl text-gray-600").tooltip(
+                        "System Configuration - Manage application settings and preferences"
+                    )
                     ui.label(label).classes("text-xl font-bold text-gray-800")
                     ui.button(icon="close", on_click=self.close_dialog).props(
                         "flat round"
-                    ).classes("text-gray-600")
+                    ).classes("text-gray-600").tooltip("Close configuration dialog")
 
                 # Content area with tabs
                 with ui.column().classes("flex-1 overflow-hidden w-full"):
@@ -130,16 +157,24 @@ class ConfigurationUI:
                     ):
                         ui.tab("global", label="Global", icon="public").classes(
                             "text-xs sm:text-sm"
+                        ).tooltip(
+                            "Global application settings including theme, units, and auto-save preferences"
                         )
                         ui.tab(
-                            "pipeline", label="Pipeline", icon="account_tree"
-                        ).classes("text-xs sm:text-sm")
+                            "pipeline", label="Flowline", icon="account_tree"
+                        ).classes("text-xs sm:text-sm").tooltip(
+                            "Default settings for flowlines, pipes, and fluid properties"
+                        )
                         ui.tab(
                             "all_configs", label="All Configs", icon="view_list"
-                        ).classes("text-xs sm:text-sm")
+                        ).classes("text-xs sm:text-sm").tooltip(
+                            "Advanced view showing all configuration parameters with their full paths"
+                        )
                         ui.tab(
                             "import_export", label="I/E", icon="import_export"
-                        ).classes("text-xs sm:text-sm")
+                        ).classes("text-xs sm:text-sm").tooltip(
+                            "Import and export configuration settings to/from JSON files"
+                        )
 
                     with (
                         ui.tab_panels(tabs, value="global")
@@ -183,15 +218,27 @@ class ConfigurationUI:
                     with ui.row().classes("gap-2 items-center"):
                         ui.icon("save" if auto_save_enabled else "save_as").classes(
                             f"text-{'green' if auto_save_enabled else 'orange'}-600"
+                        ).tooltip(
+                            "Auto-save is currently "
+                            + ("enabled" if auto_save_enabled else "disabled")
                         )
                         ui.label(
                             "Auto-save: ON" if auto_save_enabled else "Auto-save: OFF"
                         ).classes(
                             f"text-xs text-{'green' if auto_save_enabled else 'orange'}-600 font-medium"
+                        ).tooltip(
+                            "Indicates whether configuration changes are automatically saved. "
+                            + (
+                                "Changes are saved immediately when modified."
+                                if auto_save_enabled
+                                else "You must manually save changes."
+                            )
                         )
                         if not auto_save_enabled:
                             ui.chip("Unsaved changes", color="orange").classes(
                                 "text-xs"
+                            ).tooltip(
+                                "You have unsaved configuration changes. Click 'Save' to persist them."
                             )
 
                     # Action buttons
@@ -200,7 +247,9 @@ class ConfigurationUI:
                             "Reset",
                             on_click=self.reset,
                             color="red",
-                        ).props("outline").classes("text-xs sm:text-sm")
+                        ).props("outline").classes("text-xs sm:text-sm").tooltip(
+                            "Reset all configuration settings to their default values. This action cannot be undone."
+                        )
 
                         # Show Apply button only if auto-save is disabled
                         if not auto_save_enabled:
@@ -209,13 +258,22 @@ class ConfigurationUI:
                                 on_click=self.apply_changes,
                                 color=self.theme_color,
                                 icon="save",
-                            ).classes("text-xs sm:text-sm")
+                            ).classes("text-xs sm:text-sm").tooltip(
+                                "Save all current configuration changes to disk. Changes will persist when the application is restarted."
+                            )
 
                         ui.button(
                             "Close" if auto_save_enabled else "Save & Close",
                             on_click=self.apply_and_close,
                             color=self.theme_color,
-                        ).classes("text-xs sm:text-sm")
+                        ).classes("text-xs sm:text-sm").tooltip(
+                            "Close the configuration dialog."
+                            + (
+                                ""
+                                if auto_save_enabled
+                                else " All changes will be saved before closing."
+                            )
+                        )
 
         self.dialog.open()
         self.is_open = True
@@ -226,39 +284,24 @@ class ConfigurationUI:
 
         with ui.column().classes("w-full gap-4 config-panel-content"):
             with ui.card().classes("w-full p-4"):
-                ui.label("Global Settings").classes("text-lg font-semibold mb-3")
+                ui.label("Global Settings").classes(
+                    "text-lg font-semibold mb-3"
+                ).tooltip(
+                    "Application-wide settings that affect the entire system behavior and appearance."
+                )
 
                 with ui.element("div").classes("config-grid-responsive grid-cols-2"):
                     ui.select(
                         label="Theme Color",
-                        options=[
-                            "blue",
-                            "green",
-                            "red",
-                            "purple",
-                            "indigo",
-                            "teal",
-                            "orange",
-                            "pink",
-                            "cyan",
-                            "amber",
-                            "lime",
-                            "emerald",
-                            "fuchsia",
-                            "rose",
-                            "violet",
-                            "sky",
-                            "slate",
-                            "gray",
-                            "zinc",
-                            "neutral",
-                            "stone",
-                        ],
-                        value=config.theme_color,
+                        options=THEMES,
+                        value=config.theme_color or "sky",
+                        new_value_mode="add",
                         on_change=lambda e: self.config.update(
                             "global_", theme_color=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Choose the primary color theme for the user interface. This affects buttons, highlights, and accent colors throughout the application."
+                    )
 
                     ui.select(
                         label="Unit System",
@@ -267,14 +310,20 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "global_", unit_system_name=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Select the measurement unit system to use throughout the application. This determines units for length, pressure, temperature, flow rate, etc."
+                    )
 
                 with ui.column().classes("w-full gap-2"):
                     with ui.row().classes("w-full gap-4 items-center"):
-                        ui.label("Auto-save:").classes("w-24")
+                        ui.label("Auto-save:").classes("w-24").tooltip(
+                            "Controls whether configuration changes are saved automatically or require manual saving."
+                        )
                         ui.switch(
                             value=config.auto_save,
                             on_change=lambda e: self._on_auto_save_change(e.value),
+                        ).tooltip(
+                            "When enabled, all configuration changes are automatically saved to disk. When disabled, you must manually click 'Save' to persist changes."
                         )
                     ui.label(
                         "When enabled, configuration changes are automatically saved. "
@@ -293,16 +342,22 @@ class ConfigurationUI:
         with ui.column().classes("w-full gap-4 config-panel-content"):
             # Pipeline Basic Settings
             with ui.card().classes("w-full p-4"):
-                ui.label("Pipeline Settings").classes("text-lg font-semibold mb-3")
+                ui.label("Flowline Settings").classes(
+                    "text-lg font-semibold mb-3"
+                ).tooltip(
+                    "Default configuration for flowline systems including flow type, scale factors, and error handling."
+                )
 
                 with ui.element("div").classes("config-grid-responsive grid-cols-2"):
                     ui.input(
-                        label="Pipeline Name",
+                        label="Flowline Name",
                         value=config.name,
                         on_change=lambda e: self.config.update(
                             "pipeline", name=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Default name for new flowlines created in the system. You can override this when creating individual flowlines."
+                    )
 
                     ui.select(
                         label="Flow Type",
@@ -311,18 +366,22 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline", flow_type=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Type of fluid flow analysis to use. Compressible flow accounts for density changes with pressure (gases), while incompressible assumes constant density (liquids)."
+                    )
 
                 with ui.element("div").classes("config-grid-responsive grid-cols-2"):
                     ui.number(
-                        label=f"Max Flow Rate ({flow_unit.display})",
+                        label=f"Maximum Allowable Flow Rate ({flow_unit.display})",
                         value=config.max_flow_rate.to(flow_unit.unit).magnitude,
                         format="%.2f",
                         on_change=lambda e: self.config.update(
                             "pipeline",
                             max_flow_rate=Quantity(e.value, flow_unit.unit),  # type: ignore
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Maximum flow rate for the flowline. Used for visualization, validation, and scaling."
+                    )
 
                     ui.number(
                         label=f"Connector Length ({length_unit.display})",
@@ -333,7 +392,9 @@ class ConfigurationUI:
                             "pipeline",
                             connector_length=Quantity(e.value, length_unit.unit),  # type: ignore
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Default length for connectors between flowline components. This willl be x2 for elbows."
+                    )
 
                 with ui.element("div").classes("config-grid-responsive grid-cols-2"):
                     ui.number(
@@ -346,21 +407,29 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline", scale_factor=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Scale factor for pipeline visualization. Controls the size relationship between physical dimensions and display pixels. Higher values make pipes appear larger."
+                    )
 
                 with ui.row().classes("w-full gap-4 items-center"):
-                    ui.label("Alert Errors:").classes("w-24")
+                    ui.label("Alert Errors:").classes("w-24").tooltip(
+                        "Controls whether the system shows popup alerts for errors and warnings during calculations."
+                    )
                     ui.switch(
                         value=config.alert_errors,
                         on_change=lambda e: self.config.update(
                             "pipeline", alert_errors=e.value
                         ),
+                    ).tooltip(
+                        "When enabled, error messages and warnings will be displayed as popup notifications. When disabled, errors are only logged to the console."
                     )
 
             # Fluid Properties
             with ui.card().classes("w-full p-4"):
                 ui.label("Default Fluid Properties").classes(
                     "text-lg font-semibold mb-3"
+                ).tooltip(
+                    "Default properties for fluids in new flowlines. These values are used as starting points when creating new fluid configurations."
                 )
                 fluid_config = config.fluid
 
@@ -371,7 +440,9 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline.fluid", name=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Name or identifier for the fluid being transported. This is used for labeling and documentation purposes."
+                    )
 
                     ui.select(
                         label="Fluid Phase",
@@ -380,7 +451,9 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline.fluid", phase=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Physical phase of the fluid. Gas phase typically uses compressible flow equations, while liquid phase uses incompressible flow equations."
+                    )
 
                 with ui.element("div").classes("config-grid-responsive grid-cols-2"):
                     ui.number(
@@ -393,12 +466,16 @@ class ConfigurationUI:
                             "pipeline.fluid",
                             temperature=Quantity(e.value, temperature_unit.unit),
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Operating temperature of the fluid. This affects fluid properties like density, viscosity, and compressibility factor used in flow calculations."
+                    )
 
             # Pipe Properties
             with ui.card().classes("w-full p-4"):
                 ui.label("Default Pipe Properties").classes(
                     "text-lg font-semibold mb-3"
+                ).tooltip(
+                    "Default specifications for pipe sections in new flowlines. These settings provide starting values when adding pipes to a system."
                 )
                 pipe_config = config.pipe
 
@@ -409,7 +486,9 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline.pipe", name=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Default name prefix for new pipe sections. Individual pipes can have custom names when created."
+                    )
 
                     ui.input(
                         label="Material",
@@ -417,7 +496,9 @@ class ConfigurationUI:
                         on_change=lambda e: self.config.update(
                             "pipeline.pipe", material=e.value
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Pipe material specification (e.g., Steel, PVC, Copper). This affects roughness values and is used for documentation and material tracking."
+                    )
 
                 with ui.element("div").classes("config-grid-responsive grid-cols-2"):
                     ui.number(
@@ -428,7 +509,9 @@ class ConfigurationUI:
                             "pipeline.pipe",
                             length=Quantity(e.value, length_unit.unit),
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Default length for new pipe sections. This is used in pressure drop calculations and determines the physical scale of visualizations."
+                    )
 
                     ui.number(
                         label=f"Internal Diameter ({diameter_unit.display})",
@@ -441,7 +524,9 @@ class ConfigurationUI:
                             "pipeline.pipe",
                             internal_diameter=Quantity(e.value, diameter_unit.unit),
                         ),
-                    ).classes("w-full")
+                    ).classes("w-full").tooltip(
+                        "Default internal diameter for new pipe sections. This is critical for flow calculations, pressure drop analysis, and cross-sectional area computations."
+                    )
 
     def show_all_configs_panel(self):
         """Create a panel showing all configurations in a flat view"""
@@ -451,16 +536,24 @@ class ConfigurationUI:
             with ui.card().classes("w-full p-4"):
                 ui.label("All Configuration Settings").classes(
                     "text-lg font-semibold mb-3"
+                ).tooltip(
+                    "Comprehensive view of all configuration parameters in the system."
                 )
                 ui.label(
                     "This is a comprehensive view of all configuration values with their hierarchical paths."
                 ).classes("text-sm text-gray-600 mb-4")
 
                 # Search functionality
-                search_input = ui.input(
-                    label="Search configurations",
-                    placeholder="Type to filter configurations...",
-                ).classes("w-full mb-4")
+                search_input = (
+                    ui.input(
+                        label="Search configurations",
+                        placeholder="Type to filter configurations...",
+                    )
+                    .classes("w-full mb-4")
+                    .tooltip(
+                        "Filter the configuration list by typing keywords. Searches configuration names and paths."
+                    )
+                )
 
                 # Configuration table
                 with ui.scroll_area().classes("h-96 w-full"):
@@ -555,6 +648,8 @@ class ConfigurationUI:
             with ui.card().classes("w-full p-4"):
                 ui.label("Import/Export Configuration").classes(
                     "text-lg font-semibold mb-3"
+                ).tooltip(
+                    "Save your configuration settings to a file or load settings from a previously saved file."
                 )
 
                 ui.button(
@@ -562,13 +657,17 @@ class ConfigurationUI:
                     on_click=self.export,
                     color=self.theme_color,
                     icon="download",
-                ).classes("w-full mb-4")
+                ).classes("w-full mb-4").tooltip(
+                    "Download all current configuration settings as a JSON file. This creates a backup that can be imported later or shared with other users."
+                )
 
                 ui.upload(
                     label="Import Configuration",
                     on_upload=self.import_,
                     auto_upload=True,
-                ).classes("w-full")
+                ).classes("w-full").tooltip(
+                    "Upload a previously exported configuration JSON file to restore settings. This will overwrite current configuration values."
+                )
 
     def _on_auto_save_change(self, value: bool):
         """Handle auto-save setting change"""

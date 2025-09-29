@@ -60,9 +60,9 @@ if not redis_available:
     logger.info("Using `JSONFileStorage` for config and state storage")
 
 
-@ui.page("/", title="Pipeline Management System")
+@ui.page("/", title="Flowline SCADA Simulation")
 def root(client: Client) -> ui.element:
-    """Create the main Pipeline Management System application."""
+    """Root page handler for the Flowline SCADA Simulation System."""
     request = client.request
     assert request is not None
     logger.info("Client connected to root page")
@@ -74,7 +74,10 @@ def root(client: Client) -> ui.element:
     session_id = hashlib.sha256(f"client-{user_agent}".encode()).hexdigest()
     logger.info(f"User session ID: {session_id}")
 
-    config = Configuration(session_id, storages=[config_file_storage], save_throttle=5.0)
+    # Load or create configuration for the session
+    config = Configuration(
+        session_id, storages=[config_file_storage], save_throttle=5.0
+    )
 
     # Get current configuration
     theme_color = config.state.global_.theme_color
@@ -93,11 +96,18 @@ def root(client: Client) -> ui.element:
         # Header with dynamic theme color
         header = ui.row().classes(
             f"w-full bg-{theme_color}-600 text-white p-4 shadow-lg items-center"
-        )
+        ).style("""
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e1 transparent;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
+        """)
         with header:
-            ui.icon("engineering").classes("text-3xl mr-3")
-            ui.label("Pipeline Management System").classes(
-                "text-2xl font-bold flex-1 sm:text-lg"
+            ui.icon("engineering").classes("text-lg mr-3 sm:text-2xl")
+            ui.label("Flowline SCADA Simulation System").classes(
+                "text-lg font-bold flex-1 sm:text-2xl"
             )
 
         def on_theme_change(config_state: ConfigurationState) -> None:
@@ -215,22 +225,27 @@ def root(client: Client) -> ui.element:
 
             config.observe(upstream_observer)
             config.observe(downstream_observer)
-            manager_ui.show(ui_label="Pipeline Builder", max_width="95%")
+            manager_ui.show(
+                ui_label="Flowline Build Toolkit",
+                pipeline_label="Piping Configuration Preview",
+                flow_station_label="Flow Stations (Meters and Regulators)",
+                max_width="95%",
+            )
 
     return main_container
 
 
 def main():
     """Main application entry point."""
-    logger.info("Starting Pipeline Management System")
+    logger.info("Starting Pipeline Simulation System")
     ui.run(
-        title="Pipeline Management System",
+        title="Pipeline Simulation System",
         port=8080,
         host="0.0.0.0",
         reload=os.getenv("DEBUG", "False").lower()
         in ("t", "true", "yes", "on", "1", "y"),
         show=True,
-        favicon="🔧",
+        favicon="🌐",
         dark=False,
         storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
         native=False,
