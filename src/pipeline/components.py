@@ -1731,21 +1731,21 @@ class Pipe:
             )
         return self
 
-    def remove_leak(self, index: int, *, sync: bool = False) -> Self:
+    def remove_leak(self, index: int, *, sync: bool = False) -> PipeLeak:
         """
         Remove a leak from the pipe by index and optionally recalculate flow rate.
 
         :param index: Index of the leak to remove
         :param sync: Whether to synchronize pipe properties after removing leak
-        :return: self or updated Pipe instance
+        :return: The removed `PipeLeak` object
         """
         if index < 0 or index >= len(self._leaks):
             raise IndexError("LeakInfo index out of range")
 
-        del self._leaks[index]
+        removed_leak = self._leaks.pop(index)
         if sync:
             self.sync()
-        return self
+        return removed_leak
 
     def clear_leaks(self, *, sync: bool = False) -> Self:
         """
@@ -2859,13 +2859,15 @@ class Pipeline:
                 raise
         return self
 
-    def remove_pipe(self, index: int = -1, *, sync: bool = True) -> Self:
+    def remove_pipe(
+        self, index: int = -1, *, sync: bool = True
+    ) -> typing.Optional[Pipe]:
         """
         Remove a pipe from the pipeline at the specified index.
 
         :param index: Index of the pipe to remove
         :param sync: Whether to synchronize pipes properties after removal (default is True)
-        :return: self for method chaining
+        :return: The removed pipe, if it exists else None
         :raises PipelineConnectionError: If removing the pipe breaks pipeline continuity
         """
         if index < 0:
@@ -2904,7 +2906,7 @@ class Pipeline:
                         severity="error",
                     )
                 raise
-        return self
+        return removed_pipe
 
     def add_leak(self, pipe_index: int, leak: PipeLeak, *, sync: bool = True) -> Self:
         """
@@ -2929,26 +2931,26 @@ class Pipeline:
 
     def remove_leak(
         self, pipe_index: int, leak_index: int, *, sync: bool = True
-    ) -> Self:
+    ) -> PipeLeak:
         """
         Remove a leak from a specific pipe in the pipeline.
 
         :param pipe_index: Index of the pipe to remove the leak from
         :param leak_index: Index of the leak to remove
         :param sync: Whether to synchronize pipes properties after removing the leak (default is True)
-        :return: self for method chaining
+        :return: The removed `PipeLeak` object.
         """
         if pipe_index < 0:
             pipe_index = len(self._pipes) + pipe_index
 
         if 0 <= pipe_index < len(self._pipes):
-            self._pipes[pipe_index].remove_leak(leak_index, sync=sync)
+            removed_leak = self._pipes[pipe_index].remove_leak(leak_index, sync=sync)
         else:
             raise IndexError("Pipe index out of range.")
 
         if sync:
             self.sync()
-        return self
+        return removed_leak
 
     def clear_leaks(self, *, sync: bool = True) -> Self:
         """

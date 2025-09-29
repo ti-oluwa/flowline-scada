@@ -2517,6 +2517,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     roughness=Quantity(roughness, roughness_unit),  # type: ignore
                     elevation_difference=Quantity(elevation, elevation_unit),  # type: ignore
                     efficiency=efficiency,
+                    leaks=selected_pipe_config.leaks,
+                    ambient_pressure=selected_pipe_config.ambient_pressure,
                 )
                 self.manager.update_pipe(self.selected_pipe_index, updated_config)
 
