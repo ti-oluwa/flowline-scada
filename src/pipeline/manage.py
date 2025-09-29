@@ -1652,8 +1652,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self,
         min_width: str = "300px",
         max_width: str = "1200px",
-        ui_label: str = "Pipeline Builder",
-        pipeline_label: str = "Pipeline Preview",
+        ui_label: str = "Flowline Builder",
+        pipeline_label: str = "Flowline Preview",
         flow_station_label: str = "Flow Station - Meters & Regulators",
         show_label: bool = True,
     ) -> ui.column:

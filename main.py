@@ -1,5 +1,5 @@
 """
-Main Entry Point for Pipeline Management System Application.
+Main Entry Point for Flowline Simulation Application.
 """
 
 import hashlib
@@ -39,8 +39,8 @@ if redis_url := os.getenv("REDIS_URL"):
     try:
         redis_client = redis.Redis.from_url(redis_url)
         redis_client.ping()
-        config_file_storage = RedisStorage(redis_client, namespace="config")
-        state_file_storage = RedisStorage(redis_client, namespace="state")
+        config_storage = RedisStorage(redis_client, namespace="config")
+        state_storage = RedisStorage(redis_client, namespace="state")
         redis_available = True
         logger.info("Using `RedisStorage` for config and state storage")
     except redis.RedisError as exc:
@@ -51,10 +51,10 @@ if redis_url := os.getenv("REDIS_URL"):
         redis_available = False
 
 if not redis_available:
-    config_file_storage = JSONFileStorage(
+    config_storage = JSONFileStorage(
         storage_dir=Path.cwd() / ".pipeline-scada/configs", namespace="config"
     )
-    state_file_storage = JSONFileStorage(
+    state_storage = JSONFileStorage(
         storage_dir=Path.cwd() / ".pipeline-scada/states", namespace="state"
     )
     logger.info("Using `JSONFileStorage` for config and state storage")
@@ -76,13 +76,13 @@ def root(client: Client) -> ui.element:
 
     # Load or create configuration for the session
     config = Configuration(
-        session_id, storages=[config_file_storage], save_throttle=5.0
+        session_id, storages=[config_storage], save_throttle=5.0
     )
 
     # Get current configuration
     theme_color = config.state.global_.theme_color
-    client_state_key = state_file_storage.get_key(session_id)
-    last_state = state_file_storage.read(client_state_key)
+    client_state_key = state_storage.get_key(session_id)
+    last_state = state_storage.read(client_state_key)
 
     # Main layout container
     main_container = (
@@ -182,7 +182,7 @@ def root(client: Client) -> ui.element:
                     flow_station_factories=[upstream_factory, downstream_factory],
                 )
 
-            has_stored_state = state_file_storage.read(client_state_key) is not None
+            has_stored_state = state_storage.read(client_state_key) is not None
             logger.info(f"Session ID {session_id!r} in storage: {has_stored_state}")
 
             def pipeline_state_observer(_: str, __: typing.Any) -> None:
@@ -198,9 +198,9 @@ def root(client: Client) -> ui.element:
 
                 state = pipeline_manager.dump_state()
                 if not has_stored_state:
-                    state_file_storage.create(client_state_key, state)
+                    state_storage.create(client_state_key, state)
                 else:
-                    state_file_storage.update(client_state_key, state, overwrite=True)
+                    state_storage.update(client_state_key, state, overwrite=True)
                 logger.debug(
                     f"Pipeline state storage updated for session {session_id!r}"
                 )
@@ -229,7 +229,7 @@ def root(client: Client) -> ui.element:
                 ui_label="Flowline Build Toolkit",
                 pipeline_label="Piping Configuration Preview",
                 flow_station_label="Flow Stations (Meters and Regulators)",
-                max_width="95%",
+                max_width="97%",
             )
 
     return main_container
