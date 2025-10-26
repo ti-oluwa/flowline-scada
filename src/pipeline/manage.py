@@ -1673,7 +1673,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.column()
             .classes("w-full min-h-screen gap-2 p-2 sm:gap-4 sm:p-4")
             .style(
-                f"min-width: min({min_width}, 100%); max-width: {max_width}; margin-left: auto; margin-right: auto;"
+                f"""
+                min-width: min({min_width}, 100%); 
+                max-width: {max_width}; 
+                margin-left: auto; 
+                margin-right: auto; 
+                border-color: #CCC;
+                outline-color: #AAA;
+                """
             )
         )
         with self.main_container:
@@ -1834,8 +1841,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             pipe_configs = self.manager.get_pipe_configs()
             pipe_count = len(pipe_configs)
             for i, pipe_config in enumerate(pipe_configs):
-                pipe_row = ui.row().classes(
-                    "w-full items-center gap-2 p-2 sm:p-3 border rounded-lg hover:shadow-md transition-shadow flex-wrap sm:flex-nowrap"
+                pipe_row = (
+                    ui.row()
+                    .classes(
+                        "w-full items-center gap-2 p-2 sm:p-3 border rounded-lg hover:shadow-md transition-shadow flex-wrap sm:flex-nowrap"
+                    )
+                    .style("border-color: #CCC;")
                 )
 
                 with pipe_row:
@@ -2061,7 +2072,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 "margin-bottom: 4px;"
             )
             ui.html(
-                "<small class='text-gray-500'>Configure the new pipe below:</small>"
+                "<small class='text-gray-500'>Configure the new pipe below:</small>",
+                sanitize=False,
             )
 
             pipe_count = len(self.manager.get_pipe_configs())
@@ -2399,7 +2411,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 f"font-semibold text-{self.theme_color}-800 p-2"
             )
             ui.html(
-                "<small class='text-gray-500'>Modify pipe properties below.</small>"
+                "<small class='text-gray-500'>Modify pipe properties below.</small>",
+                sanitize=False,
             )
 
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
@@ -2519,7 +2532,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 f"font-semibold text-{self.theme_color}-800 p-2"
             )
             ui.html(
-                "<small class='text-gray-500'>Modify fluid properties below.</small>"
+                "<small class='text-gray-500'>Modify fluid properties below.</small>",
+                sanitize=False,
             )
 
         fluid_config = self.manager.get_fluid_config()

@@ -489,7 +489,7 @@ class FlowMeter(Meter):
 
         # Create a sophisticated flow visualization container with responsive scaling
         self.flow_viz = (
-            ui.html()
+            ui.html(sanitize=False)
             .classes("flex-1 flex items-center justify-center overflow-hidden")
             .style("""
                 max-height: min(80px, 40%);
@@ -775,7 +775,7 @@ class PressureGauge(Meter):
 
         # Add enhanced circular gauge container with responsive sizing
         self.gauge_element = (
-            ui.html()
+            ui.html(sanitize=False)
             .classes("flex-1 flex items-center justify-center overflow-hidden")
             .style("""
                 max-height: min(100px, 50%);
@@ -932,7 +932,7 @@ class TemperatureGauge(Meter):
 
         # Add enhanced thermometer visualization container with responsive sizing
         self.thermo_element = (
-            ui.html()
+            ui.html(sanitize=False)
             .classes("flex-1 flex items-center justify-center overflow-hidden")
             .style("""
                 max-height: min(100px, 60%);
@@ -1207,7 +1207,7 @@ class Regulator:
 
                 # Status indicator (colored dot)
                 self.status_indicator = ui.html(
-                    f'<div class="w-2 h-2 rounded-full ml-1" style="background-color: {self.get_status_color()};"></div>'
+                    f'<div class="w-2 h-2 rounded-full ml-1" style="background-color: {self.get_status_color()};"></div>', sanitize=False
                 )
 
         value = max(self.min, min(self.max, self.value))
@@ -1932,7 +1932,7 @@ class Pipe:
         :return: Html element containing the SVG representation of the pipe
         """
         container = (
-            ui.html()
+            ui.html(sanitize=False)
             .classes("flex flex-col items-center justify-center")
             .style(f"width: {width}; height: {height};")
         )
@@ -1942,7 +1942,7 @@ class Pipe:
                 ui.label(label).classes("text-lg font-semibold mb-2 text-center")
 
             # Create the SVG visualization
-            self.pipe_viz = ui.html(self.get_svg()).classes("w-full h-full")
+            self.pipe_viz = ui.html(self.get_svg(), sanitize=False).classes("w-full h-full")
         return container
 
     def update_viz(self) -> Self:
@@ -2514,7 +2514,7 @@ class Pipeline:
 
             # Get the SVG content and check if it's valid
             svg_content = self.get_svg()
-            self.pipeline_viz = ui.html(svg_content).style(
+            self.pipeline_viz = ui.html(svg_content, sanitize=False).style(
                 """
                 width: 100%;
                 flex: 1;  
