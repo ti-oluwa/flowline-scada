@@ -174,15 +174,17 @@ class Configuration:
         """Get current configuration state"""
         return self._state
 
-    def observe(self, observer: typing.Callable[[ConfigurationState], None]):
+    def observe(self, observer: typing.Callable[[ConfigurationState], typing.Any]):
         """Add configuration change observer"""
         if observer not in self._observers:
             self._observers.append(observer)
+        return observer
 
-    def unobserve(self, observer: typing.Callable[[ConfigurationState], None]):
+    def unobserve(self, observer: typing.Callable[[ConfigurationState], typing.Any]):
         """Remove configuration change observer"""
         if observer in self._observers:
             self._observers.remove(observer)
+        return observer
 
     def notify(self):
         """Notify all observers of configuration changes"""

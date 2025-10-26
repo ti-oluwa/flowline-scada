@@ -75,14 +75,12 @@ def root(client: Client) -> ui.element:
     logger.info(f"User session ID: {session_id}")
 
     # Load or create configuration for the session
-    config = Configuration(
-        session_id, storages=[config_storage], save_throttle=5.0
-    )
+    config = Configuration(session_id, storages=[config_storage], save_throttle=3.0)
 
     # Get current configuration
     theme_color = config.state.global_.theme_color
     client_state_key = state_storage.get_key(session_id)
-    last_state = state_storage.read(client_state_key)
+    saved_state = state_storage.read(client_state_key)
 
     # Main layout container
     main_container = (
@@ -94,9 +92,12 @@ def root(client: Client) -> ui.element:
     )
     with main_container:
         # Header with dynamic theme color
-        header = ui.row().classes(
-            f"w-full bg-{theme_color}-600 text-white p-4 shadow-lg items-center"
-        ).style("""
+        header = (
+            ui.row()
+            .classes(
+                f"w-full bg-{theme_color}-600 text-white p-4 shadow-lg items-center"
+            )
+            .style("""
             position: sticky;
             top: 0;
             z-index: 1000;
@@ -104,12 +105,14 @@ def root(client: Client) -> ui.element:
             scrollbar-color: #cbd5e1 transparent;
             filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.1));
         """)
+        )
         with header:
             ui.icon("engineering").classes("text-lg mr-3 sm:text-2xl")
             ui.label("Flowline SCADA Simulation System").classes(
                 "text-lg font-bold flex-1 sm:text-2xl"
             )
 
+        @config.observe
         def on_theme_change(config_state: ConfigurationState) -> None:
             """Handle theme color changes."""
             nonlocal theme_color
@@ -122,8 +125,6 @@ def root(client: Client) -> ui.element:
             header.classes(add=f"bg-{new_theme}-600")
             theme_color = new_theme
             logger.info(f"Theme changed to: {new_theme}")
-
-        config.observe(on_theme_change)
 
         # Pipeline manager interface
         pipeline_manager_container = ui.column().classes("w-full")
@@ -139,19 +140,19 @@ def root(client: Client) -> ui.element:
                 name="Downstream Station", config=flow_station_config
             )
 
-            if last_state:
+            if saved_state:
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
                 try:
                     pipeline_manager = PipelineManager.load_state(
-                        last_state,
+                        saved_state,
                         config=config,
                         flow_station_factories=[upstream_factory, downstream_factory],
                     )
-                except Exception as e:
-                    logger.error(f"Failed to restore last state: {e}", exc_info=True)
-                    last_state = None
+                except Exception as exc:
+                    logger.error(f"Failed to restore last state: {exc}", exc_info=True)
+                    saved_state = None
 
-            if not last_state:
+            if not saved_state:
                 logger.info(f"Creating new pipeline for session {session_id!r}")
                 flow_type = FlowType(pipeline_config.flow_type)
                 pipeline = Pipeline(
@@ -179,13 +180,16 @@ def root(client: Client) -> ui.element:
                 pipeline_manager = PipelineManager(
                     pipeline,
                     config=config,
-                    flow_station_factories=[upstream_factory, downstream_factory],
+                    flow_station_factories=[
+                        upstream_factory,
+                        downstream_factory,
+                    ],
                 )
 
             has_stored_state = state_storage.read(client_state_key) is not None
             logger.info(f"Session ID {session_id!r} in storage: {has_stored_state}")
 
-            def pipeline_state_observer(_: str, __: typing.Any) -> None:
+            def pipeline_state_callback(_: str, __: typing.Any) -> None:
                 """Handle pipeline state changes."""
                 nonlocal has_stored_state
 
@@ -205,7 +209,7 @@ def root(client: Client) -> ui.element:
                     f"Pipeline state storage updated for session {session_id!r}"
                 )
 
-            pipeline_manager.subscribe("pipeline.*", pipeline_state_observer)
+            pipeline_manager.subscribe("pipeline.*", pipeline_state_callback)
 
             # Get the active unit system
             unit_system = config.get_unit_system()
@@ -213,18 +217,18 @@ def root(client: Client) -> ui.element:
             manager_ui = PipelineManagerUI(manager=pipeline_manager)
 
             # Observe configuration changes to update factories and UI
+            @config.observe
             def upstream_observer(config_state: ConfigurationState) -> None:
                 """Handle upstream station configuration changes."""
                 upstream_factory.on_config_change(config_state)
                 manager_ui.refresh_flow_stations()
 
+            @config.observe
             def downstream_observer(config_state: ConfigurationState) -> None:
                 """Handle downstream station configuration changes."""
                 downstream_factory.on_config_change(config_state)
                 manager_ui.refresh_flow_stations()
 
-            config.observe(upstream_observer)
-            config.observe(downstream_observer)
             manager_ui.show(
                 ui_label="Flowline Build Toolkit",
                 pipeline_label="Piping Configuration Preview",
@@ -249,6 +253,8 @@ def main():
         dark=False,
         storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
         native=False,
+        tailwind=True,
+        prod_js=True,
     )
 
 

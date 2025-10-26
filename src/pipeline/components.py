@@ -2871,7 +2871,7 @@ class Pipeline:
             try:
                 self.sync()
             except Exception as exc:
-                self._pipes.pop(index)  # Rollback addition
+                # self._pipes.pop(index)  # Rollback addition
                 if self.alert_errors:
                     show_alert(
                         f"Failed to synchronize pipeline properties after adding pipe - {self.name!r}: {exc}",

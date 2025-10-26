@@ -590,7 +590,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         self.set_config(flow_station_config)
 
 
-# Only manager should monitor config changes and update pipeline.
+# Only the manager should monitor config changes and update pipeline.
 # The UI should be subscribed to manager events.
 # The manager can then notify the UI to refresh as needed when properties or configs change.
 # This keeps things simple and avoids circular, repeated or redundant updates.
@@ -1070,12 +1070,12 @@ class PipelineManager(typing.Generic[PipelineT]):
 
         # Update pipe config with new leak
         pipe_config = self._pipe_configs[pipe_index]
-        updated_leaks = list(pipe_config.leaks) + [leak_config]
-        updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
+        leaks = [*list(pipe_config.leaks), leak_config]
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=leaks)
 
         # Update the actual pipe
         # Only update flow stations if this is the first leak being added
-        update_flow_stations = len(updated_leaks) == 1
+        update_flow_stations = len(leaks) == 1
         self.update_pipe(
             pipe_index, updated_pipe_config, update_flow_stations=update_flow_stations
         )
@@ -1099,13 +1099,13 @@ class PipelineManager(typing.Generic[PipelineT]):
             raise ValueError(f"Invalid leak index: {leak_index}")
 
         # Remove leak from config
-        updated_leaks = list(pipe_config.leaks)
-        updated_leaks.pop(leak_index)
-        updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
+        leaks = list(pipe_config.leaks)
+        leaks.pop(leak_index)
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=leaks)
 
         # Update the actual pipe
         # Only update flow stations if this was the last leak being removed
-        update_flow_stations = len(updated_leaks) == 0
+        update_flow_stations = len(leaks) == 0
         self.update_pipe(
             pipe_index, updated_pipe_config, update_flow_stations=update_flow_stations
         )
@@ -1134,9 +1134,9 @@ class PipelineManager(typing.Generic[PipelineT]):
             raise ValueError(f"Invalid leak index: {leak_index}")
 
         # Update leak in config
-        updated_leaks = list(pipe_config.leaks)
-        updated_leaks[leak_index] = leak_config
-        updated_pipe_config = attrs.evolve(pipe_config, leaks=updated_leaks)
+        leaks = list(pipe_config.leaks)
+        leaks[leak_index] = leak_config
+        updated_pipe_config = attrs.evolve(pipe_config, leaks=leaks)
 
         # Update the actual pipe
         self.update_pipe(pipe_index, updated_pipe_config)
@@ -1187,6 +1187,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             if pipe_config.leaks:
                 updated_pipe_config = attrs.evolve(pipe_config, leaks=[])
                 pipe = self.build_pipe(updated_pipe_config)
+                # Remive and re-add pipes
                 self._pipeline.remove_pipe(i, sync=False)
                 self._pipeline.add_pipe(pipe, i, sync=False)
 

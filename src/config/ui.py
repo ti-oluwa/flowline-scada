@@ -692,9 +692,9 @@ class ConfigurationUI:
                 self.config.update(obj_path, **{attr_name: value})
             else:
                 self.config.update(".", **{path: value})
-        except Exception as e:
-            logger.error(f"Failed to update config at path {path}: {e}")
-            ui.notify(f"Failed to update {path}: {str(e)}", type="negative")
+        except Exception as exc:
+            logger.error(f"Failed to update config at path {path}: {exc}")
+            ui.notify(f"Failed to update {path}: {str(exc)}", type="negative")
 
     def export(self):
         """Export configuration to JSON file"""
