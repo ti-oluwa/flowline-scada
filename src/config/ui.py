@@ -665,6 +665,8 @@ class ConfigurationUI:
                     label="Import Configuration",
                     on_upload=self.import_,
                     auto_upload=True,
+                ).props(
+                    f"outline color={self.theme_color} icon=file_upload accept=.json"
                 ).classes("w-full").tooltip(
                     "Upload a previously exported configuration JSON file to restore settings. This will overwrite current configuration values."
                 )
