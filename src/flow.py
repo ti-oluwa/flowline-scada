@@ -3,7 +3,7 @@ import attrs
 import math
 import functools
 from pint.facets.plain import PlainQuantity
-from CoolProp.CoolProp import PropsSI
+from CoolProp.CoolProp import PropsSI, get_global_param_string
 
 from src.units import ureg, Quantity
 from src.types import FlowEquation, FlowType
@@ -14,6 +14,7 @@ WATER_DENSITY = Quantity(
 AIR_DENSITY = Quantity(
     1.225, "kg/m^3"
 )  # Density of air at standard conditions - 1atm and 15°C
+SUPPORTED_FLUIDS = get_global_param_string("FluidsList").split(",")
 
 
 def is_supported_fluid(fluid_name: str) -> bool:

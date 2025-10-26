@@ -14,7 +14,7 @@ from typing_extensions import Self
 
 from src.config.core import Configuration, ConfigurationState
 from src.config.ui import ConfigurationUI
-from src.flow import Fluid
+from src.flow import Fluid, SUPPORTED_FLUIDS
 from src.pipeline.components import (
     FlowMeter,
     FlowStation,
@@ -436,7 +436,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                     pipeline.max_flow_rate.to(flow_unit.unit).magnitude,
                 ),
                 units=flow_unit.display,
-                label=cfg.flow_meter.label + " [Leak Rate]",
+                label="Leak " + cfg.flow_meter.label,
                 width=cfg.flow_meter.width,
                 height=cfg.flow_meter.height,
                 precision=cfg.flow_meter.precision,
@@ -461,7 +461,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                 min_value=cfg.pressure_guage.min_value,
                 max_value=cfg.pressure_guage.max_value,
                 units=pressure_unit.display,
-                label=cfg.pressure_guage.label + " [Expected]",
+                label="Expected " + cfg.pressure_guage.label,
                 width=cfg.pressure_guage.width,
                 height=cfg.pressure_guage.height,
                 precision=cfg.pressure_guage.precision,
@@ -486,7 +486,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                     pipeline.max_flow_rate.to(flow_unit.unit).magnitude,
                 ),
                 units=flow_unit.display,
-                label=cfg.flow_meter.label + " [Expected]",
+                label="Expected " + cfg.flow_meter.label,
                 width=cfg.flow_meter.width,
                 height=cfg.flow_meter.height,
                 precision=cfg.flow_meter.precision,
@@ -513,7 +513,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
                 min_value=cfg.mass_flow_meter.min_value,
                 max_value=cfg.mass_flow_meter.max_value,
                 units=mass_flow_unit.display,
-                label=cfg.mass_flow_meter.label + " [Expected]",
+                label="Expected " + cfg.mass_flow_meter.label,
                 width=cfg.mass_flow_meter.width,
                 height=cfg.mass_flow_meter.height,
                 precision=cfg.mass_flow_meter.precision,
@@ -2669,8 +2669,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Name and phase row
             name_phase_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with name_phase_row:
-                name_input = (
-                    ui.input("Fluid Name", value=fluid_config.name)
+                name_select = (
+                    ui.select(
+                        options=SUPPORTED_FLUIDS,
+                        value=fluid_config.name,
+                        multiple=False,
+                        with_input=True,
+                    )
                     .classes("flex-1 min-w-0")
                     .tooltip(
                         "Name of the fluid being transported (e.g., Water, Methane, Octane). Must be supported by `CoolProp`"
@@ -2729,7 +2734,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.button(
                 "Update Fluid",
                 on_click=lambda: self.save_fluid_form(
-                    name=name_input.value,
+                    name=name_select.value,
                     phase=phase_select.value,
                     temperature=temperature_input.value,
                     molecular_weight=molecular_weight_input.value,
@@ -2932,12 +2937,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         "Active" if leak_config.active else "Inactive",
                         color="red" if leak_config.active else "gray",
                         icon="leak_add" if leak_config.active else "leak_remove",
-                    ).classes("cursor-pointer").on(
-                        "click",
-                        lambda p=pipe_index, leak_idx=leak_index: self.toggle_pipe_leak(
-                            p, leak_idx
+                        on_click=lambda pipe_index=pipe_index,
+                        leak_index=leak_index: self.toggle_pipe_leak(
+                            pipe_index, leak_index
                         ),
-                    )
+                    ).classes("cursor-pointer")
 
                     # Action buttons
                     button_row = ui.row().classes("gap-1")
@@ -3264,6 +3268,33 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             ui.label(
                                 f"{active_leaks}/{len(leak_configs)} active"
                             ).classes("text-sm text-gray-600")
+
+                        distances_row = ui.row().classes("w-full flex-wrap gap-2 mt-1")
+                        with distances_row:
+                            for leak_config in leak_configs:
+                                location_percent = leak_config.location * 100
+                                location_length = (
+                                    pipe_config.length.to(
+                                        self.unit_system["length"].unit
+                                    ).magnitude
+                                    * leak_config.location
+                                )
+                                diameter_value = leak_config.diameter.to(
+                                    self.unit_system["diameter"].unit
+                                ).magnitude
+                                status_color = "red" if leak_config.active else "gray"
+                                ui.chip(
+                                    f"⌀ {diameter_value:.6f}{self.unit_system['diameter'].display} @ {location_length:.4f}{self.unit_system['length'].display} ({location_percent:.1f}%)",
+                                    color=status_color,
+                                    icon="leak_add"
+                                    if leak_config.active
+                                    else "leak_remove",
+                                    on_click=lambda pipe_index=pipe_index,
+                                    leak=leak_config: self.toggle_pipe_leak(
+                                        pipe_index,
+                                        pipe_config.leaks.index(leak),
+                                    ),
+                                )
             else:
                 ui.label("No leaks in pipeline").classes(
                     "text-gray-500 text-center py-4 italic"
