@@ -706,11 +706,11 @@ class ConfigurationUI:
             logger.error(f"Export failed: {exc}")
             ui.notify(f"Export failed: {exc}", type="negative")
 
-    def import_(self, event):
+    async def import_(self, event):
         """Import configuration from uploaded file"""
         try:
-            content = event.content.read().decode()
-            self.config.import_(content)
+            content = await event.file.read()
+            self.config.import_(content.decode("utf-8"))
             ui.notify("Configuration imported successfully", type="positive")
             self.show()
         except Exception as exc:

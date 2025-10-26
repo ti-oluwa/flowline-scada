@@ -2,42 +2,45 @@
 Pipeline Management UI
 """
 
-import typing
-import logging
-import attrs
+import datetime
 from functools import partial
-from typing_extensions import Self
+import logging
+import typing
+
+import attrs
 from nicegui import ui
+import orjson
+from typing_extensions import Self
 
 from src.config.core import Configuration, ConfigurationState
 from src.config.ui import ConfigurationUI
-from src.pipeline.piping import PipeDirection
-from src.pipeline.components import (
-    Pipe,
-    Pipeline,
-    PipeLeak,
-    Meter,
-    Regulator,
-    FlowStation,
-    PressureGauge,
-    TemperatureGauge,
-    FlowMeter,
-    MassFlowMeter,
-)
 from src.flow import Fluid
-from src.units import Quantity, UnitSystem
+from src.pipeline.components import (
+    FlowMeter,
+    FlowStation,
+    MassFlowMeter,
+    Meter,
+    Pipe,
+    PipeLeak,
+    Pipeline,
+    PressureGauge,
+    Regulator,
+    TemperatureGauge,
+)
+from src.pipeline.piping import PipeDirection
 from src.types import (
-    PipeConfig,
-    PipeLeakConfig,
-    FluidConfig,
+    EventCallback,
+    EventSubscription,
     FlowStationConfig,
     FlowType,
+    FluidConfig,
+    PipeConfig,
+    PipeLeakConfig,
     converter,
     structure_quantity,
     unstructure_quantity,
-    EventCallback,
-    EventSubscription,
 )
+from src.units import Quantity, UnitSystem
 
 logger = logging.getLogger(__name__)
 
@@ -1283,6 +1286,89 @@ class PipelineManager(typing.Generic[PipelineT]):
         """Get the current fluid configuration."""
         return self._fluid_config
 
+    def export_configuration(self) -> str:
+        """
+        Export the current pipeline configuration to JSON format.
+
+        :return: JSON string containing pipe and fluid configurations
+        """
+        config_data = {
+            "pipes": [converter.unstructure(pipe) for pipe in self._pipe_configs],
+            "fluid": converter.unstructure(self._fluid_config),
+            "pipeline": {
+                "name": self._pipeline.name,
+                "scale_factor": self._pipeline.scale_factor,
+                "max_flow_rate": unstructure_quantity(self._pipeline.max_flow_rate),
+                "connector_length": unstructure_quantity(
+                    self._pipeline.connector_length
+                ),
+                "flow_type": self._pipeline._flow_type.value,
+            },
+        }
+        return orjson.dumps(config_data, option=orjson.OPT_INDENT_2).decode("utf-8")
+
+    def import_configuration(self, json_data: str) -> Self:
+        """
+        Import pipeline configuration from JSON format.
+
+        :param json_data: JSON string containing pipe and fluid configurations
+        :return: self for method chaining
+        """
+        try:
+            config_data = orjson.loads(json_data)
+
+            # Clear existing pipes
+            self._pipe_configs.clear()
+
+            # Import pipe configurations
+            if "pipes" in config_data:
+                for pipe_data in config_data["pipes"]:
+                    pipe_config = converter.structure(pipe_data, PipeConfig)
+                    self._pipe_configs.append(pipe_config)
+
+            # Import fluid configuration
+            if "fluid" in config_data:
+                self._fluid_config = converter.structure(
+                    config_data["fluid"], FluidConfig
+                )
+
+            # Import pipeline settings if available
+            if "pipeline" in config_data:
+                pipeline_data = config_data["pipeline"]
+                if "name" in pipeline_data:
+                    self._pipeline.name = pipeline_data["name"]
+                if "scale_factor" in pipeline_data:
+                    self._pipeline.set_scale_factor(
+                        pipeline_data["scale_factor"], update_viz=False
+                    )
+                if "max_flow_rate" in pipeline_data:
+                    self._pipeline.set_max_flow_rate(
+                        structure_quantity(pipeline_data["max_flow_rate"], None),
+                        update_viz=False,
+                    )
+                if "connector_length" in pipeline_data:
+                    self._pipeline.set_connector_length(
+                        structure_quantity(pipeline_data["connector_length"], None),
+                        sync=False,
+                    )
+                if "flow_type" in pipeline_data:
+                    self._pipeline.set_flow_type(
+                        FlowType(pipeline_data["flow_type"]), sync=False
+                    )
+
+            # Rebuild pipeline from imported configs
+            self.sync(validate=True)
+            self.notify("pipeline.configuration.imported")
+
+            logger.info(
+                f"Imported configuration: {len(self._pipe_configs)} pipes and fluid '{self._fluid_config.name}'"
+            )
+            return self
+
+        except Exception as exc:
+            logger.error(f"Error importing configuration: {exc}", exc_info=True)
+            raise ValueError(f"Failed to import configuration: {exc}")
+
     def get_pipeline(self) -> PipelineT:
         """Get the managed pipeline instance."""
         return self._pipeline
@@ -1726,18 +1812,18 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         return self.main_container
 
     def show_config_menu_button(self):
-        """Show configuration menu button with dropdown"""
-        with ui.button_group():
-            self.config_menu_button = (
-                ui.button(
-                    icon="more_vert",
-                    on_click=lambda: self.config_ui.show(max_width="720px"),
-                    color=self.theme_color,
-                )
-                .props("outline")
-                .classes("text-sm p-1 sm:p-2")
-                .tooltip("System Configuration")
+        """Show configuration menu button"""
+        # System configuration button
+        self.config_menu_button = (
+            ui.button(
+                icon="settings",
+                on_click=lambda: self.config_ui.show(max_width="720px"),
+                color=self.theme_color,
             )
+            .props("outline")
+            .classes("text-sm p-1 sm:p-2")
+            .tooltip("System Configuration")
+        )
 
     def show_construction_panel(self):
         """Create the pipeline construction panel."""
@@ -1747,16 +1833,54 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 "text-lg sm:text-xl font-semibold mb-2 sm:mb-3"
             )
 
-            # Add pipe button
-            self.add_pipe_button = (
-                ui.button(
-                    "+ Add Pipe", on_click=self.show_pipe_dialog, color=self.theme_color
-                )
-                .classes(
-                    self.get_primary_button_classes("mb-2 sm:mb-4 w-full sm:w-auto")
-                )
-                .tooltip("Add a new pipe section to the flowline")
+            # Button row with Add Pipe and Config toggle
+            button_row = ui.row().classes(
+                "w-full gap-2 mb-2 sm:mb-4 flex-wrap sm:flex-nowrap items-center"
             )
+            with button_row:
+                # Add pipe button
+                self.add_pipe_button = (
+                    ui.button(
+                        "+ Add Pipe",
+                        on_click=self.show_pipe_dialog,
+                        color=self.theme_color,
+                    )
+                    .classes(self.get_primary_button_classes("flex-1 sm:flex-none"))
+                    .tooltip("Add a new pipe section to the flowline")
+                )
+
+            # Collapsible config section
+            config_expansion = ui.expansion(
+                "Pipe Configuration Options", icon="tune"
+            ).classes("w-full")
+            config_expansion.value = False  # Collapsed by default
+            config_expansion.classes("mb-2")
+
+            with config_expansion:
+                config_column = ui.column().classes("w-full gap-2 p-2")
+                with config_column:
+                    # Export button
+                    ui.button(
+                        "Export Configuration",
+                        icon="file_download",
+                        on_click=self.export_pipe_configuration,
+                        color=self.theme_color,
+                    ).props("outline").classes("w-full").tooltip(
+                        "Export pipe configuration to JSON file"
+                    )
+
+                    # Import button
+                    ui.upload(
+                        on_upload=self.import_pipe_configuration,
+                        auto_upload=True,
+                        max_file_size=5_000_000,  # 5MB
+                        label="Import Configuration",
+                    ).props(
+                        f"outline color={self.theme_color} icon=file_upload accept=.json"
+                    ).classes("w-full").tooltip(
+                        "Import pipe configuration from JSON file"
+                    )
+
             # Pipes list
             self.pipes_container = ui.column().classes("w-full gap-1 sm:gap-2")
             # Validation display
@@ -3171,6 +3295,65 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Clear pipe selection and return to fluid properties."""
         self.selected_pipe_index = None
         self.refresh_properties_panel()
+
+    def export_pipe_configuration(self):
+        """Export the current pipe configuration to a JSON file."""
+        try:
+            config_json = self.manager.export_configuration()
+
+            # Generate filename with timestamp
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"pipeline_config_{timestamp}.json"
+
+            ui.download(config_json.encode(), filename=filename)
+            ui.notify(
+                f"Configuration exported to {filename}",
+                type="positive",
+                icon="file_download",
+            )
+            logger.info(f"Exported pipeline configuration to {filename}")
+
+        except Exception as exc:
+            error_msg = f"Failed to export configuration: {exc}"
+            ui.notify(error_msg, type="negative", icon="error")
+            logger.error(error_msg, exc_info=True)
+
+    async def import_pipe_configuration(self, event):
+        """Import pipe configuration from an uploaded JSON file."""
+        try:
+            # Read the uploaded file content
+            # NiceGUI's upload event provides the file via event.file
+            content = await event.file.read()
+
+            # Decode if bytes
+            if isinstance(content, bytes):
+                content = content.decode("utf-8")
+
+            # Import the configuration
+            self.manager.import_configuration(content)
+
+            # Refresh all UI panels
+            self.refresh_pipes_list()
+            self.refresh_properties_panel()
+            self.refresh_pipeline_preview()
+            self.refresh_flow_stations()
+
+            ui.notify(
+                "Configuration imported successfully",
+                type="positive",
+                icon="file_upload",
+            )
+            logger.info("Successfully imported pipeline configuration")
+
+        except ValueError as exc:
+            error_msg = f"Invalid configuration file: {exc}"
+            ui.notify(error_msg, type="negative", icon="error")
+            logger.error(error_msg, exc_info=True)
+
+        except Exception as exc:
+            error_msg = f"Failed to import configuration: {exc}"
+            ui.notify(error_msg, type="negative", icon="error")
+            logger.error(f"Failed to import configuration: {exc}", exc_info=True)
 
     def __del__(self):
         """Cleanup when the UI is destroyed."""
