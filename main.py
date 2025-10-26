@@ -7,6 +7,7 @@ import logging
 import os
 import typing
 import redis
+import fastapi
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
@@ -257,6 +258,24 @@ def main():
         prod_js=True,
     )
 
+
+app = fastapi.FastAPI(
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+    debug=os.getenv("DEBUG", "False").lower() in ("t", "true", "yes", "on", "1", "y"),
+)
+ui.run_with(
+    app,
+    title="Pipeline Simulation System",
+    mount_path="/",
+    favicon="🌐",
+    dark=False,
+    language="en-US",
+    storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
+    tailwind=True,
+    prod_js=True,
+)
 
 if __name__ in {"__main__", "__mp_main__"}:
     main()
