@@ -21,8 +21,14 @@ __all__ = [
     "LeakInfo",
     "HorizontalPipe",
     "VerticalPipe",
+    "ValveComponent",
     "StraightConnector",
     "Pipeline",
+    "build_valve",
+    "build_horizontal_pipe",
+    "build_vertical_pipe",
+    "build_straight_connector",
+    "build_elbow_connector",
 ]
 
 
@@ -370,9 +376,7 @@ class HorizontalPipe(PipeComponent):
                     i * 90 / max(1, spray_count - 1)
                 )  # Spray downward and sideways
                 spray_distance = leak_size * (1.5 + i * 0.3)
-                spray_x = (
-                    leak_x + spray_distance * math.cos(math.radians(angle)) * 0.3
-                )
+                spray_x = leak_x + spray_distance * math.cos(math.radians(angle)) * 0.3
                 spray_y = (
                     center_y + spray_distance * math.sin(math.radians(angle)) * 0.3
                 )
@@ -671,9 +675,7 @@ class VerticalPipe(PipeComponent):
                 spray_x = (
                     center_x + spray_distance * math.cos(math.radians(angle)) * 0.5
                 )
-                spray_y = (
-                    leak_y + spray_distance * math.sin(math.radians(angle)) * 0.3
-                )
+                spray_y = leak_y + spray_distance * math.sin(math.radians(angle)) * 0.3
 
                 leak_visuals += f'''
                 <circle cx="{spray_x}" cy="{spray_y}" r="1" 
@@ -786,6 +788,165 @@ class VerticalPipe(PipeComponent):
 
     def connect(self, other: PipeComponent) -> "Pipeline":
         """Connect this pipe to another component."""
+        return Pipeline([self, other])
+
+
+@attrs.define(slots=True)
+class ValveComponent(PipeComponent):
+    """Valve component for flow control visualization."""
+
+    direction: PipeDirection
+    """Flow direction through the valve."""
+    internal_diameter: PlainQuantity[float]
+    """Internal diameter of the pipe the valve is attached to."""
+    state: typing.Literal["open", "close"] = "open"
+    """Valve state: "open" or "closed"."""
+    flow_rate: PlainQuantity[float] = attrs.field(
+        factory=lambda: Quantity(0.0, "ft^3/s")
+    )
+    """Current flow rate through the valve (0 if closed)."""
+    scale_factor: typing.Optional[float] = 0.1
+    """Scaling factor for converting physical dimensions to display pixels."""
+    canvas_width: float = 80.0
+    """Width of the SVG canvas for this valve."""
+    canvas_height: float = 80.0
+    """Height of the SVG canvas for this valve."""
+
+    def get_svg_component(self) -> SVGComponent:
+        """
+        Generate SVG component for valve.
+
+        Creates a complete SVG representation including:
+        - Valve body with state-based coloring (green=open, red=closed)
+        - Valve handle positioned appropriately
+        - Connection points for joining with pipes
+        - State indicator text
+        - Proper orientation based on flow direction
+
+        :return: Complete SVG representation with connection information.
+        """
+        # Valve color based on state
+        valve_color = "#10b981" if self.state == "open" else "#ef4444"
+
+        # Calculate valve dimensions based on pipe diameter
+        diameter_pixels = physical_to_display_unit(
+            self.internal_diameter,
+            self.scale_factor or 0.1,
+            min_display_unit=8,
+            max_display_unit=60,
+        )
+
+        valve_width = diameter_pixels * 2.5  # Valve is wider than pipe
+        valve_height = diameter_pixels * 3  # Valve body height
+
+        is_vertical = self.direction in [PipeDirection.NORTH, PipeDirection.SOUTH]
+
+        if is_vertical:
+            # Vertical valve
+            center_x = self.canvas_width / 2
+            center_y = self.canvas_height / 2
+
+            inlet_y = 0
+            outlet_y = self.canvas_height
+
+            inner_content = f'''
+                <g transform="translate({center_x}, {center_y})">
+                    <!-- Valve body -->
+                    <rect x="{-valve_width / 2}" y="{-valve_height / 2}" 
+                          width="{valve_width}" height="{valve_height}" 
+                          fill="{valve_color}" stroke="#1e293b" stroke-width="2" rx="4"/>
+                    <!-- Valve handle -->
+                    <line x1="0" y1="{-valve_height / 2}" x2="0" y2="{-valve_height / 2 - 20}" 
+                          stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+                    <circle cx="0" cy="{-valve_height / 2 - 20}" r="6" fill="#1e293b"/>
+                    <!-- State indicator -->
+                    <text x="0" y="5" text-anchor="middle" font-size="10" 
+                          fill="white" font-weight="bold">{self.state[0].upper()}</text>
+                </g>
+                <!-- Connection points -->
+                <circle cx="{center_x}" cy="{inlet_y}" r="3" 
+                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
+                <circle cx="{center_x}" cy="{outlet_y}" r="3" 
+                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
+            '''
+
+            inlet = ConnectionPoint(
+                x=center_x,
+                y=inlet_y,
+                direction=self.direction,
+                diameter=diameter_pixels,
+                flow_rate=self.flow_rate,
+            )
+            outlet = ConnectionPoint(
+                x=center_x,
+                y=outlet_y,
+                direction=self.direction,
+                diameter=diameter_pixels,
+                flow_rate=self.flow_rate,
+            )
+        else:
+            # Horizontal valve
+            center_x = self.canvas_width / 2
+            center_y = self.canvas_height / 2
+
+            inlet_x = 0
+            outlet_x = self.canvas_width
+
+            inner_content = f'''
+                <g transform="translate({center_x}, {center_y})">
+                    <!-- Valve body -->
+                    <rect x="{-valve_height / 2}" y="{-valve_width / 2}" 
+                          width="{valve_height}" height="{valve_width}" 
+                          fill="{valve_color}" stroke="#1e293b" stroke-width="2" rx="4"/>
+                    <!-- Valve handle -->
+                    <line x1="{-valve_height / 2}" y1="0" x2="{-valve_height / 2 - 20}" y2="0" 
+                          stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
+                    <circle cx="{-valve_height / 2 - 20}" cy="0" r="6" fill="#1e293b"/>
+                    <!-- State indicator -->
+                    <text x="0" y="5" text-anchor="middle" font-size="10" 
+                          fill="white" font-weight="bold">{self.state[0].upper()}</text>
+                </g>
+                <!-- Connection points -->
+                <circle cx="{inlet_x}" cy="{center_y}" r="3" 
+                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
+                <circle cx="{outlet_x}" cy="{center_y}" r="3" 
+                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
+            '''
+
+            inlet = ConnectionPoint(
+                x=inlet_x,
+                y=center_y,
+                direction=self.direction,
+                diameter=diameter_pixels,
+                flow_rate=self.flow_rate,
+            )
+            outlet = ConnectionPoint(
+                x=outlet_x,
+                y=center_y,
+                direction=self.direction,
+                diameter=diameter_pixels,
+                flow_rate=self.flow_rate,
+            )
+
+        # Generate complete SVG
+        viewbox = f"0 0 {self.canvas_width} {self.canvas_height}"
+        main_svg = f'''
+        <svg viewBox="{viewbox}" class="mx-auto" style="width: 100%; height: auto; max-width: 100%;">
+            {inner_content}
+        </svg>
+        '''
+        return SVGComponent(
+            main_svg=main_svg,
+            inner_content=inner_content,
+            width=self.canvas_width,
+            height=self.canvas_height,
+            inlet=inlet,
+            outlet=outlet,
+            viewbox=viewbox,
+        )
+
+    def connect(self, other: PipeComponent) -> "Pipeline":
+        """Connect this valve to another component."""
         return Pipeline([self, other])
 
 
@@ -1570,3 +1731,40 @@ def build_elbow_connector(
         arm_length = Quantity(30, "mm")
 
     return ElbowConnector(pipe1=pipe1, pipe2=pipe2, arm_length=arm_length)
+
+
+def build_valve(
+    direction: PipeDirection,
+    internal_diameter: PlainQuantity[float],
+    state: str = "open",
+    flow_rate: typing.Optional[PlainQuantity[float]] = None,
+    scale_factor: float = 0.1,
+    canvas_width: float = 80.0,
+    canvas_height: float = 80.0,
+) -> ValveComponent:
+    """
+    Build a valve component for the pipeline.
+
+    Convenience function for creating valves with proper defaults.
+
+    :param direction: Flow direction (affects valve orientation)
+    :param internal_diameter: Diameter of pipe valve is attached to
+    :param state: Valve state ("open" or "closed")
+    :param flow_rate: Current flow rate. Defaults to 0.0 ft³/s.
+    :param scale_factor: Display scale factor
+    :param canvas_width: Canvas width in pixels
+    :param canvas_height: Canvas height in pixels
+    :return: Configured valve component
+    """
+    if flow_rate is None:
+        flow_rate = Quantity(0.0, "ft^3/s")
+
+    return ValveComponent(
+        direction=direction,
+        internal_diameter=internal_diameter,
+        state=state,
+        flow_rate=flow_rate,
+        scale_factor=scale_factor,
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+    )

@@ -156,6 +156,23 @@ class PipeLeakConfig:
 
 
 @attrs.define(slots=True, frozen=True)
+class ValveConfig:
+    """Configuration for a pipe valve."""
+
+    position: typing.Literal["start", "end"]
+    """Position of the valve on the pipe (start or end)"""
+    state: typing.Literal["open", "closed"] = "open"
+    """State of the valve (open or closed)"""
+
+    def __attrs_post_init__(self):
+        """Validate valve configuration after initialization."""
+        if self.position not in ["start", "end"]:
+            raise ValueError("Valve position must be 'start' or 'end'")
+        if self.state not in ["open", "closed"]:
+            raise ValueError("Valve state must be 'open' or 'closed'")
+
+
+@attrs.define(slots=True, frozen=True)
 class PipeConfig:
     """Configuration for a single pipe component."""
 
@@ -190,6 +207,8 @@ class PipeConfig:
     """Type of flow in the pipe (incompressible or compressible)"""
     leaks: typing.List[PipeLeakConfig] = attrs.field(factory=list)
     """List of leaks in the pipe"""
+    valves: typing.List[ValveConfig] = attrs.field(factory=list)
+    """List of valves in the pipe"""
     ambient_pressure: Quantity = attrs.field(factory=lambda: Quantity(14.7, "psi"))  # type: ignore
     """Ambient pressure outside the pipe (usually atmospheric)"""
 

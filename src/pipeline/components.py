@@ -2,6 +2,7 @@ import copy
 import logging
 import math
 import typing
+from enum import Enum
 
 from attrs import evolve
 from nicegui import ui
@@ -45,6 +46,8 @@ __all__ = [
     "PressureGauge",
     "TemperatureGauge",
     "Regulator",
+    "Valve",
+    "ValveState",
     "Pipe",
     "Pipeline",
     "FlowStation",
@@ -1207,7 +1210,8 @@ class Regulator:
 
                 # Status indicator (colored dot)
                 self.status_indicator = ui.html(
-                    f'<div class="w-2 h-2 rounded-full ml-1" style="background-color: {self.get_status_color()};"></div>', sanitize=False
+                    f'<div class="w-2 h-2 rounded-full ml-1" style="background-color: {self.get_status_color()};"></div>',
+                    sanitize=False,
                 )
 
         value = max(self.min, min(self.max, self.value))
@@ -1393,6 +1397,74 @@ class Regulator:
         return self.value
 
 
+class ValveState(Enum):
+    """Valve state enumeration."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class Valve:
+    """Simple valve component that can be positioned at pipe start or end."""
+
+    def __init__(
+        self,
+        position: typing.Literal["start", "end"] = "start",
+        state: ValveState = ValveState.OPEN,
+        name: typing.Optional[str] = None,
+    ):
+        """
+        Initialize a valve.
+
+        :param position: Position of valve - "start" or "end" of pipe
+        :param state: Initial valve state (OPEN or CLOSED)
+        :param name: Optional name for the valve
+        """
+        if position not in ["start", "end"]:
+            raise ValueError("Valve position must be 'start' or 'end'")
+
+        self.position = position
+        self._state = state
+        self.name = name or f"Valve-{id(self)}"
+
+    @property
+    def state(self) -> ValveState:
+        """Current valve state."""
+        return self._state
+
+    def is_open(self) -> bool:
+        """Check if valve is open."""
+        return self._state == ValveState.OPEN
+
+    def is_closed(self) -> bool:
+        """Check if valve is closed."""
+        return self._state == ValveState.CLOSED
+
+    def open(self) -> Self:
+        """Open the valve."""
+        self._state = ValveState.OPEN
+        return self
+
+    def close(self) -> Self:
+        """Close the valve."""
+        self._state = ValveState.CLOSED
+        return self
+
+    def toggle(self) -> Self:
+        """Toggle valve state between open and closed."""
+        if self.is_open():
+            self.close()
+        else:
+            self.open()
+        return self
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}(name={self.name!r}, "
+            f"position={self.position!r}, state={self._state.value!r})"
+        )
+
+
 class PipelineConnectionError(Exception):
     """Exception raised when pipes in a pipeline are not properly connected."""
 
@@ -1553,6 +1625,8 @@ class Pipe:
         direction: typing.Union[PipeDirection, str] = PipeDirection.EAST,
         name: typing.Optional[str] = None,
         leaks: typing.Optional[typing.Sequence[PipeLeak]] = None,
+        start_valve: typing.Optional[Valve] = None,
+        end_valve: typing.Optional[Valve] = None,
         scale_factor: float = 0.1,
         max_flow_rate: PlainQuantity[float] = Quantity(10.0, "ft^3/s"),
         friction_factor: typing.Optional[float] = None,
@@ -1576,6 +1650,8 @@ class Pipe:
         :param direction: PipeDirection enum indicating flow direction
         :param name: Optional name for the pipe
         :param leaks: Optional sequence of PipeLeak instances representing leaks in the pipe
+        :param start_valve: Optional valve at the start of the pipe
+        :param end_valve: Optional valve at the end of the pipe
         :param scale_factor: Display scale factor for converting physical units to pixels (pixels per millimeter).
             Example: A scale_factor of 0.1 means 1 pixel represents 10 mm (1 cm).
         :param max_flow_rate: Maximum expected flow rate for intensity normalization
@@ -1616,6 +1692,9 @@ class Pipe:
         if leaks:
             for leak in leaks:
                 self.add_leak(leak, sync=False)
+
+        self._start_valve: typing.Optional[Valve] = start_valve
+        self._end_valve: typing.Optional[Valve] = end_valve
 
         self.pipe_viz = None  # Placeholder for pipe visualization element
         self.sync()
@@ -1669,10 +1748,15 @@ class Pipe:
     @property
     def flow_rate(self) -> PlainQuantity[float]:
         """
-        Current effective volumetric flow rate in the pipe in (ft³/s).
+        Current effective volumetric flow rate IN the pipe in (ft³/s).
 
-        Considering leaks if any are present and not ignored.
+        If start valve is closed, no flow enters the pipe.
+        Considers leaks if present and not ignored.
         """
+        # If start valve is closed, no flow enters pipe
+        if self._start_valve is not None and self._start_valve.is_closed():
+            return Quantity(0.0, "ft^3/s")
+
         if self._ignore_leaks or not self.fluid:
             return self._flow_rate
         return self._flow_rate - self.leak_rate
@@ -1719,6 +1803,154 @@ class Pipe:
         if self._ignore_leaks:
             return False
         return any(leak.active for leak in self._leaks)
+
+    @property
+    def effective_outlet_flow_rate(self) -> PlainQuantity[float]:
+        """
+        Effective flow rate OUT of the pipe (ft³/s).
+
+        If end valve is closed, flow occurs in pipe but doesn't exit to next pipe.
+        """
+        # If end valve is closed, no flow exits pipe
+        if self._end_valve is not None and self._end_valve.is_closed():
+            return Quantity(0.0, "ft^3/s")
+
+        return self.flow_rate
+
+    @property
+    def valve(self) -> typing.Optional[Valve]:
+        """Get the first valve attached to this pipe (start valve if exists, else end valve)."""
+        return self._start_valve or self._end_valve
+
+    @property
+    def has_valve(self) -> bool:
+        """Check if pipe has any valve."""
+        return self._start_valve is not None or self._end_valve is not None
+
+    def get_valve(
+        self, position: typing.Literal["start", "end"]
+    ) -> typing.Optional[Valve]:
+        """Get valve at specified position."""
+        return self._start_valve if position == "start" else self._end_valve
+
+    def add_valve(
+        self,
+        valve: typing.Optional[Valve] = None,
+        position: typing.Literal["start", "end"] = "start",
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Add a valve to the pipe at specified position.
+
+        :param valve: Valve instance to add (creates default if None)
+        :param position: Position for valve or for new valve if valve is None
+        :param sync: Whether to synchronize pipe properties after adding valve
+        :return: self for method chaining
+        """
+        if valve is None:
+            valve = Valve(position=position)
+
+        if valve.position == "start":
+            if self._start_valve is not None:
+                raise ValueError(f"Pipe {self.name!r} already has a start valve.")
+            self._start_valve = valve
+        else:  # "end"
+            if self._end_valve is not None:
+                raise ValueError(f"Pipe {self.name!r} already has an end valve.")
+            self._end_valve = valve
+
+        if sync:
+            self.sync()
+
+        return self
+
+    def remove_valve(
+        self, position: typing.Literal["start", "end"], *, sync: bool = True
+    ) -> typing.Optional[Valve]:
+        """
+        Remove valve at specified position.
+
+        :param position: Position of valve to remove
+        :param sync: Whether to synchronize pipe properties after removing valve
+        :return: The removed Valve instance, or None if no valve existed
+        """
+        if position == "start":
+            removed_valve = self._start_valve
+            self._start_valve = None
+        else:
+            removed_valve = self._end_valve
+            self._end_valve = None
+
+        if sync:
+            self.sync()
+
+        return removed_valve
+
+    def open_valve(
+        self, position: typing.Literal["start", "end"], *, sync: bool = True
+    ) -> Self:
+        """
+        Open valve at specified position.
+
+        :param position: Position of valve to open
+        :param sync: Whether to synchronize pipe properties after opening valve
+        :return: self for method chaining
+        """
+        valve = self.get_valve(position)
+        if valve is None:
+            raise ValueError(f"Pipe {self.name!r} has no {position} valve.")
+
+        valve.open()
+        if sync:
+            self.sync()
+        return self
+
+    def close_valve(
+        self, position: typing.Literal["start", "end"], *, sync: bool = True
+    ) -> Self:
+        """
+        Close valve at specified position.
+
+        :param position: Position of valve to close
+        :param sync: Whether to synchronize pipe properties after closing valve
+        :return: self for method chaining
+        """
+        valve = self.get_valve(position)
+        if valve is None:
+            raise ValueError(f"Pipe {self.name!r} has no {position} valve.")
+
+        valve.close()
+        if sync:
+            self.sync()
+        return self
+
+    def toggle_valve(
+        self, position: typing.Literal["start", "end"], *, sync: bool = True
+    ) -> Self:
+        """
+        Toggle valve state at specified position.
+
+        :param position: Position of valve to toggle
+        :param sync: Whether to synchronize pipe properties after toggling valve
+        :return: self for method chaining
+        """
+        valve = self.get_valve(position)
+        if valve is None:
+            raise ValueError(f"Pipe {self.name!r} has no {position} valve.")
+
+        valve.toggle()
+        if sync:
+            self.sync()
+        return self
+
+    def has_closed_valve(self) -> bool:
+        """Check if pipe has any closed valve."""
+        if self._start_valve and self._start_valve.is_closed():
+            return True
+        if self._end_valve and self._end_valve.is_closed():
+            return True
+        return False
 
     def add_leak(self, leak: PipeLeak, *, sync: bool = False) -> Self:
         """
@@ -1942,7 +2174,9 @@ class Pipe:
                 ui.label(label).classes("text-lg font-semibold mb-2 text-center")
 
             # Create the SVG visualization
-            self.pipe_viz = ui.html(self.get_svg(), sanitize=False).classes("w-full h-full")
+            self.pipe_viz = ui.html(self.get_svg(), sanitize=False).classes(
+                "w-full h-full"
+            )
         return container
 
     def update_viz(self) -> Self:
@@ -1961,6 +2195,30 @@ class Pipe:
 
         :return: SVG string representing the pipe visualization
         """
+        from src.pipeline.piping import build_valve, Pipeline as PipelineComponent
+
+        modular_components = []
+
+        # Add start valve if present
+        if self._start_valve is not None:
+            valve_component = build_valve(
+                direction=self.direction,
+                internal_diameter=self.internal_diameter,
+                state=self._start_valve.state.value,
+                flow_rate=self.flow_rate
+                if self._start_valve.is_open()
+                else Quantity(0.0, "ft^3/s"),
+                scale_factor=self.scale_factor,
+                canvas_width=80.0
+                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
+                else 60.0,
+                canvas_height=60.0
+                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
+                else 80.0,
+            )
+            modular_components.append(valve_component)
+
+        # Add pipe itself
         if not self._ignore_leaks:
             leaks = []
             for leak in self.leaks:
@@ -1994,9 +2252,33 @@ class Pipe:
                 canvas_height=100.0,
                 leaks=leaks,
             )
+        modular_components.append(pipe_component)
 
-        svg_component = pipe_component.get_svg_component()
-        return svg_component.main_svg
+        # Add end valve if present
+        if self._end_valve is not None:
+            valve_component = build_valve(
+                direction=self.direction,
+                internal_diameter=self.internal_diameter,
+                state=self._end_valve.state.value,
+                flow_rate=self.effective_outlet_flow_rate,
+                scale_factor=self.scale_factor,
+                canvas_width=80.0
+                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
+                else 60.0,
+                canvas_height=60.0
+                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
+                else 80.0,
+            )
+            modular_components.append(valve_component)
+
+        # If only one component (no valves), return its SVG directly
+        if len(modular_components) == 1:
+            return modular_components[0].get_svg_component().main_svg
+
+        # Create modular pipeline with valves
+        modular_pipeline = PipelineComponent(modular_components)
+        print(modular_pipeline.get_svg_component().main_svg)
+        return modular_pipeline.get_svg_component().main_svg
 
     def estimate_pressure_at_location(self, location: float) -> PlainQuantity[float]:
         """
@@ -2407,6 +2689,205 @@ class Pipeline:
         return self
 
     @property
+    def has_valves(self) -> bool:
+        """Check if any pipe in the pipeline has a valve."""
+        return any(pipe.has_valve for pipe in self._pipes)
+
+    def get_valves(
+        self,
+    ) -> typing.Iterator[typing.Tuple[int, typing.Literal["start", "end"], Valve]]:
+        """
+        Iterate through all valves in the pipeline.
+
+        :return: Iterator of (pipe_index, position, valve) tuples
+        """
+        for i, pipe in enumerate(self._pipes):
+            if pipe._start_valve is not None:
+                yield (i, "start", pipe._start_valve)
+            if pipe._end_valve is not None:
+                yield (i, "end", pipe._end_valve)
+
+    def add_valve(
+        self,
+        pipe_index: int,
+        valve: typing.Optional[Valve] = None,
+        position: typing.Literal["start", "end"] = "start",
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Add valve to specific pipe in the pipeline.
+
+        :param pipe_index: Index of pipe to add valve to
+        :param valve: Valve instance to add (creates default if None)
+        :param position: Position for valve ("start" or "end")
+        :param sync: Whether to synchronize pipeline after adding
+        :return: self for method chaining
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if not (0 <= pipe_index < len(self._pipes)):
+            raise IndexError(f"Pipe index {pipe_index} out of range")
+
+        self._pipes[pipe_index].add_valve(valve=valve, position=position, sync=False)
+
+        if sync:
+            self.sync()
+
+        return self
+
+    def remove_valve(
+        self,
+        pipe_index: int,
+        position: typing.Literal["start", "end"],
+        *,
+        sync: bool = True,
+    ) -> typing.Optional[Valve]:
+        """
+        Remove valve from specific pipe in the pipeline.
+
+        :param pipe_index: Index of pipe to remove valve from
+        :param position: Position of valve to remove ("start" or "end")
+        :param sync: Whether to synchronize pipeline after removing
+        :return: The removed Valve instance, or None if no valve existed
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if not (0 <= pipe_index < len(self._pipes)):
+            raise IndexError(f"Pipe index {pipe_index} out of range")
+
+        removed_valve = self._pipes[pipe_index].remove_valve(
+            position=position, sync=False
+        )
+
+        if sync:
+            self.sync()
+
+        return removed_valve
+
+    def open_valve(
+        self,
+        pipe_index: int,
+        position: typing.Literal["start", "end"],
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Open valve on specific pipe.
+
+        :param pipe_index: Index of pipe with valve to open
+        :param position: Position of valve to open ("start" or "end")
+        :param sync: Whether to synchronize pipeline after opening
+        :return: self for method chaining
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if not (0 <= pipe_index < len(self._pipes)):
+            raise IndexError(f"Pipe index {pipe_index} out of range")
+
+        self._pipes[pipe_index].open_valve(position=position, sync=False)
+
+        if sync:
+            self.sync()
+
+        return self
+
+    def close_valve(
+        self,
+        pipe_index: int,
+        position: typing.Literal["start", "end"],
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Close valve on specific pipe.
+
+        :param pipe_index: Index of pipe with valve to close
+        :param position: Position of valve to close ("start" or "end")
+        :param sync: Whether to synchronize pipeline after closing
+        :return: self for method chaining
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if not (0 <= pipe_index < len(self._pipes)):
+            raise IndexError(f"Pipe index {pipe_index} out of range")
+
+        self._pipes[pipe_index].close_valve(position=position, sync=False)
+
+        if sync:
+            self.sync()
+
+        return self
+
+    def toggle_valve(
+        self,
+        pipe_index: int,
+        position: typing.Literal["start", "end"],
+        *,
+        sync: bool = True,
+    ) -> Self:
+        """
+        Toggle valve state on specific pipe.
+
+        :param pipe_index: Index of pipe with valve to toggle
+        :param position: Position of valve to toggle ("start" or "end")
+        :param sync: Whether to synchronize pipeline after toggling
+        :return: self for method chaining
+        """
+        if pipe_index < 0:
+            pipe_index = len(self._pipes) + pipe_index
+
+        if not (0 <= pipe_index < len(self._pipes)):
+            raise IndexError(f"Pipe index {pipe_index} out of range")
+
+        self._pipes[pipe_index].toggle_valve(position=position, sync=False)
+
+        if sync:
+            self.sync()
+
+        return self
+
+    def open_all_valves(self, *, sync: bool = True) -> Self:
+        """
+        Open all valves in the pipeline.
+
+        :param sync: Whether to synchronize pipeline after opening all valves
+        :return: self for method chaining
+        """
+        for pipe in self._pipes:
+            if pipe._start_valve is not None:
+                pipe.open_valve(position="start", sync=False)
+            if pipe._end_valve is not None:
+                pipe.open_valve(position="end", sync=False)
+
+        if sync:
+            self.sync()
+
+        return self
+
+    def close_all_valves(self, *, sync: bool = True) -> Self:
+        """
+        Close all valves in the pipeline.
+
+        :param sync: Whether to synchronize pipeline after closing all valves
+        :return: self for method chaining
+        """
+        for pipe in self._pipes:
+            if pipe._start_valve is not None:
+                pipe.close_valve(position="start", sync=False)
+            if pipe._end_valve is not None:
+                pipe.close_valve(position="end", sync=False)
+
+        if sync:
+            self.sync()
+
+        return self
+
+    @property
     def upstream_pressure(self) -> PlainQuantity[float]:
         """The upstream pressure of the pipeline."""
         if self._upstream_pressure is None:
@@ -2787,6 +3268,7 @@ class Pipeline:
                         severity="error",
                     )
                 raise
+
         if sync:
             self.sync()
         return self
@@ -3018,6 +3500,29 @@ class Pipeline:
 
         for i in range(len(self._pipes)):
             current_pipe = self._pipes[i]
+
+            # Check if any previous pipe has a closed end valve - blocks flow to all subsequent pipes
+            if i > 0:
+                for j in range(i):
+                    prev_pipe = self._pipes[j]
+                    if prev_pipe.has_closed_valve():
+                        # A previous pipe has closed end valve - no flow can reach this pipe
+                        if set_pressures:
+                            current_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+                        return current_pressure
+
+            # Check if current pipe's start valve is closed - blocks flow into this pipe
+            if (
+                current_pipe._start_valve is not None
+                and current_pipe._start_valve.is_closed()
+            ):
+                # Set zero flow for this pipe and all downstream pipes
+                if set_pressures:
+                    current_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+                # Since no flow can continue, return current pressure as outlet
+                # (effectively stopping flow propagation)
+                return current_pressure
+
             logger.debug("Pipe %d Upstream Pressure: %s", i + 1, current_pressure)
             # If the pressure drops to zero or below, flow cannot continue
             # return zero to notify the root solver to try another mass rate
@@ -3039,7 +3544,13 @@ class Pipeline:
 
             mass_rate_in = current_mass_flow_rate
 
-            if not self._ignore_leaks and (current_pipe.leak_rate.magnitude > 0):
+            # Check if end valve is closed - if so, no flow exits to next pipe
+            if (
+                current_pipe._end_valve is not None
+                and current_pipe._end_valve.is_closed()
+            ):
+                mass_rate_out = Quantity(0.0, "lb/s")
+            elif not self._ignore_leaks and (current_pipe.leak_rate.magnitude > 0):
                 leak_mass_rate = current_pipe.leak_rate.to(
                     "ft^3/s"
                 ) * fluid_at_pipe_inlet.density.to("lb/ft^3")

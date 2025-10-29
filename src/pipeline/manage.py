@@ -26,6 +26,8 @@ from src.pipeline.components import (
     PressureGauge,
     Regulator,
     TemperatureGauge,
+    Valve,
+    ValveState,
 )
 from src.pipeline.piping import PipeDirection
 from src.types import (
@@ -36,6 +38,7 @@ from src.types import (
     FluidConfig,
     PipeConfig,
     PipeLeakConfig,
+    ValveConfig,
     converter,
     structure_quantity,
     unstructure_quantity,
@@ -677,6 +680,21 @@ class PipelineManager(typing.Generic[PipelineT]):
                 )
                 leak_configs.append(leak_config)
 
+            # Build valve configs from pipe valves
+            valve_configs = []
+            if pipe._start_valve is not None:
+                valve_config = ValveConfig(
+                    position="start",
+                    state=pipe._start_valve.state.value.lower(),
+                )
+                valve_configs.append(valve_config)
+            if pipe._end_valve is not None:
+                valve_config = ValveConfig(
+                    position="end",
+                    state=pipe._end_valve.state.value.lower(),
+                )
+                valve_configs.append(valve_config)
+
             pipe_config = PipeConfig(
                 name=pipe.name or f"Pipe-{i + 1}",
                 length=pipe.length,  # type: ignore
@@ -692,6 +710,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 max_flow_rate=pipe.max_flow_rate,  # type: ignore
                 flow_type=pipe.flow_type,  # type: ignore
                 leaks=leak_configs,
+                valves=valve_configs,
             )
             self._pipe_configs.append(pipe_config)
 
@@ -832,6 +851,19 @@ class PipelineManager(typing.Generic[PipelineT]):
             )
             leaks.append(leak)
 
+        # Build valves from valve configs
+        start_valve = None
+        end_valve = None
+        for valve_config in pipe_config.valves:
+            valve = Valve(
+                position=valve_config.position,
+                state=ValveState(valve_config.state.lower()),
+            )
+            if valve_config.position == "start":
+                start_valve = valve
+            elif valve_config.position == "end":
+                end_valve = valve
+
         return Pipe(
             length=pipe_config.length,
             internal_diameter=pipe_config.internal_diameter,
@@ -848,6 +880,8 @@ class PipelineManager(typing.Generic[PipelineT]):
             max_flow_rate=pipe_config.max_flow_rate,
             flow_type=pipe_config.flow_type,
             leaks=leaks if leaks else None,
+            start_valve=start_valve,
+            end_valve=end_valve,
             ambient_pressure=pipe_config.ambient_pressure,
         )
 
@@ -1258,6 +1292,222 @@ class PipelineManager(typing.Generic[PipelineT]):
         """Get the total number of leaks in the pipeline."""
         return sum(len(pipe_config.leaks) for pipe_config in self._pipe_configs)
 
+    def add_valve(
+        self,
+        pipe_index: int,
+        position: typing.Literal["start", "end"],
+        valve: typing.Optional["Valve"] = None,
+    ) -> Self:
+        """
+        Add a valve to a specific pipe.
+
+        :param pipe_index: Index of the pipe to add valve to.
+        :param position: Position of valve ("start" or "end").
+        :param valve: Optional Valve instance (creates default if None).
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        try:
+            self._pipeline.add_valve(pipe_index, valve=valve, position=position)
+            self.sync(validate=True)
+            logger.info(
+                f"Added {position} valve to pipe '{pipe_config.name}' at index {pipe_index}"
+            )
+            self.notify(
+                "pipeline.valve.added",
+                {
+                    "pipe_index": pipe_index,
+                    "position": position,
+                    "pipe_config": pipe_config,
+                },
+            )
+        except Exception as exc:
+            logger.error(f"Failed to add valve: {exc}", exc_info=True)
+            raise
+
+        return self
+
+    def remove_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> Self:
+        """
+        Remove a valve from a specific pipe.
+
+        :param pipe_index: Index of the pipe to remove valve from.
+        :param position: Position of valve to remove ("start" or "end").
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        try:
+            self._pipeline.remove_valve(pipe_index, position=position)
+            self.sync(validate=True)
+            logger.info(
+                f"Removed {position} valve from pipe '{pipe_config.name}' at index {pipe_index}"
+            )
+            self.notify(
+                "pipeline.valve.removed",
+                {
+                    "pipe_index": pipe_index,
+                    "position": position,
+                    "pipe_config": pipe_config,
+                },
+            )
+        except Exception as exc:
+            logger.error(f"Failed to remove valve: {exc}", exc_info=True)
+            raise
+
+        return self
+
+    def toggle_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> Self:
+        """
+        Toggle a valve's state.
+
+        :param pipe_index: Index of the pipe containing the valve.
+        :param position: Position of valve to toggle ("start" or "end").
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        try:
+            self._pipeline.toggle_valve(pipe_index, position=position)
+            valve = self._pipeline.pipes[pipe_index].get_valve(position)
+            status = "opened" if valve and valve.is_open() else "closed"
+            self.sync(validate=True)
+            logger.info(
+                f"Toggled {position} valve on pipe '{pipe_config.name}' - now {status}"
+            )
+            self.notify(
+                "pipeline.valve.toggled",
+                {
+                    "pipe_index": pipe_index,
+                    "position": position,
+                    "status": status,
+                    "pipe_config": pipe_config,
+                },
+            )
+        except Exception as exc:
+            logger.error(f"Failed to toggle valve: {exc}", exc_info=True)
+            raise
+
+        return self
+
+    def open_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> Self:
+        """
+        Open a valve.
+
+        :param pipe_index: Index of the pipe containing the valve.
+        :param position: Position of valve to open ("start" or "end").
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        try:
+            self._pipeline.open_valve(pipe_index, position=position)
+            self.sync(validate=True)
+            logger.info(
+                f"Opened {position} valve on pipe '{pipe_config.name}' at index {pipe_index}"
+            )
+            self.notify(
+                "pipeline.valve.opened",
+                {
+                    "pipe_index": pipe_index,
+                    "position": position,
+                    "pipe_config": pipe_config,
+                },
+            )
+        except Exception as exc:
+            logger.error(f"Failed to open valve: {exc}", exc_info=True)
+            raise
+
+        return self
+
+    def close_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> Self:
+        """
+        Close a valve.
+
+        :param pipe_index: Index of the pipe containing the valve.
+        :param position: Position of valve to close ("start" or "end").
+        :return: Self for method chaining.
+        """
+        if not (0 <= pipe_index < len(self._pipe_configs)):
+            raise ValueError(f"Invalid pipe index: {pipe_index}")
+
+        pipe_config = self._pipe_configs[pipe_index]
+
+        try:
+            self._pipeline.close_valve(pipe_index, position=position)
+            self.sync(validate=True)
+            logger.info(
+                f"Closed {position} valve on pipe '{pipe_config.name}' at index {pipe_index}"
+            )
+            self.notify(
+                "pipeline.valve.closed",
+                {
+                    "pipe_index": pipe_index,
+                    "position": position,
+                    "pipe_config": pipe_config,
+                },
+            )
+        except Exception as exc:
+            logger.error(f"Failed to close valve: {exc}", exc_info=True)
+            raise
+
+        return self
+
+    def open_all_valves(self) -> Self:
+        """
+        Open all valves in the pipeline.
+
+        :return: Self for method chaining.
+        """
+        try:
+            self._pipeline.open_all_valves()
+            self.sync(validate=True)
+            logger.info("Opened all valves in pipeline")
+            self.notify("pipeline.valves.all_opened", {})
+        except Exception as exc:
+            logger.error(f"Failed to open all valves: {exc}", exc_info=True)
+            raise
+
+        return self
+
+    def close_all_valves(self) -> Self:
+        """
+        Close all valves in the pipeline.
+
+        :return: Self for method chaining.
+        """
+        try:
+            self._pipeline.close_all_valves()
+            self.sync(validate=True)
+            logger.info("Closed all valves in pipeline")
+            self.notify("pipeline.valves.all_closed", {})
+        except Exception as exc:
+            logger.error(f"Failed to close all valves: {exc}", exc_info=True)
+            raise
+
+        return self
+
     def validate(self):
         """Validate the current pipeline configuration."""
         errors = []
@@ -1444,6 +1694,19 @@ class PipelineManager(typing.Generic[PipelineT]):
                 )
                 leaks.append(leak)
 
+            # Build valves from valve configs
+            start_valve = None
+            end_valve = None
+            for valve_config in pc.valves:
+                valve = Valve(
+                    position=valve_config.position,
+                    state=ValveState(valve_config.state.lower()),
+                )
+                if valve_config.position == "start":
+                    start_valve = valve
+                elif valve_config.position == "end":
+                    end_valve = valve
+
             pipe = Pipe(
                 length=pc.length,
                 internal_diameter=pc.internal_diameter,
@@ -1460,6 +1723,8 @@ class PipelineManager(typing.Generic[PipelineT]):
                 max_flow_rate=pc.max_flow_rate,
                 flow_type=pc.flow_type,
                 leaks=leaks if leaks else None,
+                start_valve=start_valve,
+                end_valve=end_valve,
             )
             pipes.append(pipe)
 
@@ -1537,6 +1802,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             "pipeline.validation.changed", self.on_validation_changed
         )
         self.manager.subscribe("pipeline.leaks.cleared", self.on_leaks_cleared)
+
+        # Subscribe to valve events
+        self.manager.subscribe("pipeline.valve.added", self.on_valve_added)
+        self.manager.subscribe("pipeline.valve.removed", self.on_valve_removed)
+        self.manager.subscribe("pipeline.valve.toggled", self.on_valve_toggled)
+        self.manager.subscribe("pipeline.valve.opened", self.on_valve_opened)
+        self.manager.subscribe("pipeline.valve.closed", self.on_valve_closed)
 
         # UI components
         self.add_pipe_button = None
@@ -1705,6 +1977,75 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             data.get("refresh_flow_stations", False)
         ):
             self.refresh_flow_stations()
+
+    def on_valve_added(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle valve added events."""
+        if data is None:
+            return
+        position = data.get("position", "")
+        pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
+        ui.notify(
+            f"Added {position} valve to {pipe_name}",
+            type="success",
+            position="top",
+        )
+        self.refresh_properties_panel()
+        self.refresh_pipeline_preview()
+
+    def on_valve_removed(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle valve removed events."""
+        if data is None:
+            return
+        position = data.get("position", "")
+        pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
+        ui.notify(
+            f"Removed {position} valve from {pipe_name}",
+            type="success",
+            position="top",
+        )
+        self.refresh_properties_panel()
+        self.refresh_pipeline_preview()
+
+    def on_valve_toggled(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle valve toggled events."""
+        if data is None:
+            return
+        status = data.get("status", "")
+        ui.notify(
+            f"Valve {status}",
+            type="success",
+            position="top",
+        )
+        self.refresh_properties_panel()
+        self.refresh_pipeline_preview()
+
+    def on_valve_opened(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle valve opened events."""
+        if data is None:
+            return
+        position = data.get("position", "")
+        pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
+        ui.notify(
+            f"Opened {position} valve on {pipe_name}",
+            type="success",
+            position="top",
+        )
+        self.refresh_properties_panel()
+        self.refresh_pipeline_preview()
+
+    def on_valve_closed(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle valve closed events."""
+        if data is None:
+            return
+        position = data.get("position", "")
+        pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
+        ui.notify(
+            f"Closed {position} valve on {pipe_name}",
+            type="success",
+            position="top",
+        )
+        self.refresh_properties_panel()
+        self.refresh_pipeline_preview()
 
     def cleanup(self):
         """Clean up resources and remove observers."""
@@ -2645,6 +2986,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         ui.separator().classes("my-4")
         self.show_leak_management_panel(self.selected_pipe_index)
 
+        # Show valve management section
+        ui.separator().classes("my-4")
+        self.show_valve_management_panel(self.selected_pipe_index)
+
     def show_fluid_form(self):
         """Create form for editing fluid properties."""
         # Header with better styling
@@ -2730,7 +3075,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     )
                 )
 
-            # Update button - responsive
             ui.button(
                 "Update Fluid",
                 on_click=lambda: self.save_fluid_form(
@@ -2795,6 +3139,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     elevation_difference=Quantity(elevation, elevation_unit),  # type: ignore
                     efficiency=efficiency,
                     leaks=selected_pipe_config.leaks,
+                    valves=selected_pipe_config.valves,  # Preserve valves
                     ambient_pressure=selected_pipe_config.ambient_pressure,
                 )
                 self.manager.update_pipe(self.selected_pipe_index, updated_config)
@@ -3321,6 +3666,213 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 )
 
         dialog.open()
+
+    def show_valve_management_panel(self, pipe_index: int) -> ui.column:
+        """
+        Show valve management panel for a specific pipe.
+
+        :param pipe_index: Index of the pipe to manage valves for.
+        :return: The valve management panel container.
+        """
+        pipe_config = self.manager.get_pipe_configs()[pipe_index]
+        pipeline = self.manager.get_pipeline()
+
+        # Get valve status from the actual pipe in the pipeline
+        start_valve = None
+        end_valve = None
+        if pipeline and pipe_index < len(pipeline.pipes):
+            pipe = pipeline.pipes[pipe_index]
+            start_valve = pipe._start_valve
+            end_valve = pipe._end_valve
+
+        # Main valve management container
+        valve_panel = ui.column().classes("w-full gap-2 sm:gap-3")
+
+        with valve_panel:
+            # Header
+            header_row = ui.row().classes("w-full items-center justify-between")
+            with header_row:
+                ui.label(f"Valves in {pipe_config.name}").classes(
+                    "text-lg font-semibold"
+                )
+                valve_count = (1 if start_valve else 0) + (1 if end_valve else 0)
+                ui.badge(
+                    str(valve_count), color="green" if valve_count > 0 else "gray"
+                ).classes("ml-2")
+
+            # Start Valve Section
+            start_valve_card = (
+                ui.card()
+                .classes("w-full p-3 border-l-4")
+                .style(
+                    f"border-left-color: {'#10b981' if start_valve and start_valve.is_open() else '#6b7280' if start_valve else '#d1d5db'}"
+                )
+            )
+            with start_valve_card:
+                valve_row = ui.row().classes("w-full items-center justify-between")
+                with valve_row:
+                    info_col = ui.column().classes("flex-1")
+                    with info_col:
+                        ui.label("Start Valve").classes("font-medium")
+                        if start_valve:
+                            status_text = "OPEN" if start_valve.is_open() else "CLOSED"
+                            status_color = "green" if start_valve.is_open() else "red"
+                            ui.label(f"Status: {status_text}").classes(
+                                f"text-xs text-{status_color}-600 font-semibold"
+                            )
+                        else:
+                            ui.label("No valve installed").classes(
+                                "text-xs text-gray-500 italic"
+                            )
+
+                    # Action buttons
+                    actions_col = ui.row().classes("gap-1")
+                    with actions_col:
+                        if start_valve:
+                            # Toggle button
+                            toggle_btn = (
+                                ui.button(
+                                    icon="toggle_on"
+                                    if start_valve.is_open()
+                                    else "toggle_off",
+                                    color="green" if start_valve.is_open() else "red",
+                                )
+                                .props("size=sm")
+                                .tooltip(
+                                    "Close valve"
+                                    if start_valve.is_open()
+                                    else "Open valve"
+                                )
+                            )
+                            toggle_btn.on(
+                                "click",
+                                lambda: self.toggle_valve(pipe_index, "start"),
+                            )
+
+                            # Remove button
+                            ui.button(
+                                icon="delete",
+                                color="orange",
+                            ).props("size=sm").on(
+                                "click", lambda: self.remove_valve(pipe_index, "start")
+                            ).tooltip("Remove valve")
+                        else:
+                            # Add button
+                            ui.button(
+                                icon="add",
+                                color=self.theme_color,
+                            ).props("size=sm").on(
+                                "click", lambda: self.add_valve(pipe_index, "start")
+                            ).tooltip("Add start valve")
+
+            # End Valve Section
+            end_valve_card = (
+                ui.card()
+                .classes("w-full p-3 border-l-4 mt-2")
+                .style(
+                    f"border-left-color: {'#10b981' if end_valve and end_valve.is_open() else '#6b7280' if end_valve else '#d1d5db'}"
+                )
+            )
+            with end_valve_card:
+                valve_row = ui.row().classes("w-full items-center justify-between")
+                with valve_row:
+                    info_col = ui.column().classes("flex-1")
+                    with info_col:
+                        ui.label("End Valve").classes("font-medium")
+                        if end_valve:
+                            status_text = "OPEN" if end_valve.is_open() else "CLOSED"
+                            status_color = "green" if end_valve.is_open() else "red"
+                            ui.label(f"Status: {status_text}").classes(
+                                f"text-xs text-{status_color}-600 font-semibold"
+                            )
+                        else:
+                            ui.label("No valve installed").classes(
+                                "text-xs text-gray-500 italic"
+                            )
+
+                    # Action buttons
+                    actions_col = ui.row().classes("gap-1")
+                    with actions_col:
+                        if end_valve:
+                            # Toggle button
+                            toggle_btn = (
+                                ui.button(
+                                    icon="toggle_on"
+                                    if end_valve.is_open()
+                                    else "toggle_off",
+                                    color="green" if end_valve.is_open() else "red",
+                                )
+                                .props("size=sm")
+                                .tooltip(
+                                    "Close valve"
+                                    if end_valve.is_open()
+                                    else "Open valve"
+                                )
+                            )
+                            toggle_btn.on(
+                                "click",
+                                lambda: self.toggle_valve(pipe_index, "end"),
+                            )
+
+                            # Remove button
+                            ui.button(
+                                icon="delete",
+                                color="orange",
+                            ).props("size=sm").on(
+                                "click", lambda: self.remove_valve(pipe_index, "end")
+                            ).tooltip("Remove valve")
+                        else:
+                            # Add button
+                            ui.button(
+                                icon="add",
+                                color=self.theme_color,
+                            ).props("size=sm").on(
+                                "click", lambda: self.add_valve(pipe_index, "end")
+                            ).tooltip("Add end valve")
+
+        return valve_panel
+
+    def add_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> None:
+        """Add a valve to a pipe."""
+        try:
+            self.manager.add_valve(pipe_index, position=position)
+        except Exception as exc:
+            ui.notify(
+                f"Failed to add valve: {exc}",
+                type="negative",
+                position="top",
+            )
+            logger.error(f"Failed to add valve: {exc}", exc_info=True)
+
+    def remove_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> None:
+        """Remove a valve from a pipe."""
+        try:
+            self.manager.remove_valve(pipe_index, position=position)
+        except Exception as exc:
+            ui.notify(
+                f"Failed to remove valve: {exc}",
+                type="negative",
+                position="top",
+            )
+            logger.error(f"Failed to remove valve: {exc}", exc_info=True)
+
+    def toggle_valve(
+        self, pipe_index: int, position: typing.Literal["start", "end"]
+    ) -> None:
+        """Toggle a valve's state."""
+        try:
+            self.manager.toggle_valve(pipe_index, position=position)
+        except Exception as exc:
+            ui.notify(
+                f"Failed to toggle valve: {exc}",
+                type="negative",
+                position="top",
+            )
+            logger.error(f"Failed to toggle valve: {exc}", exc_info=True)
 
     def clear_pipe_selection(self):
         """Clear pipe selection and return to fluid properties."""
