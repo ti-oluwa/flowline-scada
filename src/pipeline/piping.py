@@ -840,7 +840,6 @@ class ValveComponent(PipeComponent):
         valve_height = diameter_pixels * 3  # Valve body height
 
         is_vertical = self.direction in [PipeDirection.NORTH, PipeDirection.SOUTH]
-
         if is_vertical:
             # Vertical valve
             center_x = self.canvas_width / 2
