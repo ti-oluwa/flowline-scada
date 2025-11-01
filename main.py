@@ -16,7 +16,7 @@ from nicegui import Client, ui
 from src.config import ConfigurationState, Configuration
 from src.storages import JSONFileStorage, RedisStorage
 from src.flow import FlowType, Fluid
-from src.pipeline.components import Pipeline
+from src.pipeline.core import Pipeline
 from src.pipeline.manage import (
     DownstreamStationFactory,
     PipelineManager,
@@ -128,8 +128,8 @@ def root(client: Client) -> ui.element:
             logger.info(f"Theme changed to: {new_theme}")
 
         # Pipeline manager interface
-        pipeline_manager_container = ui.column().classes("w-full")
-        with pipeline_manager_container:
+        manager_container = ui.column().classes("w-full")
+        with manager_container:
             pipeline_config = config.state.pipeline
             flow_station_config = config.state.flow_station
 
@@ -144,7 +144,7 @@ def root(client: Client) -> ui.element:
             if saved_state:
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
                 try:
-                    pipeline_manager = PipelineManager.load_state(
+                    manager = PipelineManager.load_state(
                         saved_state,
                         config=config,
                         flow_station_factories=[upstream_factory, downstream_factory],
@@ -178,7 +178,7 @@ def root(client: Client) -> ui.element:
                 pipeline.set_fluid(fluid)
 
                 # Build pipeline manager
-                pipeline_manager = PipelineManager(
+                manager = PipelineManager(
                     pipeline,
                     config=config,
                     flow_station_factories=[
@@ -197,11 +197,11 @@ def root(client: Client) -> ui.element:
                 logger.debug(
                     f"Pipeline state changed, updating storage for session {session_id!r}"
                 )
-                if not pipeline_manager.is_valid():
+                if not manager.is_valid():
                     logger.warning("Pipeline state is invalid, skipping state save")
                     return
 
-                state = pipeline_manager.dump_state()
+                state = manager.dump_state()
                 if not has_stored_state:
                     state_storage.create(client_state_key, state)
                 else:
@@ -210,12 +210,12 @@ def root(client: Client) -> ui.element:
                     f"Pipeline state storage updated for session {session_id!r}"
                 )
 
-            pipeline_manager.subscribe("pipeline.*", pipeline_state_callback)
+            manager.subscribe("pipeline.*", pipeline_state_callback)
 
             # Get the active unit system
             unit_system = config.get_unit_system()
             logger.info(f"Using unit system: {unit_system!s}")
-            manager_ui = PipelineManagerUI(manager=pipeline_manager)
+            manager_ui = PipelineManagerUI(manager=manager)
 
             # Observe configuration changes to update factories and UI
             @config.observe

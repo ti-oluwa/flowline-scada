@@ -19,16 +19,16 @@ __all__ = [
     "SVGComponent",
     "PipeComponent",
     "LeakInfo",
-    "HorizontalPipe",
-    "VerticalPipe",
+    "HorizontalPipeComponent",
+    "VerticalPipeComponent",
     "ValveComponent",
-    "StraightConnector",
-    "Pipeline",
-    "build_valve",
-    "build_horizontal_pipe",
-    "build_vertical_pipe",
-    "build_straight_connector",
-    "build_elbow_connector",
+    "StraightConnectorComponent",
+    "PipelineComponents",
+    "build_valve_component",
+    "build_horizontal_pipe_component",
+    "build_vertical_pipe_component",
+    "build_straight_connector_component",
+    "build_elbow_connector_component",
 ]
 
 
@@ -68,6 +68,10 @@ class SVGComponent:
     """Outlet connection point for this component."""
     viewbox: str
     """SVG viewBox attribute string defining the coordinate system."""
+
+    def __str__(self) -> str:
+        """Return the main SVG content as string."""
+        return self.main_svg
 
 
 @attrs.define(slots=True)
@@ -125,7 +129,7 @@ class PipeComponent(typing.Protocol):
         """Get the SVG component representation."""
         ...
 
-    def connect(self, other: "PipeComponent") -> "Pipeline":
+    def connect(self, other: "PipeComponent") -> "PipelineComponents":
         """Connect this component to another component."""
         ...
 
@@ -202,7 +206,7 @@ def physical_to_display_unit(
 
 
 @attrs.define(slots=True)
-class HorizontalPipe(PipeComponent):
+class HorizontalPipeComponent:
     """Horizontal pipe component."""
 
     direction: PipeDirection
@@ -232,7 +236,7 @@ class HorizontalPipe(PipeComponent):
         """Validate direction after initialization."""
         if self.direction not in [PipeDirection.EAST, PipeDirection.WEST]:
             raise ValueError(
-                f"HorizontalPipe direction must be EAST or WEST, got {self.direction}"
+                f"HorizontalPipeComponent direction must be EAST or WEST, got {self.direction}"
             )
 
     def get_svg_component(self) -> SVGComponent:
@@ -490,13 +494,13 @@ class HorizontalPipe(PipeComponent):
             viewbox=viewbox,
         )
 
-    def connect(self, other: PipeComponent) -> "Pipeline":
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
         """Connect this pipe to another component."""
-        return Pipeline([self, other])
+        return PipelineComponents([self, other])
 
 
 @attrs.define(slots=True)
-class VerticalPipe(PipeComponent):
+class VerticalPipeComponent:
     """Vertical pipe component."""
 
     direction: PipeDirection
@@ -530,7 +534,7 @@ class VerticalPipe(PipeComponent):
         """
         if self.direction not in [PipeDirection.NORTH, PipeDirection.SOUTH]:
             raise ValueError(
-                f"VerticalPipe direction must be NORTH or SOUTH, got {self.direction}"
+                f"VerticalPipeComponent direction must be NORTH or SOUTH, got {self.direction}"
             )
 
     def get_svg_component(self) -> SVGComponent:
@@ -786,13 +790,13 @@ class VerticalPipe(PipeComponent):
             viewbox=viewbox,
         )
 
-    def connect(self, other: PipeComponent) -> "Pipeline":
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
         """Connect this pipe to another component."""
-        return Pipeline([self, other])
+        return PipelineComponents([self, other])
 
 
 @attrs.define(slots=True)
-class ValveComponent(PipeComponent):
+class ValveComponent:
     """Valve component for flow control visualization."""
 
     direction: PipeDirection
@@ -944,18 +948,18 @@ class ValveComponent(PipeComponent):
             viewbox=viewbox,
         )
 
-    def connect(self, other: PipeComponent) -> "Pipeline":
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
         """Connect this valve to another component."""
-        return Pipeline([self, other])
+        return PipelineComponents([self, other])
 
 
 @attrs.define(slots=True)
-class StraightConnector(PipeComponent):
+class StraightConnectorComponent:
     """Straight connector between pipes of same direction."""
 
-    pipe1: PipeComponent
+    component1: PipeComponent
     """First pipe component (upstream)."""
-    pipe2: PipeComponent
+    component2: PipeComponent
     """Second pipe component (downstream)."""
     length: PlainQuantity[float] = attrs.field(factory=lambda: Quantity(50, "mm"))
     """Physical length of the connector."""
@@ -968,11 +972,13 @@ class StraightConnector(PipeComponent):
 
         :raises ValueError: If the connected pipes have different flow directions.
         """
-        svg1 = self.pipe1.get_svg_component()
-        svg2 = self.pipe2.get_svg_component()
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
 
         if svg1.outlet.direction != svg2.inlet.direction:
-            raise ValueError("StraightConnector requires pipes with same direction")
+            raise ValueError(
+                "StraightConnectorComponent requires pipes with same direction"
+            )
 
     def get_svg_component(self) -> SVGComponent:
         """
@@ -987,17 +993,20 @@ class StraightConnector(PipeComponent):
 
         :return: SVG representation of the straight connector.
         """
-        svg1 = self.pipe1.get_svg_component()
-        svg2 = self.pipe2.get_svg_component()
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
 
         direction = svg1.outlet.direction
         diameter1 = svg1.outlet.diameter
         diameter2 = svg2.inlet.diameter
         flow_rate = svg1.outlet.flow_rate
-        max_flow_rate = getattr(self.pipe1, "max_flow_rate", Quantity(10.0, "ft^3/s"))
+        max_flow_rate = getattr(
+            self.component1, "max_flow_rate", Quantity(10.0, "ft^3/s")
+        )
         if self.scale_factor is None:
             scale_factor = (
-                (self.pipe1.scale_factor or 1.0) + (self.pipe2.scale_factor or 1.0)
+                (self.component1.scale_factor or 1.0)
+                + (self.component2.scale_factor or 1.0)
             ) / 2
         else:
             scale_factor = self.scale_factor
@@ -1190,18 +1199,18 @@ class StraightConnector(PipeComponent):
             viewbox=viewbox,
         )
 
-    def connect(self, other: PipeComponent) -> "Pipeline":
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
         """Connect this connector to another component."""
-        return Pipeline([self, other])
+        return PipelineComponents([self, other])
 
 
 @attrs.define(slots=True)
-class ElbowConnector(PipeComponent):
+class ElbowConnectorComponent:
     """Elbow connector for direction changes."""
 
-    pipe1: PipeComponent
+    component1: PipeComponent
     """First pipe component (upstream)."""
-    pipe2: PipeComponent
+    component2: PipeComponent
     """Second pipe component (downstream)."""
     arm_length: PlainQuantity[float] = attrs.field(factory=lambda: Quantity(30, "mm"))
     """Length of each arm of the elbow connector."""
@@ -1214,11 +1223,13 @@ class ElbowConnector(PipeComponent):
 
         :raises ValueError: If the connected pipes have the same flow direction.
         """
-        svg1 = self.pipe1.get_svg_component()
-        svg2 = self.pipe2.get_svg_component()
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
 
         if svg1.outlet.direction == svg2.inlet.direction:
-            raise ValueError("ElbowConnector requires pipes with different directions")
+            raise ValueError(
+                "ElbowConnectorComponent requires pipes with different directions"
+            )
 
     def get_svg_component(self) -> SVGComponent:
         """
@@ -1238,19 +1249,22 @@ class ElbowConnector(PipeComponent):
 
         :return: SVG representation of the elbow connector.
         """
-        svg1 = self.pipe1.get_svg_component()
-        svg2 = self.pipe2.get_svg_component()
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
 
         inlet_dir = svg1.outlet.direction
         outlet_dir = svg2.inlet.direction
         diameter1 = svg1.outlet.diameter
         diameter2 = svg2.inlet.diameter
         flow_rate = svg1.outlet.flow_rate
-        max_flow_rate = getattr(self.pipe1, "max_flow_rate", Quantity(10.0, "ft^3/s"))
+        max_flow_rate = getattr(
+            self.component1, "max_flow_rate", Quantity(10.0, "ft^3/s")
+        )
 
         if self.scale_factor is None:
             scale_factor = (
-                (self.pipe1.scale_factor or 1.0) + (self.pipe2.scale_factor or 1.0)
+                (self.component1.scale_factor or 1.0)
+                + (self.component2.scale_factor or 1.0)
             ) / 2
         else:
             scale_factor = self.scale_factor
@@ -1433,13 +1447,13 @@ class ElbowConnector(PipeComponent):
             viewbox=viewbox,
         )
 
-    def connect(self, other: PipeComponent) -> "Pipeline":
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
         """Connect this connector to another component."""
-        return Pipeline([self, other])
+        return PipelineComponents([self, other])
 
 
 @attrs.define
-class Pipeline(PipeComponent):
+class PipelineComponents:
     """Pipeline composed of multiple connected components."""
 
     components: typing.List[PipeComponent] = attrs.field(factory=list)
@@ -1570,7 +1584,6 @@ class Pipeline(PipeComponent):
             diameter=first_comp["svg"].inlet.diameter,
             flow_rate=first_comp["svg"].inlet.flow_rate,
         )
-
         pipeline_outlet = ConnectionPoint(
             x=last_comp["x"] + last_comp["svg"].outlet.x + offset_x,
             y=last_comp["y"] + last_comp["svg"].outlet.y + offset_y,
@@ -1578,7 +1591,6 @@ class Pipeline(PipeComponent):
             diameter=last_comp["svg"].outlet.diameter,
             flow_rate=last_comp["svg"].outlet.flow_rate,
         )
-
         return SVGComponent(
             main_svg=main_svg,
             inner_content=combined_content,
@@ -1589,12 +1601,12 @@ class Pipeline(PipeComponent):
             viewbox=viewbox,
         )
 
-    def connect(self, other: PipeComponent) -> "Pipeline":
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
         """Connect this pipeline to another component."""
-        return Pipeline(self.components + [other])
+        return PipelineComponents(self.components + [other])
 
 
-def build_horizontal_pipe(
+def build_horizontal_pipe_component(
     direction: PipeDirection,
     internal_diameter: PlainQuantity[float],
     length: PlainQuantity[float],
@@ -1604,7 +1616,7 @@ def build_horizontal_pipe(
     canvas_width: float = 400.0,
     canvas_height: float = 100.0,
     leaks: typing.Optional[typing.List[LeakInfo]] = None,
-) -> HorizontalPipe:
+) -> HorizontalPipeComponent:
     """
     Build a horizontal pipe component.
 
@@ -1626,8 +1638,7 @@ def build_horizontal_pipe(
         flow_rate = Quantity(0.0, "ft^3/s")
     if max_flow_rate is None:
         max_flow_rate = Quantity(10.0, "ft^3/s")
-
-    return HorizontalPipe(
+    return HorizontalPipeComponent(
         direction=direction,
         internal_diameter=internal_diameter,
         length=length,
@@ -1640,7 +1651,7 @@ def build_horizontal_pipe(
     )
 
 
-def build_vertical_pipe(
+def build_vertical_pipe_component(
     direction: PipeDirection,
     internal_diameter: PlainQuantity[float],
     length: PlainQuantity[float],
@@ -1650,7 +1661,7 @@ def build_vertical_pipe(
     canvas_width: float = 100.0,
     canvas_height: float = 400.0,
     leaks: typing.Optional[typing.List[LeakInfo]] = None,
-) -> VerticalPipe:
+) -> VerticalPipeComponent:
     """
     Build a vertical pipe component.
 
@@ -1673,7 +1684,7 @@ def build_vertical_pipe(
     if max_flow_rate is None:
         max_flow_rate = Quantity(10.0, "ft^3/s")
 
-    return VerticalPipe(
+    return VerticalPipeComponent(
         direction=direction,
         internal_diameter=internal_diameter,
         length=length,
@@ -1686,19 +1697,19 @@ def build_vertical_pipe(
     )
 
 
-def build_straight_connector(
-    pipe1: PipeComponent,
-    pipe2: PipeComponent,
+def build_straight_connector_component(
+    component1: PipeComponent,
+    component2: PipeComponent,
     length: typing.Optional[PlainQuantity[float]] = None,
-) -> StraightConnector:
+) -> StraightConnectorComponent:
     """
     Build a straight connector between two pipes.
 
     Creates a straight connector for pipes flowing in the same direction.
     Automatically handles diameter transitions and flow direction.
 
-    :param pipe1: First pipe component (upstream).
-    :param pipe2: Second pipe component (downstream).
+    :param component1: First pipe component (upstream).
+    :param component2: Second pipe component (downstream).
     :param length: Physical length of connector. Defaults to 50 mm.
     :return: Configured straight connector.
     :raises ValueError: If pipes have different flow directions.
@@ -1706,22 +1717,24 @@ def build_straight_connector(
     if length is None:
         length = Quantity(50, "mm")
 
-    return StraightConnector(pipe1=pipe1, pipe2=pipe2, length=length)
+    return StraightConnectorComponent(
+        component1=component1, component2=component2, length=length
+    )
 
 
-def build_elbow_connector(
-    pipe1: PipeComponent,
-    pipe2: PipeComponent,
+def build_elbow_connector_component(
+    component1: PipeComponent,
+    component2: PipeComponent,
     arm_length: typing.Optional[PlainQuantity[float]] = None,
-) -> ElbowConnector:
+) -> ElbowConnectorComponent:
     """
     Build an elbow connector between two pipes.
 
     Creates a 90-degree elbow connector for pipes with different flow directions.
     Automatically determines the correct orientation based on pipe directions.
 
-    :param pipe1: First pipe component (upstream).
-    :param pipe2: Second pipe component (downstream).
+    :param component1: First pipe component (upstream).
+    :param component2: Second pipe component (downstream).
     :param arm_length: Length of each elbow arm. Defaults to 30 mm.
     :return: Configured elbow connector.
     :raises ValueError: If pipes have the same flow direction.
@@ -1729,13 +1742,15 @@ def build_elbow_connector(
     if arm_length is None:
         arm_length = Quantity(30, "mm")
 
-    return ElbowConnector(pipe1=pipe1, pipe2=pipe2, arm_length=arm_length)
+    return ElbowConnectorComponent(
+        component1=component1, component2=component2, arm_length=arm_length
+    )
 
 
-def build_valve(
+def build_valve_component(
     direction: PipeDirection,
     internal_diameter: PlainQuantity[float],
-    state: str = "open",
+    state: typing.Literal["open", "closed"] = "open",
     flow_rate: typing.Optional[PlainQuantity[float]] = None,
     scale_factor: float = 0.1,
     canvas_width: float = 80.0,

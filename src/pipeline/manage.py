@@ -15,7 +15,7 @@ from typing_extensions import Self
 from src.config.core import Configuration, ConfigurationState
 from src.config.ui import ConfigurationUI
 from src.flow import Fluid, SUPPORTED_FLUIDS
-from src.pipeline.components import (
+from src.pipeline.core import (
     FlowMeter,
     FlowStation,
     MassFlowMeter,
@@ -29,7 +29,7 @@ from src.pipeline.components import (
     Valve,
     ValveState,
 )
-from src.pipeline.piping import PipeDirection
+from src.pipeline.ui import PipeDirection
 from src.types import (
     EventCallback,
     EventSubscription,

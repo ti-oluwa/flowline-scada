@@ -15,6 +15,7 @@ AIR_DENSITY = Quantity(
     1.225, "kg/m^3"
 )  # Density of air at standard conditions - 1atm and 15°C
 SUPPORTED_FLUIDS = get_global_param_string("FluidsList").split(",")
+"""List of CoolProp supported fluids."""
 
 
 def is_supported_fluid(fluid_name: str) -> bool:
@@ -86,7 +87,7 @@ class Fluid:
         Create a Fluid instance by querying CoolProp for properties.
 
         :param fluid_name: Name of the fluid as recognized by CoolProp
-                           (e.g., "Methane", "CO2", "Water", "Nitrogen").
+            (e.g., "Methane", "CO2", "Water", "Nitrogen").
         :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
         :param temperature: Fluid temperature (as a Quantity, convertible to K).
         :param phase: Phase of the fluid: 'liquid' or 'gas'.
@@ -134,7 +135,7 @@ def compute_fluid_density(
     :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
     :param temperature: Fluid temperature (as a Quantity, convertible to K).
     :param fluid_name: Name of the fluid as recognized by CoolProp
-                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+        (e.g., "Methane", "CO2", "Water", "Nitrogen").
     :return: Fluid density as a Quantity (kg/m^3).
     """
     pressure_pa = pressure.to("Pa").magnitude
@@ -152,7 +153,7 @@ def compute_molecular_weight(fluid_name: str) -> PlainQuantity[float]:
     Compute the molecular weight of a fluid using CoolProp.
 
     :param fluid_name: Name of the fluid as recognized by CoolProp
-                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+        (e.g., "Methane", "CO2", "Water", "Nitrogen").
     :return: Molecular weight of the fluid as a Quantity (kg/mol).
     """
     molecular_weight_kg_per_mol = PropsSI("M", "P", 101325, "T", 298.15, fluid_name)
@@ -170,7 +171,7 @@ def compute_fluid_viscosity(
     :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
     :param temperature: Fluid temperature (as a Quantity, convertible to K).
     :param fluid_name: Name of the fluid as recognized by CoolProp
-                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+        (e.g., "Methane", "CO2", "Water", "Nitrogen").
     :return: Dynamic viscosity of the fluid as a Quantity (Pa·s).
     """
     pressure_pa = pressure.to("Pa").magnitude
@@ -191,7 +192,7 @@ def compute_fluid_compressibility_factor(
     :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
     :param temperature: Fluid temperature (as a Quantity, convertible to K).
     :param fluid_name: Name of the fluid as recognized by CoolProp
-                       (e.g., "Methane", "CO2", "Water", "Nitrogen").
+        (e.g., "Methane", "CO2", "Water", "Nitrogen").
     :return: Compressibility factor of the fluid (dimensionless).
     """
     pressure_pa = pressure.to("Pa").magnitude
@@ -1310,115 +1311,3 @@ def compute_tapered_pipe_pressure_drop(
         frictional_pressure_drop_pa + local_pressure_drop_pa
     ) * ureg.Pa
     return total_pressure_drop_pa.to("psi")  # type: ignore
-
-
-# def compute_tapered_pipe_pressure_drop(
-#     flow_rate: PlainQuantity[float],
-#     pipe_inlet_diameter: PlainQuantity[float],
-#     pipe_outlet_diameter: PlainQuantity[float],
-#     pipe_length: PlainQuantity[float],
-#     fluid_density: PlainQuantity[float],
-#     fluid_dynamic_viscosity: PlainQuantity[float],
-#     pipe_relative_roughness: float = 0.0,
-# ) -> PlainQuantity[float]:
-#     """
-#     Calculate the pressure drop across a tapered (reducer or expander) pipe using
-#     the Darcy-Weisbach equation for frictional losses and additional local
-#     loss coefficients for gradual contraction or expansion.
-
-#     The formula used combines frictional losses along the tapered length and
-#     local losses due to the change in diameter:
-
-#         ΔP_friction = f * (L/D_avg) * (ρ * V_avg^2 / 2)
-
-#         ΔP_local = K * (ρ * V_out^2 / 2)
-
-#         Total ΔP = ΔP_friction + ΔP_local
-#     where:
-#         - f is the Darcy-Weisbach friction factor (dimensionless)
-#         - L is the length of the tapered section (m)
-#         - D_avg is the average diameter of the pipe (m)
-#         - ρ is the fluid density (kg/m^3)
-#         - V_avg is the average velocity in the tapered section (m/s)
-#         - K is the local loss coefficient (dimensionless)
-#         - V_out is the velocity at the outlet of the tapered section (m/s)
-#         - ΔP is the pressure drop (Pa)
-#         - D_avg = (D_inlet + D_outlet) / 2
-#         - V_avg = (V_inlet + V_outlet) / 2
-#         - For gradual expansion: K = (1 - (A_inlet / A_outlet))^2
-#         - For gradual contraction: K = 0.5 * (1 - (A_outlet / A_inlet))^0.75
-
-#     :param flow_rate: Volumetric flow rate of the fluid (e.g., m^3/s)
-#     :param pipe_inlet_diameter: Internal diameter at the pipe inlet (e.g., m)
-#     :param pipe_outlet_diameter: Internal diameter at the pipe outlet (e.g., m)
-#     :param pipe_length: Length of the tapered section (e.g., m)
-#     :param fluid_density: Fluid density (e.g., kg/m^3)
-#     :param fluid_dynamic_viscosity: Fluid dynamic viscosity (e.g., Pa·s)
-#     :param pipe_relative_roughness: Relative roughness of the pipe (dimensionless, default 0.0)
-#     :return: Pressure drop across the tapered pipe in psi (as a Pint Quantity).
-#     """
-#     # Convert to SI units
-#     pipe_inlet_diameter_m = pipe_inlet_diameter.to("m").magnitude
-#     pipe_outlet_diameter_m = pipe_outlet_diameter.to("m").magnitude
-#     pipe_length_m = pipe_length.to("m").magnitude
-#     fluid_density_kg_per_m3 = fluid_density.to("kg/m^3").magnitude
-
-#     # Cross-sectional areas and average velocities
-#     area_inlet_m2 = math.pi * (pipe_inlet_diameter_m**2) / 4
-#     area_outlet_m2 = math.pi * (pipe_outlet_diameter_m**2) / 4
-#     velocity_inlet_m_per_s = flow_rate.to("m^3/s").magnitude / area_inlet_m2
-#     velocity_outlet_m_per_s = flow_rate.to("m^3/s").magnitude / area_outlet_m2
-
-#     # Average diameter and velocity for friction along taper
-#     average_pipe_diameter_m = (pipe_inlet_diameter_m + pipe_outlet_diameter_m) / 2
-#     average_velocity_m_per_s = (velocity_inlet_m_per_s + velocity_outlet_m_per_s) / 2
-
-#     # Reynolds number at inlet
-#     reynolds_number = compute_reynolds_number(
-#         current_flow_rate=flow_rate,
-#         pipe_internal_diameter=Quantity(average_pipe_diameter_m, "m"),
-#         fluid_density=fluid_density,
-#         fluid_dynamic_viscosity=fluid_dynamic_viscosity,
-#     )
-
-#     # Darcy-Weisbach friction factor
-#     friction_factor = compute_darcy_weisbach_friction_factor(
-#         reynolds_number=reynolds_number, relative_roughness=pipe_relative_roughness
-#     )
-
-#     # Frictional pressure drop along tapered length
-#     frictional_pressure_drop_pa = (
-#         friction_factor
-#         * (pipe_length_m / average_pipe_diameter_m)
-#         * 0.5
-#         * fluid_density_kg_per_m3
-#         * average_velocity_m_per_s**2
-#     )
-
-#     # Local loss coefficient for expansion or contraction
-#     if pipe_outlet_diameter_m > pipe_inlet_diameter_m:
-#         # Gradual expansion
-#         local_loss_coefficient = (1 - (area_inlet_m2 / area_outlet_m2)) ** 2
-#         local_pressure_drop_pa = (
-#             local_loss_coefficient
-#             * 0.5
-#             * fluid_density_kg_per_m3
-#             * velocity_outlet_m_per_s**2
-#         )
-#     else:
-#         # Gradual contraction
-#         local_loss_coefficient = 0.5 * (1 - (area_outlet_m2 / area_inlet_m2)) ** 0.75
-#         local_pressure_drop_pa = (
-#             local_loss_coefficient
-#             * 0.5
-#             * fluid_density_kg_per_m3
-#             * velocity_inlet_m_per_s**2
-#         )
-
-#     # Total pressure drop in Pa
-#     total_pressure_drop_pa = (
-#         frictional_pressure_drop_pa + local_pressure_drop_pa
-#     ) * ureg.Pa
-#     # Convert to psi
-#     total_pressure_drop_psi = total_pressure_drop_pa.to("psi")  # type: ignore
-#     return total_pressure_drop_psi
