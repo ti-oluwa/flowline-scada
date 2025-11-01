@@ -21,16 +21,16 @@ from src.flow import (
     determine_pipe_flow_equation,
 )
 from src.pipeline.ui import (
-    ConnectionPoint,
     LeakInfo,
     PipeComponent,
     PipeDirection,
     PipelineComponents,
     SVGComponent,
     build_elbow_connector_component,
+    build_elbow_valve_component,
     build_horizontal_pipe_component,
     build_straight_connector_component,
-    build_valve_component,
+    build_straight_valve_component,
     build_vertical_pipe_component,
 )
 from src.types import FlowEquation, FlowType
@@ -2223,26 +2223,7 @@ class Pipe:
         """
         modular_components = []
 
-        # Add start valve if present
-        if self._start_valve is not None:
-            valve_component = build_valve_component(
-                direction=self.direction,
-                internal_diameter=self.internal_diameter,
-                state=self._start_valve.state.value,
-                flow_rate=self.flow_rate
-                if self._start_valve.is_open()
-                else Quantity(0.0, "ft^3/s"),
-                scale_factor=self.scale_factor,
-                canvas_width=80.0
-                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
-                else 60.0,
-                canvas_height=60.0
-                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
-                else 80.0,
-            )
-            modular_components.append(valve_component)
-
-        # Add pipe itself
+        # Create pipe component first
         if not self._ignore_leaks:
             leaks = []
             for leak in self.leaks:
@@ -2291,22 +2272,25 @@ class Pipe:
                 canvas_height=100.0,
                 leaks=leaks,
             )
+
+        # Add start valve if present (before pipe)
+        if self._start_valve is not None:
+            valve_component = build_straight_valve_component(
+                component1=pipe_component,  # Dummy - valve uses pipe's properties
+                component2=pipe_component,  # Both same since single pipe
+                state=self._start_valve.state.value,
+            )
+            modular_components.append(valve_component)
+
+        # Add pipe itself
         modular_components.append(pipe_component)
 
-        # Add end valve if present
+        # Add end valve if present (after pipe)
         if self._end_valve is not None:
-            valve_component = build_valve_component(
-                direction=self.direction,
-                internal_diameter=self.internal_diameter,
+            valve_component = build_straight_valve_component(
+                component1=pipe_component,  # Dummy - valve uses pipe's properties
+                component2=pipe_component,  # Both same since single pipe
                 state=self._end_valve.state.value,
-                flow_rate=self.effective_outlet_flow_rate,
-                scale_factor=self.scale_factor,
-                canvas_width=80.0
-                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
-                else 60.0,
-                canvas_height=60.0
-                if self.direction in [PipeDirection.EAST, PipeDirection.WEST]
-                else 80.0,
             )
             modular_components.append(valve_component)
 
@@ -3120,27 +3104,16 @@ class Pipeline:
                 )
 
             # Add start valve if present (before the pipe)
-            if pipe._start_valve is not None:
-                if pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
-                    valve_component = build_valve_component(
-                        direction=pipe.direction,
-                        internal_diameter=pipe.internal_diameter,
-                        state=pipe._start_valve.state.value,
-                        flow_rate=pipe.flow_rate,
-                        scale_factor=pipe.scale_factor,
-                        canvas_width=80.0,
-                        canvas_height=60.0,
-                    )
-                else:
-                    valve_component = build_valve_component(
-                        direction=pipe.direction,
-                        internal_diameter=pipe.internal_diameter,
-                        state=pipe._start_valve.state.value,
-                        flow_rate=pipe.flow_rate,
-                        scale_factor=pipe.scale_factor,
-                        canvas_width=60.0,
-                        canvas_height=80.0,
-                    )
+            # Skip if previous pipe has end valve (to avoid duplication)
+            prev_pipe_has_end_valve = (
+                i > 0 and self._pipes[i - 1]._end_valve is not None
+            )
+            if pipe._start_valve is not None and not prev_pipe_has_end_valve:
+                valve_component = build_straight_valve_component(
+                    component1=pipe_component,
+                    component2=pipe_component,
+                    state=pipe._start_valve.state.value,
+                )
                 modular_components.append(valve_component)
 
             # Add the pipe component
@@ -3148,32 +3121,95 @@ class Pipeline:
 
             end_valve_component = None
             # Add end valve if present (after the pipe)
-            if pipe._end_valve is not None:
-                if pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
-                    valve_component = build_valve_component(
-                        direction=pipe.direction,
-                        internal_diameter=pipe.internal_diameter,
+            # Need to check if next pipe changes direction to use correct valve type
+            if pipe._end_valve is not None and i < (pipe_count - 1):
+                next_pipe = self._pipes[i + 1]
+
+                # Build next pipe component first if needed
+                if (i + 1) not in pipe_component_cache:
+                    if not self._ignore_leaks:
+                        leaks = []
+                        for leak in next_pipe.leaks:
+                            if next_pipe.fluid and next_pipe.flow_rate.magnitude > 0:
+                                leak_flow_rate = leak.compute_rate(
+                                    pipe_pressure=next_pipe.estimate_pressure_at_location(
+                                        leak.location
+                                    ),
+                                    ambient_pressure=next_pipe.ambient_pressure,
+                                    fluid_density=next_pipe.fluid.density,
+                                )
+                            else:
+                                leak_flow_rate = Quantity(0.0, "ft^3/s")
+
+                            if leak_flow_rate.magnitude > 0:
+                                leaks.append(
+                                    LeakInfo(
+                                        location=leak.location,
+                                        severity=leak.get_severity(leak_flow_rate),
+                                    )
+                                )
+                    else:
+                        leaks = None
+
+                    if next_pipe.direction in [PipeDirection.EAST, PipeDirection.WEST]:
+                        next_pipe_component = build_horizontal_pipe_component(
+                            direction=next_pipe.direction,
+                            internal_diameter=next_pipe.internal_diameter,
+                            length=next_pipe.length,
+                            flow_rate=next_pipe.flow_rate,
+                            max_flow_rate=next_pipe.max_flow_rate,
+                            scale_factor=next_pipe.scale_factor,
+                            canvas_width=400.0,
+                            canvas_height=100.0,
+                            leaks=leaks,
+                        )
+                    else:
+                        next_pipe_component = build_vertical_pipe_component(
+                            direction=next_pipe.direction,
+                            internal_diameter=next_pipe.internal_diameter,
+                            length=next_pipe.length,
+                            flow_rate=next_pipe.flow_rate,
+                            max_flow_rate=next_pipe.max_flow_rate,
+                            scale_factor=next_pipe.scale_factor,
+                            canvas_width=100.0,
+                            canvas_height=400.0,
+                            leaks=leaks,
+                        )
+                    pipe_component_cache[i + 1] = next_pipe_component
+                else:
+                    next_pipe_component = pipe_component_cache[i + 1]
+
+                # Determine valve type based on direction change
+                if pipe.direction != next_pipe.direction:
+                    # Direction change - use elbow valve
+                    valve_component = build_elbow_valve_component(
+                        component1=pipe_component,
+                        component2=next_pipe_component,
                         state=pipe._end_valve.state.value,
-                        flow_rate=pipe.flow_rate,
-                        scale_factor=pipe.scale_factor,
-                        canvas_width=80.0,
-                        canvas_height=60.0,
                     )
                 else:
-                    valve_component = build_valve_component(
-                        direction=pipe.direction,
-                        internal_diameter=pipe.internal_diameter,
+                    # Same direction - use straight valve
+                    valve_component = build_straight_valve_component(
+                        component1=pipe_component,
+                        component2=next_pipe_component,
                         state=pipe._end_valve.state.value,
-                        flow_rate=pipe.flow_rate,
-                        scale_factor=pipe.scale_factor,
-                        canvas_width=60.0,
-                        canvas_height=80.0,
                     )
                 end_valve_component = valve_component
                 modular_components.append(valve_component)
 
+            elif pipe._end_valve is not None:
+                # Last pipe with end valve - use straight valve with same component
+                valve_component = build_straight_valve_component(
+                    component1=pipe_component,
+                    component2=pipe_component,
+                    state=pipe._end_valve.state.value,
+                )
+                end_valve_component = valve_component
+                modular_components.append(valve_component)
+
             # Add connector to next pipe (if not the last pipe)
-            if i < (pipe_count - 1):
+            # Skip connector if there's an end valve - valve already acts as connector
+            if i < (pipe_count - 1) and end_valve_component is None:
                 next_pipe = self._pipes[i + 1]
                 if not self._ignore_leaks:
                     leaks = []
@@ -3235,14 +3271,14 @@ class Pipeline:
                 if pipe.direction != next_pipe.direction:
                     # Different directions - need elbow connector
                     connector = build_elbow_connector_component(
-                        component1=end_valve_component or pipe_component,
+                        component1=pipe_component,
                         component2=next_pipe_component,
                         arm_length=self.connector_length,
                     )
                 else:
                     # Same direction - need straight connector
                     connector = build_straight_connector_component(
-                        component1=end_valve_component or pipe_component,
+                        component1=pipe_component,
                         component2=next_pipe_component,
                         length=self.connector_length,
                     )
@@ -3254,65 +3290,10 @@ class Pipeline:
             svg_component = modular_components[0].get_svg_component()
             return svg_component
 
-        # Multiple pipes with connectors - create pipeline
-        try:
-            modular_pipeline = PipelineComponents(modular_components)
-            svg_component = modular_pipeline.get_svg_component()
-            return svg_component
-        except Exception:
-            # Fallback to simple concatenation if modular pipeline fails
-            # This provides a basic visualization even if the advanced layout fails
-            pipe_svgs = []
-            total_width = 0
-            max_height = 100
-
-            for i, component in enumerate(modular_components):
-                svg_comp = component.get_svg_component()
-                pipe_svgs.append(f"""
-                    <g transform="translate({total_width}, 0)">
-                        {svg_comp.inner_content}
-                    </g>
-                """)
-                total_width += svg_comp.width + 20  # Add spacing
-                max_height = max(max_height, svg_comp.height)
-
-            inner_content = f'''
-                {"".join(pipe_svgs)}
-                <!-- Fallback message -->
-                <text x="{total_width / 2}" y="{max_height - 10}" text-anchor="middle" 
-                      font-size="10" fill="#6b7280" opacity="0.7">
-                    Basic Pipeline View (Advanced layout unavailable)
-                </text>
-            '''
-
-            main_svg = f"""
-            <svg viewBox="0 0 {total_width} {max_height}" class="mx-auto" style="width: 100%; height: 100%; max-width: 100%;">
-                <defs>
-                    <linearGradient id="fallbackGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-                        <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.3" />
-                        <stop offset="50%" style="stop-color:#3b82f6;stop-opacity:0.6" />
-                        <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.3" />
-                    </linearGradient>
-                </defs>
-                {inner_content}
-            </svg>
-            """
-            return SVGComponent(
-                main_svg=main_svg,
-                inner_content=inner_content,
-                width=total_width,
-                height=max_height,
-                inlet=ConnectionPoint(
-                    x=0, y=max_height / 2, direction=PipeDirection.EAST, offset=0
-                ),
-                outlet=ConnectionPoint(
-                    x=total_width,
-                    y=max_height / 2,
-                    direction=PipeDirection.EAST,
-                    offset=0,
-                ),
-                viewbox=f"0 0 {total_width} {max_height}",
-            )
+        # Collate pipeline components
+        modular_pipeline = PipelineComponents(modular_components)
+        svg_component = modular_pipeline.get_svg_component()
+        return svg_component
 
     def is_connected(self, component1_idx: int, component2_idx: int) -> bool:
         """

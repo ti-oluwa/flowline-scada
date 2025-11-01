@@ -21,10 +21,12 @@ __all__ = [
     "LeakInfo",
     "HorizontalPipeComponent",
     "VerticalPipeComponent",
-    "ValveComponent",
+    "StraightValveComponent",
+    "ElbowValveComponent",
     "StraightConnectorComponent",
     "PipelineComponents",
-    "build_valve_component",
+    "build_straight_valve_component",
+    "build_elbow_valve_component",
     "build_horizontal_pipe_component",
     "build_vertical_pipe_component",
     "build_straight_connector_component",
@@ -796,54 +798,60 @@ class VerticalPipeComponent:
 
 
 @attrs.define(slots=True)
-class ValveComponent:
-    """Valve component for flow control visualization."""
+class StraightValveComponent:
+    """Straight valve component for flow control in straight pipe runs."""
 
-    direction: PipeDirection
-    """Flow direction through the valve."""
-    internal_diameter: PlainQuantity[float]
-    """Internal diameter of the pipe the valve is attached to."""
-    state: typing.Literal["open", "close"] = "open"
+    component1: PipeComponent
+    """First pipe component (upstream)."""
+    component2: PipeComponent
+    """Second pipe component (downstream)."""
+    state: typing.Literal["open", "closed"] = "open"
     """Valve state: "open" or "closed"."""
-    flow_rate: PlainQuantity[float] = attrs.field(
-        factory=lambda: Quantity(0.0, "ft^3/s")
-    )
-    """Current flow rate through the valve (0 if closed)."""
-    scale_factor: typing.Optional[float] = 0.1
-    """Scaling factor for converting physical dimensions to display pixels."""
+    scale_factor: typing.Optional[float] = None
+    """Scaling factor for converting physical dimensions to display pixels. If None, average of connected pipes is used."""
     canvas_width: float = 80.0
     """Width of the SVG canvas for this valve."""
     canvas_height: float = 80.0
     """Height of the SVG canvas for this valve."""
 
+    def __attrs_post_init__(self):
+        """Validate that pipes have the same direction."""
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
+
+        if svg1.outlet.direction != svg2.inlet.direction:
+            raise ValueError(
+                f"Straight valve requires same inlet and outlet directions, "
+                f"got {svg1.outlet.direction} and {svg2.inlet.direction}"
+            )
+
     def get_svg_component(self) -> SVGComponent:
         """
-        Generate SVG component for valve.
+        Generate SVG component for straight valve.
 
         Creates a complete SVG representation including:
         - Valve body with state-based coloring (green=open, red=closed)
         - Valve handle positioned appropriately
         - Connection points for joining with pipes
-        - State indicator text
         - Proper orientation based on flow direction
 
         :return: Complete SVG representation with connection information.
         """
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
+
+        direction = svg1.outlet.direction
+        diameter1 = svg1.outlet.diameter
+        diameter2 = svg2.inlet.diameter
+        flow_rate = svg1.outlet.flow_rate
+
+        # Use average diameter
+        diameter_pixels = (diameter1 + diameter2) / 2
+
         # Valve color based on state
         valve_color = "#10b981" if self.state == "open" else "#ef4444"
 
-        # Calculate valve dimensions based on pipe diameter
-        diameter_pixels = physical_to_display_unit(
-            self.internal_diameter,
-            self.scale_factor or 0.1,
-            min_display_unit=8,
-            max_display_unit=60,
-        )
-
-        valve_width = diameter_pixels * 2.5  # Valve is wider than pipe
-        valve_height = diameter_pixels * 3  # Valve body height
-
-        is_vertical = self.direction in [PipeDirection.NORTH, PipeDirection.SOUTH]
+        is_vertical = direction in [PipeDirection.NORTH, PipeDirection.SOUTH]
         if is_vertical:
             # Vertical valve
             center_x = self.canvas_width / 2
@@ -852,40 +860,85 @@ class ValveComponent:
             inlet_y = 0
             outlet_y = self.canvas_height
 
+            # Dimensions for valve body
+            body_radius = diameter_pixels * 1.2
+            pipe_width = diameter_pixels
+            connector_length = body_radius * 0.8
+            handle_width = pipe_width * 0.5
+            handle_length = body_radius * 1.2
+
             inner_content = f'''
-                <g transform="translate({center_x}, {center_y})">
-                    <!-- Valve body -->
-                    <rect x="{-valve_width / 2}" y="{-valve_height / 2}" 
-                          width="{valve_width}" height="{valve_height}" 
-                          fill="{valve_color}" stroke="#1e293b" stroke-width="2" rx="4"/>
-                    <!-- Valve handle -->
-                    <line x1="0" y1="{-valve_height / 2}" x2="0" y2="{-valve_height / 2 - 20}" 
-                          stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
-                    <circle cx="0" cy="{-valve_height / 2 - 20}" r="6" fill="#1e293b"/>
-                    <!-- State indicator -->
-                    <text x="0" y="5" text-anchor="middle" font-size="10" 
-                          fill="white" font-weight="bold">{self.state[0].upper()}</text>
-                </g>
+                <!-- Top pipe connector -->
+                <rect x="{center_x - pipe_width / 2}" y="{inlet_y}" 
+                      width="{pipe_width}" height="{center_y - body_radius - connector_length}" 
+                      fill="#6b7280" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Top cylindrical connector -->
+                <rect x="{center_x - pipe_width / 2}" y="{center_y - body_radius - connector_length}" 
+                      width="{pipe_width}" height="{connector_length}" 
+                      fill="#9ca3af" stroke="#374151" stroke-width="1.5" rx="{pipe_width / 2}"/>
+                <ellipse cx="{center_x}" cy="{center_y - body_radius - connector_length}" 
+                         rx="{pipe_width / 2}" ry="{pipe_width / 4}" 
+                         fill="#d1d5db" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Bottom cylindrical connector -->
+                <rect x="{center_x - pipe_width / 2}" y="{center_y + body_radius}" 
+                      width="{pipe_width}" height="{connector_length}" 
+                      fill="#9ca3af" stroke="#374151" stroke-width="1.5" rx="{pipe_width / 2}"/>
+                <ellipse cx="{center_x}" cy="{center_y + body_radius + connector_length}" 
+                         rx="{pipe_width / 2}" ry="{pipe_width / 4}" 
+                         fill="#d1d5db" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Bottom pipe connector -->
+                <rect x="{center_x - pipe_width / 2}" y="{center_y + body_radius + connector_length}" 
+                      width="{pipe_width}" height="{outlet_y - (center_y + body_radius + connector_length)}" 
+                      fill="#6b7280" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Outer valve body ring -->
+                <circle cx="{center_x}" cy="{center_y}" r="{body_radius}" 
+                        fill="#1f2937" stroke="#374151" stroke-width="2"/>
+                
+                <!-- Middle ring -->
+                <circle cx="{center_x}" cy="{center_y}" r="{body_radius * 0.75}" 
+                        fill="{valve_color}" stroke="#374151" stroke-width="2"/>
+                
+                <!-- Inner ring -->
+                <circle cx="{center_x}" cy="{center_y}" r="{body_radius * 0.5}" 
+                        fill="{valve_color}" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Handle stem -->
+                <rect x="{center_x - handle_width / 2}" y="{center_y - body_radius - handle_length}" 
+                      width="{handle_width}" height="{handle_length}" 
+                      fill="#6b7280" stroke="#374151" stroke-width="1.5" rx="{handle_width / 3}"/>
+                
+                <!-- Handle grip (top) -->
+                <circle cx="{center_x}" cy="{center_y - body_radius - handle_length}" 
+                        r="{handle_width * 0.8}" 
+                        fill="#9ca3af" stroke="#374151" stroke-width="1.5"/>
+                <circle cx="{center_x}" cy="{center_y - body_radius - handle_length}" 
+                        r="{handle_width * 0.4}" 
+                        fill="#6b7280" stroke="#374151" stroke-width="1"/>
+                
                 <!-- Connection points -->
-                <circle cx="{center_x}" cy="{inlet_y}" r="3" 
-                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-                <circle cx="{center_x}" cy="{outlet_y}" r="3" 
-                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
+                <circle cx="{center_x}" cy="{inlet_y}" r="2" 
+                        fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
+                <circle cx="{center_x}" cy="{outlet_y}" r="2" 
+                        fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
             '''
 
             inlet = ConnectionPoint(
                 x=center_x,
                 y=inlet_y,
-                direction=self.direction,
+                direction=direction,
                 diameter=diameter_pixels,
-                flow_rate=self.flow_rate,
+                flow_rate=flow_rate,
             )
             outlet = ConnectionPoint(
                 x=center_x,
                 y=outlet_y,
-                direction=self.direction,
+                direction=direction,
                 diameter=diameter_pixels,
-                flow_rate=self.flow_rate,
+                flow_rate=flow_rate,
             )
         else:
             # Horizontal valve
@@ -895,40 +948,85 @@ class ValveComponent:
             inlet_x = 0
             outlet_x = self.canvas_width
 
+            # Dimensions for valve body
+            body_radius = diameter_pixels * 1.2
+            pipe_height = diameter_pixels
+            connector_length = body_radius * 0.8
+            handle_width = pipe_height * 0.5
+            handle_length = body_radius * 1.2
+
             inner_content = f'''
-                <g transform="translate({center_x}, {center_y})">
-                    <!-- Valve body -->
-                    <rect x="{-valve_height / 2}" y="{-valve_width / 2}" 
-                          width="{valve_height}" height="{valve_width}" 
-                          fill="{valve_color}" stroke="#1e293b" stroke-width="2" rx="4"/>
-                    <!-- Valve handle -->
-                    <line x1="{-valve_height / 2}" y1="0" x2="{-valve_height / 2 - 20}" y2="0" 
-                          stroke="#1e293b" stroke-width="4" stroke-linecap="round"/>
-                    <circle cx="{-valve_height / 2 - 20}" cy="0" r="6" fill="#1e293b"/>
-                    <!-- State indicator -->
-                    <text x="0" y="5" text-anchor="middle" font-size="10" 
-                          fill="white" font-weight="bold">{self.state[0].upper()}</text>
-                </g>
+                <!-- Left pipe connector -->
+                <rect x="{inlet_x}" y="{center_y - pipe_height / 2}" 
+                      width="{center_x - body_radius - connector_length}" height="{pipe_height}" 
+                      fill="#6b7280" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Left cylindrical connector -->
+                <rect x="{center_x - body_radius - connector_length}" y="{center_y - pipe_height / 2}" 
+                      width="{connector_length}" height="{pipe_height}" 
+                      fill="#9ca3af" stroke="#374151" stroke-width="1.5" ry="{pipe_height / 2}"/>
+                <ellipse cx="{center_x - body_radius - connector_length}" cy="{center_y}" 
+                         rx="{pipe_height / 4}" ry="{pipe_height / 2}" 
+                         fill="#d1d5db" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Right cylindrical connector -->
+                <rect x="{center_x + body_radius}" y="{center_y - pipe_height / 2}" 
+                      width="{connector_length}" height="{pipe_height}" 
+                      fill="#9ca3af" stroke="#374151" stroke-width="1.5" ry="{pipe_height / 2}"/>
+                <ellipse cx="{center_x + body_radius + connector_length}" cy="{center_y}" 
+                         rx="{pipe_height / 4}" ry="{pipe_height / 2}" 
+                         fill="#d1d5db" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Right pipe connector -->
+                <rect x="{center_x + body_radius + connector_length}" y="{center_y - pipe_height / 2}" 
+                      width="{outlet_x - (center_x + body_radius + connector_length)}" height="{pipe_height}" 
+                      fill="#6b7280" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Outer valve body ring -->
+                <circle cx="{center_x}" cy="{center_y}" r="{body_radius}" 
+                        fill="#1f2937" stroke="#374151" stroke-width="2"/>
+                
+                <!-- Middle ring -->
+                <circle cx="{center_x}" cy="{center_y}" r="{body_radius * 0.75}" 
+                        fill="{valve_color}" stroke="#374151" stroke-width="2"/>
+                
+                <!-- Inner ring -->
+                <circle cx="{center_x}" cy="{center_y}" r="{body_radius * 0.5}" 
+                        fill="{valve_color}" stroke="#374151" stroke-width="1.5"/>
+                
+                <!-- Handle stem -->
+                <rect x="{center_x - handle_width / 2}" y="{center_y - body_radius - handle_length}" 
+                      width="{handle_width}" height="{handle_length}" 
+                      fill="#6b7280" stroke="#374151" stroke-width="1.5" rx="{handle_width / 3}"/>
+                
+                <!-- Handle grip (top) -->
+                <circle cx="{center_x}" cy="{center_y - body_radius - handle_length}" 
+                        r="{handle_width * 0.8}" 
+                        fill="#9ca3af" stroke="#374151" stroke-width="1.5"/>
+                <circle cx="{center_x}" cy="{center_y - body_radius - handle_length}" 
+                        r="{handle_width * 0.4}" 
+                        fill="#6b7280" stroke="#374151" stroke-width="1"/>
+                
                 <!-- Connection points -->
-                <circle cx="{inlet_x}" cy="{center_y}" r="3" 
-                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
-                <circle cx="{outlet_x}" cy="{center_y}" r="3" 
-                        fill="#dc2626" stroke="#ffffff" stroke-width="1"/>
+                <circle cx="{inlet_x}" cy="{center_y}" r="2" 
+                        fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
+                <circle cx="{outlet_x}" cy="{center_y}" r="2" 
+                        fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
             '''
 
             inlet = ConnectionPoint(
                 x=inlet_x,
                 y=center_y,
-                direction=self.direction,
+                direction=direction,
                 diameter=diameter_pixels,
-                flow_rate=self.flow_rate,
+                flow_rate=flow_rate,
             )
             outlet = ConnectionPoint(
                 x=outlet_x,
                 y=center_y,
-                direction=self.direction,
+                direction=direction,
                 diameter=diameter_pixels,
-                flow_rate=self.flow_rate,
+                flow_rate=flow_rate,
             )
 
         # Generate complete SVG
@@ -938,6 +1036,270 @@ class ValveComponent:
             {inner_content}
         </svg>
         '''
+        return SVGComponent(
+            main_svg=main_svg,
+            inner_content=inner_content,
+            width=self.canvas_width,
+            height=self.canvas_height,
+            inlet=inlet,
+            outlet=outlet,
+            viewbox=viewbox,
+        )
+
+    def connect(self, other: PipeComponent) -> "PipelineComponents":
+        """Connect this valve to another component."""
+        return PipelineComponents([self, other])
+
+
+@attrs.define(slots=True)
+class ElbowValveComponent:
+    """Elbow valve component for flow control at direction changes (90-degree turns)."""
+
+    component1: PipeComponent
+    """First pipe component (upstream)."""
+    component2: PipeComponent
+    """Second pipe component (downstream)."""
+    state: typing.Literal["open", "closed"] = "open"
+    """Valve state: "open" or "closed"."""
+    scale_factor: typing.Optional[float] = None
+    """Scaling factor for converting physical dimensions to display pixels. If None, average of connected pipes is used."""
+    canvas_width: float = 100.0
+    """Width of the SVG canvas for this valve."""
+    canvas_height: float = 100.0
+    """Height of the SVG canvas for this valve."""
+
+    def __attrs_post_init__(self):
+        """Validate that pipes form a 90-degree turn."""
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
+
+        inlet_direction = svg1.outlet.direction
+        outlet_direction = svg2.inlet.direction
+
+        # Check that directions are perpendicular (not same or opposite)
+        same_axis_pairs = [
+            (PipeDirection.NORTH, PipeDirection.SOUTH),
+            (PipeDirection.SOUTH, PipeDirection.NORTH),
+            (PipeDirection.EAST, PipeDirection.WEST),
+            (PipeDirection.WEST, PipeDirection.EAST),
+        ]
+
+        if inlet_direction == outlet_direction:
+            raise ValueError(
+                f"Elbow valve requires different inlet and outlet directions, got both {inlet_direction}"
+            )
+
+        if (inlet_direction, outlet_direction) in same_axis_pairs:
+            raise ValueError(
+                f"Elbow valve cannot connect opposing directions: {inlet_direction} to {outlet_direction}"
+            )
+
+    def get_svg_component(self) -> SVGComponent:
+        """
+        Generate SVG component for elbow valve.
+
+        Creates a compact valve at the corner/elbow junction.
+        """
+        svg1 = self.component1.get_svg_component()
+        svg2 = self.component2.get_svg_component()
+
+        inlet_direction = svg1.outlet.direction
+        outlet_direction = svg2.inlet.direction
+        diameter1 = svg1.outlet.diameter
+        diameter2 = svg2.inlet.diameter
+        flow_rate = svg1.outlet.flow_rate
+
+        # Use average diameter
+        diameter_pixels = (diameter1 + diameter2) / 2
+
+        valve_color = "#10b981" if self.state == "open" else "#ef4444"
+
+        body_radius = diameter_pixels * 1.2
+        pipe_size = diameter_pixels
+        handle_width = pipe_size * 0.5
+        handle_length = body_radius * 1.0
+
+        # Uses EXACT same logic as `ElbowConnectorComponent`
+        margin = 10
+        center_x = self.canvas_width / 2
+        center_y = self.canvas_height / 2
+
+        # Determine elbow orientation (same as connector)
+        orientation_map = {
+            (inlet_direction, outlet_direction): {
+                (PipeDirection.EAST, PipeDirection.NORTH): ("west", "north"),
+                (PipeDirection.EAST, PipeDirection.SOUTH): ("west", "south"),
+                (PipeDirection.WEST, PipeDirection.NORTH): ("east", "north"),
+                (PipeDirection.WEST, PipeDirection.SOUTH): ("east", "south"),
+                (PipeDirection.SOUTH, PipeDirection.EAST): ("north", "east"),
+                (PipeDirection.SOUTH, PipeDirection.WEST): ("north", "west"),
+                (PipeDirection.NORTH, PipeDirection.EAST): ("south", "east"),
+                (PipeDirection.NORTH, PipeDirection.WEST): ("south", "west"),
+            }.get((inlet_direction, outlet_direction), ("west", "north"))
+        }
+
+        inlet_face, outlet_face = orientation_map[(inlet_direction, outlet_direction)]
+
+        # Calculate positions at edges (same as connector)
+        if inlet_face == "west":
+            inlet_x, inlet_y = margin, center_y
+        elif inlet_face == "east":
+            inlet_x, inlet_y = self.canvas_width - margin, center_y
+        elif inlet_face == "north":
+            inlet_x, inlet_y = center_x, margin
+        else:  # south
+            inlet_x, inlet_y = center_x, self.canvas_height - margin
+
+        if outlet_face == "west":
+            outlet_x, outlet_y = margin, center_y
+        elif outlet_face == "east":
+            outlet_x, outlet_y = self.canvas_width - margin, center_y
+        elif outlet_face == "north":
+            outlet_x, outlet_y = center_x, margin
+        else:  # south
+            outlet_x, outlet_y = center_x, self.canvas_height - margin
+
+        # Create elbow geometry (same as connector)
+        inner_content = ""
+
+        if inlet_face in ["west", "east"] and outlet_face in ["north", "south"]:
+            # Horizontal to vertical
+            if inlet_face == "west":
+                h_start_x = inlet_x
+                h_width = center_x - inlet_x + pipe_size / 2
+            else:  # east
+                h_start_x = center_x - pipe_size / 2
+                h_width = inlet_x - center_x + pipe_size / 2
+
+            inner_content += f'''
+            <rect x="{h_start_x}" y="{center_y - pipe_size / 2}" 
+                  width="{h_width}" height="{pipe_size}" 
+                  fill="#9ca3af" stroke="#374151" stroke-width="1.5" ry="{pipe_size / 2}"/>
+            '''
+
+            if outlet_face == "north":
+                v_start_y = outlet_y
+                v_height = center_y - outlet_y + pipe_size / 2
+            else:  # south
+                v_start_y = center_y - pipe_size / 2
+                v_height = outlet_y - center_y + pipe_size / 2
+
+            inner_content += f'''
+            <rect x="{center_x - pipe_size / 2}" y="{v_start_y}" 
+                  width="{pipe_size}" height="{v_height}" 
+                  fill="#9ca3af" stroke="#374151" stroke-width="1.5" rx="{pipe_size / 2}"/>
+            '''
+        else:
+            # Vertical to horizontal
+            if inlet_face == "north":
+                v_start_y = inlet_y
+                v_height = center_y - inlet_y + pipe_size / 2
+            else:  # south
+                v_start_y = center_y - pipe_size / 2
+                v_height = inlet_y - center_y + pipe_size / 2
+
+            inner_content += f'''
+            <rect x="{center_x - pipe_size / 2}" y="{v_start_y}" 
+                  width="{pipe_size}" height="{v_height}" 
+                  fill="#9ca3af" stroke="#374151" stroke-width="1.5" rx="{pipe_size / 2}"/>
+            '''
+
+            if outlet_face == "west":
+                h_start_x = outlet_x
+                h_width = center_x - outlet_x + pipe_size / 2
+            else:  # east
+                h_start_x = center_x - pipe_size / 2
+                h_width = outlet_x - center_x + pipe_size / 2
+
+            inner_content += f'''
+            <rect x="{h_start_x}" y="{center_y - pipe_size / 2}" 
+                  width="{h_width}" height="{pipe_size}" 
+                  fill="#9ca3af" stroke="#374151" stroke-width="1.5" ry="{pipe_size / 2}"/>
+            '''
+
+        # Valve body is at the center junction
+        valve_x = center_x
+        valve_y = center_y
+
+        # Handle (tail) should face opposite direction of outlet
+        if outlet_direction == PipeDirection.WEST:
+            # Outlet goes left, handle points right
+            handle_x = valve_x + body_radius
+            handle_y = valve_y
+            handle_stem = f'<rect x="{handle_x}" y="{valve_y - handle_width / 2}" width="{handle_length}" height="{handle_width}" fill="#6b7280" stroke="#374151" stroke-width="1.5" ry="{handle_width / 3}"/>'
+            handle_cx = handle_x + handle_length
+            handle_cy = valve_y
+        elif outlet_direction == PipeDirection.EAST:
+            # Outlet goes right, handle points left
+            handle_x = valve_x - body_radius - handle_length
+            handle_y = valve_y
+            handle_stem = f'<rect x="{handle_x}" y="{valve_y - handle_width / 2}" width="{handle_length}" height="{handle_width}" fill="#6b7280" stroke="#374151" stroke-width="1.5" ry="{handle_width / 3}"/>'
+            handle_cx = handle_x
+            handle_cy = valve_y
+        elif outlet_direction == PipeDirection.NORTH:
+            # Outlet goes up, handle points down
+            handle_x = valve_x
+            handle_y = valve_y + body_radius
+            handle_stem = f'<rect x="{valve_x - handle_width / 2}" y="{handle_y}" width="{handle_width}" height="{handle_length}" fill="#6b7280" stroke="#374151" stroke-width="1.5" rx="{handle_width / 3}"/>'
+            handle_cx = valve_x
+            handle_cy = handle_y + handle_length
+        else:  # SOUTH
+            # Outlet goes down, handle points up
+            handle_x = valve_x
+            handle_y = valve_y - body_radius - handle_length
+            handle_stem = f'<rect x="{valve_x - handle_width / 2}" y="{handle_y}" width="{handle_width}" height="{handle_length}" fill="#6b7280" stroke="#374151" stroke-width="1.5" rx="{handle_width / 3}"/>'
+            handle_cx = valve_x
+            handle_cy = handle_y
+
+        inner_content += f'''
+            <!-- Valve body at center junction -->
+            <circle cx="{valve_x}" cy="{valve_y}" r="{body_radius}" 
+                    fill="#1f2937" stroke="#374151" stroke-width="2"/>
+            <circle cx="{valve_x}" cy="{valve_y}" r="{body_radius * 0.75}" 
+                    fill="{valve_color}" stroke="#374151" stroke-width="2"/>
+            <circle cx="{valve_x}" cy="{valve_y}" r="{body_radius * 0.5}" 
+                    fill="{valve_color}" stroke="#374151" stroke-width="1.5"/>
+            
+            <!-- Handle stem (tail) facing opposite of outlet -->
+            {handle_stem}
+            
+            <!-- Handle grip -->
+            <circle cx="{handle_cx}" cy="{handle_cy}" 
+                    r="{handle_width * 0.8}" 
+                    fill="#9ca3af" stroke="#374151" stroke-width="1.5"/>
+            <circle cx="{handle_cx}" cy="{handle_cy}" 
+                    r="{handle_width * 0.4}" 
+                    fill="#6b7280" stroke="#374151" stroke-width="1"/>
+            
+            <!-- Connection points -->
+            <circle cx="{inlet_x}" cy="{inlet_y}" r="2" 
+                    fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
+            <circle cx="{outlet_x}" cy="{outlet_y}" r="2" 
+                    fill="#ef4444" stroke="#ffffff" stroke-width="1"/>
+        '''
+
+        viewbox = f"0 0 {self.canvas_width} {self.canvas_height}"
+        main_svg = f'''
+        <svg viewBox="{viewbox}" class="mx-auto" style="width: 100%; height: auto; max-width: 100%;">
+            {inner_content}
+        </svg>
+        '''
+
+        inlet = ConnectionPoint(
+            x=inlet_x,
+            y=inlet_y,
+            direction=inlet_direction,
+            diameter=diameter_pixels,
+            flow_rate=flow_rate,
+        )
+        outlet = ConnectionPoint(
+            x=outlet_x,
+            y=outlet_y,
+            direction=outlet_direction,
+            diameter=diameter_pixels,
+            flow_rate=flow_rate,
+        )
+
         return SVGComponent(
             main_svg=main_svg,
             inner_content=inner_content,
@@ -1747,38 +2109,75 @@ def build_elbow_connector_component(
     )
 
 
-def build_valve_component(
-    direction: PipeDirection,
-    internal_diameter: PlainQuantity[float],
+def build_straight_valve_component(
+    component1: PipeComponent,
+    component2: PipeComponent,
     state: typing.Literal["open", "closed"] = "open",
-    flow_rate: typing.Optional[PlainQuantity[float]] = None,
-    scale_factor: float = 0.1,
-    canvas_width: float = 80.0,
-    canvas_height: float = 80.0,
-) -> ValveComponent:
+    canvas_width: typing.Optional[float] = None,
+    canvas_height: typing.Optional[float] = None,
+) -> StraightValveComponent:
     """
-    Build a valve component for the pipeline.
+    Build a straight valve component for the pipeline.
 
-    Convenience function for creating valves with proper defaults.
+    Convenience function for creating straight valves with proper defaults.
+    Use for valves in straight pipe runs (same direction in and out).
 
-    :param direction: Flow direction (affects valve orientation)
-    :param internal_diameter: Diameter of pipe valve is attached to
+    :param component1: First pipe component (upstream)
+    :param component2: Second pipe component (downstream, must have same direction)
     :param state: Valve state ("open" or "closed")
-    :param flow_rate: Current flow rate. Defaults to 0.0 ft³/s.
-    :param scale_factor: Display scale factor
+    :param canvas_width: Canvas width in pixels (auto-sized based on direction if None)
+    :param canvas_height: Canvas height in pixels (auto-sized based on direction if None)
+    :return: Configured straight valve component
+    :raises ValueError: If pipes have different directions
+    """
+    # Auto-size canvas based on direction if not specified
+    if canvas_width is None or canvas_height is None:
+        svg1 = component1.get_svg_component()
+        direction = svg1.outlet.direction
+
+        if direction in [PipeDirection.EAST, PipeDirection.WEST]:
+            canvas_width = canvas_width or 80.0
+            canvas_height = canvas_height or 60.0
+        else:  # NORTH or SOUTH
+            canvas_width = canvas_width or 60.0
+            canvas_height = canvas_height or 80.0
+
+    return StraightValveComponent(
+        component1=component1,
+        component2=component2,
+        state=state,
+        scale_factor=None,  # Will be computed from components
+        canvas_width=canvas_width,
+        canvas_height=canvas_height,
+    )
+
+
+def build_elbow_valve_component(
+    component1: PipeComponent,
+    component2: PipeComponent,
+    state: typing.Literal["open", "closed"] = "open",
+    canvas_width: float = 100.0,
+    canvas_height: float = 100.0,
+) -> ElbowValveComponent:
+    """
+    Build an elbow valve component for the pipeline.
+
+    Convenience function for creating elbow valves with proper defaults.
+    Use for valves at 90-degree turns in the pipeline.
+
+    :param component1: First pipe component (upstream)
+    :param component2: Second pipe component (downstream)
+    :param state: Valve state ("open" or "closed")
     :param canvas_width: Canvas width in pixels
     :param canvas_height: Canvas height in pixels
-    :return: Configured valve component
+    :return: Configured elbow valve component
+    :raises ValueError: If pipes have same or opposing directions (not perpendicular)
     """
-    if flow_rate is None:
-        flow_rate = Quantity(0.0, "ft^3/s")
-
-    return ValveComponent(
-        direction=direction,
-        internal_diameter=internal_diameter,
+    return ElbowValveComponent(
+        component1=component1,
+        component2=component2,
         state=state,
-        flow_rate=flow_rate,
-        scale_factor=scale_factor,
+        scale_factor=None,  # Will be computed from components
         canvas_width=canvas_width,
         canvas_height=canvas_height,
     )

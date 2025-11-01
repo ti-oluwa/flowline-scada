@@ -1292,6 +1292,17 @@ class PipelineManager(typing.Generic[PipelineT]):
         """Get the total number of leaks in the pipeline."""
         return sum(len(pipe_config.leaks) for pipe_config in self._pipe_configs)
 
+    def get_valve_count(self) -> int:
+        """Get the total number of valves in the pipeline."""
+        count = 0
+        if self._pipeline:
+            for pipe in self._pipeline.pipes:
+                if pipe._start_valve:
+                    count += 1
+                if pipe._end_valve:
+                    count += 1
+        return count
+
     def add_valve(
         self,
         pipe_index: int,
@@ -2465,11 +2476,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 if self.selected_pipe_index < len(pipe_configs):
                     self.show_pipe_form(pipe_configs[self.selected_pipe_index])
             else:
-                # Show pipeline leak summary when no pipe is selected
-                if self.manager.has_leaks():
-                    self.show_pipeline_leak_summary()
+                # Show pipeline summaries when no pipe is selected
+                has_leaks = self.manager.has_leaks()
+                has_valves = self.manager.get_valve_count() > 0
+
+                if has_leaks or has_valves:
+                    summaries_container = ui.column().classes("w-full gap-3")
+                    with summaries_container:
+                        # Valves Summary
+                        if has_valves:
+                            self.show_pipeline_valves_summary()
+
+                        # Leak Summary
+                        if has_leaks:
+                            self.show_pipeline_leak_summary()
                 else:
-                    # Show placeholder when no pipe is selected and no leaks exist
+                    # Show placeholder when no pipe is selected and no leaks/valves exist
                     placeholder_card = ui.card().classes(
                         "w-full p-4 border-2 border-dashed border-gray-300"
                     )
@@ -3576,7 +3598,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Header
             header_row = ui.row().classes("w-full items-center justify-between")
             with header_row:
-                ui.label("Leak Summary").classes("text-lg font-semibold")
+                ui.label("Leaks").classes("text-lg font-semibold")
 
                 total_leaks = self.manager.get_leak_count()
                 if total_leaks > 0:
@@ -3667,6 +3689,109 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         dialog.open()
 
+    def show_pipeline_valves_summary(self) -> ui.column:
+        """Show a summary of all valves in the pipeline."""
+        summary_container = ui.column().classes("w-full gap-2")
+
+        with summary_container:
+            # Header
+            header_row = ui.row().classes("w-full items-center justify-between")
+            with header_row:
+                ui.label("Valves").classes("text-lg font-semibold")
+
+                total_valves = self.manager.get_valve_count()
+                ui.badge(
+                    str(total_valves), color="green" if total_valves > 0 else "gray"
+                ).classes("ml-2")
+
+            # Summary cards
+            if total_valves > 0:
+                pipeline = self.manager.get_pipeline()
+                pipe_configs = self.manager.get_pipe_configs()
+
+                for pipe_index, pipe_config in enumerate(pipe_configs):
+                    if pipeline and pipe_index < len(pipeline.pipes):
+                        pipe = pipeline.pipes[pipe_index]
+                        start_valve = pipe._start_valve
+                        end_valve = pipe._end_valve
+
+                        if start_valve or end_valve:
+                            valve_count = (1 if start_valve else 0) + (
+                                1 if end_valve else 0
+                            )
+                            open_count = sum(
+                                [
+                                    1 if start_valve and start_valve.is_open() else 0,
+                                    1 if end_valve and end_valve.is_open() else 0,
+                                ]
+                            )
+
+                            valve_summary_card = (
+                                ui.card()
+                                .classes("w-full p-2 border-l-4")
+                                .style(
+                                    f"border-left-color: {'#10b981' if open_count > 0 else '#6b7280'}"
+                                )
+                            )
+
+                            with valve_summary_card:
+                                summary_row = ui.row().classes(
+                                    "w-full items-center justify-between"
+                                )
+                                with summary_row:
+                                    ui.label(pipe_config.name).classes("font-medium")
+                                    ui.label(
+                                        f"{open_count}/{valve_count} open"
+                                    ).classes("text-sm text-gray-600")
+
+                                valves_row = ui.row().classes(
+                                    "w-full flex-wrap gap-2 mt-1"
+                                )
+                                with valves_row:
+                                    if start_valve:
+                                        status_color = (
+                                            "green" if start_valve.is_open() else "red"
+                                        )
+                                        status_text = (
+                                            "OPEN"
+                                            if start_valve.is_open()
+                                            else "CLOSED"
+                                        )
+                                        ui.chip(
+                                            f"Start Valve: {status_text}",
+                                            color=status_color,
+                                            icon="toggle_on"
+                                            if start_valve.is_open()
+                                            else "toggle_off",
+                                            on_click=lambda pi=pipe_index: self.toggle_valve(
+                                                pi, "start"
+                                            ),
+                                        ).tooltip("Click to toggle")
+
+                                    if end_valve:
+                                        status_color = (
+                                            "green" if end_valve.is_open() else "red"
+                                        )
+                                        status_text = (
+                                            "OPEN" if end_valve.is_open() else "CLOSED"
+                                        )
+                                        ui.chip(
+                                            f"End Valve: {status_text}",
+                                            color=status_color,
+                                            icon="toggle_on"
+                                            if end_valve.is_open()
+                                            else "toggle_off",
+                                            on_click=lambda pi=pipe_index: self.toggle_valve(
+                                                pi, "end"
+                                            ),
+                                        ).tooltip("Click to toggle")
+            else:
+                ui.label("No valves in pipeline").classes(
+                    "text-gray-500 text-center py-4 italic"
+                )
+
+        return summary_container
+
     def show_valve_management_panel(self, pipe_index: int) -> ui.column:
         """
         Show valve management panel for a specific pipe.
@@ -3680,10 +3805,17 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         # Get valve status from the actual pipe in the pipeline
         start_valve = None
         end_valve = None
+        previous_pipe_has_end_valve = False
+
         if pipeline and pipe_index < len(pipeline.pipes):
             pipe = pipeline.pipes[pipe_index]
             start_valve = pipe._start_valve
             end_valve = pipe._end_valve
+
+            # Check if previous pipe has an end valve
+            if pipe_index > 0:
+                previous_pipe = pipeline.pipes[pipe_index - 1]
+                previous_pipe_has_end_valve = previous_pipe._end_valve is not None
 
         # Main valve management container
         valve_panel = ui.column().classes("w-full gap-2 sm:gap-3")
@@ -3700,70 +3832,78 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     str(valve_count), color="green" if valve_count > 0 else "gray"
                 ).classes("ml-2")
 
-            # Start Valve Section
-            start_valve_card = (
-                ui.card()
-                .classes("w-full p-3 border-l-4")
-                .style(
-                    f"border-left-color: {'#10b981' if start_valve and start_valve.is_open() else '#6b7280' if start_valve else '#d1d5db'}"
+            # Start Valve Section - Hide if previous pipe has end valve
+            if not previous_pipe_has_end_valve:
+                start_valve_card = (
+                    ui.card()
+                    .classes("w-full p-3 border-l-4")
+                    .style(
+                        f"border-left-color: {'#10b981' if start_valve and start_valve.is_open() else '#6b7280' if start_valve else '#d1d5db'}"
+                    )
                 )
-            )
-            with start_valve_card:
-                valve_row = ui.row().classes("w-full items-center justify-between")
-                with valve_row:
-                    info_col = ui.column().classes("flex-1")
-                    with info_col:
-                        ui.label("Start Valve").classes("font-medium")
-                        if start_valve:
-                            status_text = "OPEN" if start_valve.is_open() else "CLOSED"
-                            status_color = "green" if start_valve.is_open() else "red"
-                            ui.label(f"Status: {status_text}").classes(
-                                f"text-xs text-{status_color}-600 font-semibold"
-                            )
-                        else:
-                            ui.label("No valve installed").classes(
-                                "text-xs text-gray-500 italic"
-                            )
+                with start_valve_card:
+                    valve_row = ui.row().classes("w-full items-center justify-between")
+                    with valve_row:
+                        info_col = ui.column().classes("flex-1")
+                        with info_col:
+                            ui.label("Start Valve").classes("font-medium")
+                            if start_valve:
+                                status_text = (
+                                    "OPEN" if start_valve.is_open() else "CLOSED"
+                                )
+                                status_color = (
+                                    "green" if start_valve.is_open() else "red"
+                                )
+                                ui.label(f"Status: {status_text}").classes(
+                                    f"text-xs text-{status_color}-600 font-semibold"
+                                )
+                            else:
+                                ui.label("No valve installed").classes(
+                                    "text-xs text-gray-500 italic"
+                                )
 
-                    # Action buttons
-                    actions_col = ui.row().classes("gap-1")
-                    with actions_col:
-                        if start_valve:
-                            # Toggle button
-                            toggle_btn = (
+                        # Action buttons
+                        actions_col = ui.row().classes("gap-1")
+                        with actions_col:
+                            if start_valve:
+                                # Toggle button
+                                toggle_btn = (
+                                    ui.button(
+                                        icon="toggle_on"
+                                        if start_valve.is_open()
+                                        else "toggle_off",
+                                        color="green"
+                                        if start_valve.is_open()
+                                        else "red",
+                                    )
+                                    .props("size=sm")
+                                    .tooltip(
+                                        "Close valve"
+                                        if start_valve.is_open()
+                                        else "Open valve"
+                                    )
+                                )
+                                toggle_btn.on(
+                                    "click",
+                                    lambda: self.toggle_valve(pipe_index, "start"),
+                                )
+
+                                # Remove button
                                 ui.button(
-                                    icon="toggle_on"
-                                    if start_valve.is_open()
-                                    else "toggle_off",
-                                    color="green" if start_valve.is_open() else "red",
-                                )
-                                .props("size=sm")
-                                .tooltip(
-                                    "Close valve"
-                                    if start_valve.is_open()
-                                    else "Open valve"
-                                )
-                            )
-                            toggle_btn.on(
-                                "click",
-                                lambda: self.toggle_valve(pipe_index, "start"),
-                            )
-
-                            # Remove button
-                            ui.button(
-                                icon="delete",
-                                color="orange",
-                            ).props("size=sm").on(
-                                "click", lambda: self.remove_valve(pipe_index, "start")
-                            ).tooltip("Remove valve")
-                        else:
-                            # Add button
-                            ui.button(
-                                icon="add",
-                                color=self.theme_color,
-                            ).props("size=sm").on(
-                                "click", lambda: self.add_valve(pipe_index, "start")
-                            ).tooltip("Add start valve")
+                                    icon="delete",
+                                    color="orange",
+                                ).props("size=sm").on(
+                                    "click",
+                                    lambda: self.remove_valve(pipe_index, "start"),
+                                ).tooltip("Remove valve")
+                            else:
+                                # Add button
+                                ui.button(
+                                    icon="add",
+                                    color=self.theme_color,
+                                ).props("size=sm").on(
+                                    "click", lambda: self.add_valve(pipe_index, "start")
+                                ).tooltip("Add start valve")
 
             # End Valve Section
             end_valve_card = (
