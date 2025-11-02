@@ -110,9 +110,9 @@ class FlowType(str, enum.Enum):
     """Enumeration of flow types for pipes."""
 
     COMPRESSIBLE = "compressible"
-    """Compressible flow (e.g., gases). With the flow type, the voluSI rate in pipes will vary with pressure and temperature."""
+    """Compressible flow (e.g., gases). With the flow type, the volumetric rate in pipes will vary with pressure and temperature."""
     INCOMPRESSIBLE = "incompressible"
-    """Incompressible flow (e.g., liquids). The voluSI rate in pipes remains constant regardless of pressure changes."""
+    """Incompressible flow (e.g., liquids). The volumetric rate in pipes remains constant regardless of pressure changes."""
 
     def __str__(self) -> str:
         return self.value

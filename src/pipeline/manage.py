@@ -1769,13 +1769,14 @@ class PipelineManager(typing.Generic[PipelineT]):
                     or Quantity(101325, "Pa"),  # Default to 1 atm if not specified
                     molecular_weight=fluid_config.molecular_weight,
                 )
-                pipeline.set_fluid(fluid, sync=True)
             except Exception as exc:
                 ui.notify(
                     f"Error building fluid '{fluid_config.name}'. Proceeding with no fluid.",
                     type="warning",
                 )
                 logger.error(f"Error building fluid from config: {exc}", exc_info=True)
+            else:
+                pipeline.set_fluid(fluid, sync=True)
 
         return cls(
             pipeline=pipeline,
@@ -2000,6 +2001,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             type="success",
             position="top",
         )
+        self.refresh_pipes_list()
         self.refresh_properties_panel()
         self.refresh_pipeline_preview()
 
@@ -2014,6 +2016,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             type="success",
             position="top",
         )
+        self.refresh_pipes_list()
         self.refresh_properties_panel()
         self.refresh_pipeline_preview()
 
@@ -2027,6 +2030,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             type="success",
             position="top",
         )
+        self.refresh_pipes_list()
         self.refresh_properties_panel()
         self.refresh_pipeline_preview()
 
@@ -2041,6 +2045,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             type="success",
             position="top",
         )
+        self.refresh_pipes_list()
         self.refresh_properties_panel()
         self.refresh_pipeline_preview()
 
@@ -2055,6 +2060,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             type="success",
             position="top",
         )
+        self.refresh_pipes_list()
         self.refresh_properties_panel()
         self.refresh_pipeline_preview()
 

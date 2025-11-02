@@ -9,7 +9,7 @@ from nicegui import ui
 from nicegui.elements.html import Html
 from nicegui.elements.row import Row
 from pint.facets.plain import PlainQuantity
-from scipy.optimize import fsolve, minimize_scalar, root_scalar
+from scipy.optimize import fsolve, root_scalar
 from typing_extensions import Self
 
 from src.flow import (
@@ -1978,6 +1978,10 @@ class Pipe:
             return True
         return False
 
+    def has_flow(self) -> bool:
+        """Check if there is flow in the pipe."""
+        return self.flow_rate.magnitude > 0
+
     def add_leak(self, leak: PipeLeak, *, sync: bool = False) -> Self:
         """
         Add a leak to the pipe and optionally recalculate flow rate.
@@ -2276,19 +2280,19 @@ class Pipe:
         # Add start valve if present (before pipe)
         if self._start_valve is not None:
             valve_component = build_straight_valve_component(
-                component1=pipe_component,  # Dummy - valve uses pipe's properties
+                component1=pipe_component,
                 component2=pipe_component,  # Both same since single pipe
                 state=self._start_valve.state.value,
             )
             modular_components.append(valve_component)
 
-        # Add pipe itself
+        # Add the pipe itself
         modular_components.append(pipe_component)
 
         # Add end valve if present (after pipe)
         if self._end_valve is not None:
             valve_component = build_straight_valve_component(
-                component1=pipe_component,  # Dummy - valve uses pipe's properties
+                component1=pipe_component,
                 component2=pipe_component,  # Both same since single pipe
                 state=self._end_valve.state.value,
             )
@@ -2637,10 +2641,29 @@ class Pipeline:
         return any(pipe.is_leaking for pipe in self._pipes)
 
     @property
-    def leaks(self) -> typing.Iterator[PipeLeak]:
-        """Iterable of all active leaks in the pipeline."""
-        for pipe in self._pipes:
-            yield from pipe.leaks
+    def leaks(self) -> typing.Iterator[typing.Tuple[int, PipeLeak]]:
+        """
+        Iterator over all active leaks in the pipeline.
+
+        :return: Iterator of tuples (pipe_index, leak)
+        """
+        for i, pipe in enumerate(self._pipes):
+            for leak in pipe.leaks:
+                yield i, leak
+
+    @property
+    def valves(
+        self,
+    ) -> typing.Iterator[
+        typing.Tuple[int, typing.Optional[Valve], typing.Optional[Valve]]
+    ]:
+        """
+        Iterator over all pipes' start and end valves.
+
+        :return: Iterator of tuples (pipe_index, start_valve, end_valve)
+        """
+        for i, pipe in enumerate(self._pipes):
+            yield i, pipe._start_valve, pipe._end_valve
 
     @property
     def leak_rate(self) -> PlainQuantity[float]:
@@ -2714,20 +2737,6 @@ class Pipeline:
         """Check if any pipe in the pipeline has a valve."""
         return any(pipe.has_valve for pipe in self._pipes)
 
-    def get_valves(
-        self,
-    ) -> typing.Iterator[typing.Tuple[int, typing.Literal["start", "end"], Valve]]:
-        """
-        Iterate through all valves in the pipeline.
-
-        :return: Iterator of (pipe_index, position, valve) tuples
-        """
-        for i, pipe in enumerate(self._pipes):
-            if pipe._start_valve is not None:
-                yield (i, "start", pipe._start_valve)
-            if pipe._end_valve is not None:
-                yield (i, "end", pipe._end_valve)
-
     def add_valve(
         self,
         pipe_index: int,
@@ -2752,7 +2761,6 @@ class Pipeline:
             raise IndexError(f"Pipe index {pipe_index} out of range")
 
         self._pipes[pipe_index].add_valve(valve=valve, position=position, sync=False)
-
         if sync:
             self.sync()
         return self
@@ -2781,7 +2789,6 @@ class Pipeline:
         removed_valve = self._pipes[pipe_index].remove_valve(
             position=position, sync=False
         )
-
         if sync:
             self.sync()
         return removed_valve
@@ -2808,7 +2815,6 @@ class Pipeline:
             raise IndexError(f"Pipe index {pipe_index} out of range")
 
         self._pipes[pipe_index].open_valve(position=position, sync=False)
-
         if sync:
             self.sync()
         return self
@@ -2835,7 +2841,6 @@ class Pipeline:
             raise IndexError(f"Pipe index {pipe_index} out of range")
 
         self._pipes[pipe_index].close_valve(position=position, sync=False)
-
         if sync:
             self.sync()
         return self
@@ -2862,7 +2867,6 @@ class Pipeline:
             raise IndexError(f"Pipe index {pipe_index} out of range")
 
         self._pipes[pipe_index].toggle_valve(position=position, sync=False)
-
         if sync:
             self.sync()
         return self
@@ -3031,7 +3035,7 @@ class Pipeline:
         This method should be called whenever pipe properties or flow rates change.
         """
         if self.pipeline_viz is not None:
-            self.pipeline_viz.content = self.get_svg()
+            self.pipeline_viz.content = str(self.get_svg())
         return self
 
     def get_svg(self) -> SVGComponent:
@@ -3089,6 +3093,7 @@ class Pipeline:
                     canvas_height=100.0,
                     leaks=leaks,
                 )
+                pipe_component_cache[i] = pipe_component
             else:
                 # Vertical pipe
                 pipe_component = build_vertical_pipe_component(
@@ -3102,18 +3107,32 @@ class Pipeline:
                     canvas_height=400.0,
                     leaks=leaks,
                 )
+                pipe_component_cache[i] = pipe_component
 
             # Add start valve if present (before the pipe)
             # Skip if previous pipe has end valve (to avoid duplication)
+            prev_pipe = self._pipes[i - 1] if i > 0 else None
             prev_pipe_has_end_valve = (
-                i > 0 and self._pipes[i - 1]._end_valve is not None
+                prev_pipe is not None and prev_pipe._end_valve is not None
             )
             if pipe._start_valve is not None and not prev_pipe_has_end_valve:
-                valve_component = build_straight_valve_component(
-                    component1=pipe_component,
-                    component2=pipe_component,
-                    state=pipe._start_valve.state.value,
-                )
+                # If the first pipe in the pipeline has a start valve, connect to itself
+                prev_pipe = prev_pipe if prev_pipe is not None else pipe
+                prev_pipe_component = pipe_component_cache.get(i - 1, pipe_component)
+                if pipe.direction != prev_pipe.direction:
+                    # Direction change - use elbow valve
+                    valve_component = build_elbow_valve_component(
+                        component1=prev_pipe_component,
+                        component2=pipe_component,
+                        state=pipe._start_valve.state.value,
+                    )
+                else:
+                    # Same direction - use straight valve
+                    valve_component = build_straight_valve_component(
+                        component1=prev_pipe_component,
+                        component2=pipe_component,
+                        state=pipe._start_valve.state.value,
+                    )
                 modular_components.append(valve_component)
 
             # Add the pipe component
@@ -3208,9 +3227,12 @@ class Pipeline:
                 modular_components.append(valve_component)
 
             # Add connector to next pipe (if not the last pipe)
-            # Skip connector if there's an end valve - valve already acts as connector
+            # Skip connector if there's an end valve or if next pipe has start valve - valves already act as connectors
             if i < (pipe_count - 1) and end_valve_component is None:
                 next_pipe = self._pipes[i + 1]
+                # Skip connector if next pipe has a start valve
+                if next_pipe._start_valve is not None:
+                    continue
                 if not self._ignore_leaks:
                     leaks = []
                     for leak in next_pipe.leaks:
@@ -3595,15 +3617,15 @@ class Pipeline:
             self.sync()
         return self
 
-    def _compute_outlet_pressure(
-        self, mass_flow_rate: PlainQuantity[float], set_pressures: bool = False
+    def _resolve_flow(
+        self, mass_flow_rate: PlainQuantity[float], set_values: bool = False
     ) -> PlainQuantity[float]:
         """
         For a given system-wide mass flow rate, calculate the final outlet pressure.
         Returns the calculated outlet pressure.
 
         :param mass_flow_rate: Mass flow rate through the pipeline (kg/s)
-        :param set_pressures: Whether to set the calculated pressures on each pipe (default is False)
+        :param set_values: Whether to set the calculated pressures (and rates) on each pipe (default is False)
         :return: Calculated outlet pressure (psi)
         """
         if not self._pipes:
@@ -3623,31 +3645,42 @@ class Pipeline:
         current_pressure = self.upstream_pressure
         current_temp = fluid.temperature  # Assume constant temperature for simplicity
         current_mass_flow_rate = mass_flow_rate.to("lb/s")
+        pipe_count = len(self._pipes)
+        flow_discontinued = False
 
-        for i in range(len(self._pipes)):
-            current_pipe = self._pipes[i]
-
+        for i, pipe in enumerate(self._pipes):
             # Check if any previous pipe has a closed end valve - blocks flow to all subsequent pipes
             if i > 0:
-                for j in range(i):
-                    prev_pipe = self._pipes[j]
-                    if prev_pipe.has_closed_valve():
-                        # A previous pipe has closed end valve - no flow can reach this pipe
-                        if set_pressures:
-                            current_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
-                        return current_pressure
+                prev_pipe = self._pipes[i - 1]
+                if flow_discontinued or prev_pipe.has_closed_valve():
+                    # Mark flow as discontinued for all subsequent pipes
+                    flow_discontinued = True
+                    current_pressure = Quantity(0.0, "psi")
+                    # A previous pipe has closed end valve - no flow can reach this pipe
+                    if set_values:
+                        pipe.set_upstream_pressure(
+                            Quantity(0.0, "psi"), check=False, sync=False
+                        )
+                        pipe.set_downstream_pressure(
+                            Quantity(0.0, "psi"), check=False, sync=False
+                        )
+                        pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+                    continue
 
             # Check if current pipe's start valve is closed - blocks flow into this pipe
-            if (
-                current_pipe._start_valve is not None
-                and current_pipe._start_valve.is_closed()
-            ):
+            if pipe._start_valve is not None and pipe._start_valve.is_closed():
+                current_pressure = Quantity(0.0, "psi")
                 # Set zero flow for this pipe and all downstream pipes
-                if set_pressures:
-                    current_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
-                # Since no flow can continue, return current pressure as outlet
-                # (effectively stopping flow propagation)
-                return current_pressure
+                if set_values:
+                    if i > 0:
+                        pipe.set_upstream_pressure(
+                            Quantity(0.0, "psi"), check=False, sync=False
+                        )
+                    pipe.set_downstream_pressure(
+                        Quantity(0.0, "psi"), check=False, sync=False
+                    )
+                    pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+                continue
 
             logger.debug("Pipe %d Upstream Pressure: %s", i + 1, current_pressure)
             # If the pressure drops to zero or below, flow cannot continue
@@ -3657,7 +3690,7 @@ class Pipeline:
                     "Pipe %d upstream pressure dropped to zero or below. Flow cannot continue.",
                     i + 1,
                 )
-                return Quantity(0.0, "psi")
+                continue
 
             # Get fluid properties at the current pressure and temperature
             fluid_at_pipe_inlet = Fluid.from_coolprop(
@@ -3670,14 +3703,9 @@ class Pipeline:
 
             mass_rate_in = current_mass_flow_rate
 
-            # Check if end valve is closed - if so, no flow exits to next pipe
-            if (
-                current_pipe._end_valve is not None
-                and current_pipe._end_valve.is_closed()
-            ):
-                mass_rate_out = Quantity(0.0, "lb/s")
-            elif not self._ignore_leaks and (current_pipe.leak_rate.magnitude > 0):
-                leak_mass_rate = current_pipe.leak_rate.to(
+            # Adjust mass flow rate for leaks if any
+            if not self._ignore_leaks and (pipe.leak_rate.magnitude > 0):
+                leak_mass_rate = pipe.leak_rate.to(
                     "ft^3/s"
                 ) * fluid_at_pipe_inlet.density.to("lb/ft^3")
                 mass_rate_out = mass_rate_in - min(leak_mass_rate, mass_rate_in)
@@ -3701,19 +3729,19 @@ class Pipeline:
             )
 
             # 1. Calculate pressure drop across the pipe itself
-            flow_equation = current_pipe.flow_equation
+            flow_equation = pipe.flow_equation
             if flow_equation is None:
                 raise ValueError(
-                    f"Flow equation must be defined for pipe {current_pipe.name!r} to compute pressure drop."
+                    f"Flow equation must be defined for pipe {pipe.name!r} to compute pressure drop."
                 )
 
             pipe_pressure_drop = compute_pipe_pressure_drop(
                 upstream_pressure=current_pressure,
-                length=current_pipe.length,
-                internal_diameter=current_pipe.internal_diameter,
-                relative_roughness=current_pipe.relative_roughness,
-                efficiency=current_pipe.efficiency,
-                elevation_difference=current_pipe.elevation_difference,
+                length=pipe.length,
+                internal_diameter=pipe.internal_diameter,
+                relative_roughness=pipe.relative_roughness,
+                efficiency=pipe.efficiency,
+                elevation_difference=pipe.elevation_difference,
                 specific_gravity=fluid_at_pipe_inlet.specific_gravity,
                 temperature=fluid_at_pipe_inlet.temperature,
                 compressibility_factor=fluid_at_pipe_inlet.compressibility_factor,
@@ -3738,21 +3766,27 @@ class Pipeline:
                 )
                 return Quantity(0.0, "psi")
 
-            if set_pressures:
-                current_pipe.set_upstream_pressure(
-                    current_pressure, check=False, sync=False
-                )
-                current_pipe.set_flow_rate(volumetric_flow_rate.to("ft^3/s"))
-                current_pipe.set_downstream_pressure(
+            if set_values:
+                pipe.set_upstream_pressure(current_pressure, check=False, sync=False)
+                pipe.set_flow_rate(volumetric_flow_rate.to("ft^3/s"))
+                pipe.set_downstream_pressure(
                     downstream_pipe_pressure, check=False, sync=False
                 )
 
             # Check if this is the last pipe
-            if i == len(self._pipes) - 1:
+            if i == (pipe_count - 1):
                 return downstream_pipe_pressure  # This is the final outlet pressure
 
             # 2. Calculate pressure drop across the connector to the next pipe
             next_pipe = self._pipes[i + 1]
+            if (pipe._end_valve is not None and pipe._end_valve.is_closed()) or (
+                next_pipe._start_valve is not None
+                and next_pipe._start_valve.is_closed()
+            ):
+                # Next pipe's start valve is closed - no flow can enter next pipe
+                current_pressure = downstream_pipe_pressure
+                current_mass_flow_rate = mass_rate_out
+                continue
 
             fluid_at_connector_inlet = Fluid.from_coolprop(
                 fluid_name=fluid.name,
@@ -3762,7 +3796,7 @@ class Pipeline:
                 molecular_weight=fluid.molecular_weight,
             )
 
-            is_elbow_connected = current_pipe.direction != next_pipe.direction
+            is_elbow_connected = pipe.direction != next_pipe.direction
             connector_length = (
                 self.connector_length
                 if not is_elbow_connected
@@ -3772,9 +3806,8 @@ class Pipeline:
             # NOTE: Even a straight connector has length and thus frictional drop!
             # Your assumption of zero drop for <2% diff is only valid if length is zero.
             relative_diameter_difference = abs(
-                current_pipe.internal_diameter.to("m")
-                - next_pipe.internal_diameter.to("m")
-            ) / current_pipe.internal_diameter.to("m")
+                pipe.internal_diameter.to("m") - next_pipe.internal_diameter.to("m")
+            ) / pipe.internal_diameter.to("m")
             logger.debug(
                 "Connector between Pipe %d and Pipe %d Relative Diameter Difference: %.4f",
                 i + 1,
@@ -3783,9 +3816,7 @@ class Pipeline:
             )
             # If diameters are within 2%, treat as same diameter (assume connector is straight)
             if relative_diameter_difference < 0.02:
-                average_efficiency = (
-                    current_pipe.efficiency + next_pipe.efficiency
-                ) / 2
+                average_efficiency = (pipe.efficiency + next_pipe.efficiency) / 2
                 # Assume elbow connectors have slightly lower efficiency due to bends
                 connector_efficiency = (
                     average_efficiency * 0.95
@@ -3794,10 +3825,10 @@ class Pipeline:
                 )
                 # If the current pipe has an elevation change, assume the connector follows that
                 # with the same rate of elevation change per unit length
-                if current_pipe.length.magnitude != 0:
+                if pipe.length.magnitude != 0:
                     elevation_change_per_length = (
-                        current_pipe.elevation_difference.to("m").magnitude
-                        / current_pipe.length.to("m").magnitude
+                        pipe.elevation_difference.to("m").magnitude
+                        / pipe.length.to("m").magnitude
                     )
                 else:
                     elevation_change_per_length = 0.0
@@ -3809,7 +3840,7 @@ class Pipeline:
                 connector_pressure_drop = compute_pipe_pressure_drop(
                     upstream_pressure=downstream_pipe_pressure,
                     length=connector_length,
-                    internal_diameter=current_pipe.internal_diameter,
+                    internal_diameter=pipe.internal_diameter,
                     relative_roughness=0.0001,  # Assume very smooth connector
                     efficiency=connector_efficiency,
                     elevation_difference=connector_elevation_difference,
@@ -3826,7 +3857,7 @@ class Pipeline:
             else:
                 connector_pressure_drop = compute_tapered_pipe_pressure_drop(
                     flow_rate=volumetric_flow_rate,
-                    pipe_inlet_diameter=current_pipe.internal_diameter,
+                    pipe_inlet_diameter=pipe.internal_diameter,
                     pipe_outlet_diameter=next_pipe.internal_diameter,
                     pipe_length=connector_length,  # Your connector length
                     fluid_density=fluid_at_connector_inlet.density,
@@ -3848,7 +3879,7 @@ class Pipeline:
         # This part should ideally not be reached if the loop returns
         return current_pressure
 
-    def _compute_mass_rate_range(self) -> typing.Tuple[float, float]:
+    def _get_mass_rate_range(self) -> typing.Tuple[float, float]:
         """
         Estimate a reasonable mass flow rate range for the solver based on max flow rates of pipes.
 
@@ -3862,21 +3893,50 @@ class Pipeline:
             pipe.internal_diameter.to("m").magnitude for pipe in self._pipes
         )
         total_length = 0
+        min_relative_roughness = float("inf")
+        max_efficiency = 0.0
+        elevation_difference = 0.0
+
         for i, pipe in enumerate(self._pipes):
+            # Check current pipe's start valve
+            if pipe._start_valve is not None and pipe._start_valve.is_closed():
+                # Start valve closed, no flow can enter
+                break
+
+            # Check current pipe's end valve
+            if pipe._end_valve is not None and pipe._end_valve.is_closed():
+                # End valve closed means flow stops after this pipe
+                # If not last pipe, downstream has no flow
+                if i < len(self._pipes) - 1:
+                    # Include this pipe in calculations, then stop
+                    total_length += pipe.length.to("m").magnitude
+                    min_relative_roughness = min(
+                        min_relative_roughness, pipe.relative_roughness
+                    )
+                    max_efficiency = max(max_efficiency, pipe.efficiency)
+                    elevation_difference += pipe.elevation_difference.to("m").magnitude
+                    break
+                # If last pipe, flow can occur up to this valve, continue normal calculation
+
             total_length += pipe.length.to("m").magnitude
+            min_relative_roughness = min(
+                min_relative_roughness, pipe.relative_roughness
+            )
+            max_efficiency = max(max_efficiency, pipe.efficiency)
+            elevation_difference += pipe.elevation_difference.to("m").magnitude
+
             if i < len(self._pipes) - 1:
                 total_length += self.connector_length.to("m").magnitude
 
+            # If this pipe has a closed valve, stop further flow to downstream pipes
+            if pipe.has_closed_valve():
+                break
+
         if total_length == 0:
-            raise ValueError("Total pipeline length cannot be zero.")
+            return 0.0, 0.0
 
         upstream_pressure = self.upstream_pressure.to("psi")
         downstream_pressure = self.downstream_pressure.to("psi")
-        min_relative_roughness = min(pipe.relative_roughness for pipe in self._pipes)
-        max_efficiency = max(pipe.efficiency for pipe in self._pipes)
-        elevation_difference = sum(
-            pipe.elevation_difference.to("m").magnitude for pipe in self._pipes
-        )
         reynolds_number = 1e5
         flow_equation = determine_pipe_flow_equation(
             pressure_drop=upstream_pressure - downstream_pressure,
@@ -3902,6 +3962,190 @@ class Pipeline:
         )
         max_mass_flow_rate = (max_volumetric_flow_rate * fluid.density).to("kg/s")
         return 0.001, max(max_mass_flow_rate.magnitude, 50.0)
+
+    def _get_mass_rate(
+        self,
+        target_downstream_pressure: float,
+        min_mass_rate: float,
+        max_mass_rate: float,
+        max_iterations: int = 50,
+    ) -> float:
+        """
+        Estimate a mass flow rate that would achieve the target downstream pressure.
+
+        This uses a root-finding algorithm to iteratively adjust the mass flow rate
+        until the calculated downstream pressure matches the target downstream pressure.
+
+        :param target_downstream_pressure: Target downstream pressure (psi)
+        :param min_mass_rate: Minimum mass flow rate to consider (kg/s)
+        :param max_mass_rate: Maximum mass flow rate to consider (kg/s)
+        :param max_iterations: Maximum number of iterations for the solver
+        :return: Estimated mass flow rate (kg/s)
+        """
+
+        def error_func(mass_flow_rate_guess: float) -> float:
+            """
+            Returns the difference between calculated/guessed outlet pressure and actual outlet pressure.
+            The solver will try to make this function return 0.
+
+            :param mass_flow_rate_guess: Guessed mass flow rate (kg/s)
+            :return: Difference between calculated and target downstream pressure (psi)
+            """
+            nonlocal target_downstream_pressure
+
+            # Ensure mass flow rate is real and positive
+            if isinstance(mass_flow_rate_guess, complex):
+                logger.warning(
+                    f"Complex mass flow rate detected: {mass_flow_rate_guess}. Using real part."
+                )
+                mass_flow_rate_guess = mass_flow_rate_guess.real
+
+            mass_flow_rate = Quantity(mass_flow_rate_guess, "kg/s")
+            # Guess the outlet pressure based on the guessed mass flow rate
+            calculated_downstream_pressure = self._resolve_flow(
+                mass_flow_rate, set_values=False
+            )
+            calculated_downstream_pressure = calculated_downstream_pressure.to(
+                "psi"
+            ).magnitude
+            logger.debug(
+                "Mass Flow Rate Guess: %s, Calculated Downstream Pressure: %s, target Downstream Pressure: %s",
+                mass_flow_rate,
+                calculated_downstream_pressure,
+                target_downstream_pressure,
+            )
+            error = calculated_downstream_pressure - target_downstream_pressure
+            logger.debug("Error (psi): %.4f", error)
+            return error
+
+        # Iteratively adjust the mass rate range until we get a sign change
+        iteration = 0
+        sign_change = False
+
+        while not sign_change and iteration < max_iterations:
+            min_error = error_func(min_mass_rate)
+            max_error = error_func(max_mass_rate)
+            # Ensure errors are real numbers
+            min_error = float(
+                min_error.real if isinstance(min_error, complex) else min_error
+            )
+            max_error = float(
+                max_error.real if isinstance(max_error, complex) else max_error
+            )
+
+            sign_change = (min_error * max_error) < 0
+            logger.debug(
+                f"Iteration {iteration + 1}: min_error = {min_error:.6f}, max_error = {max_error:.6f}"
+            )
+            if sign_change:
+                logger.debug("Sign change detected! Proceeding with solver.")
+                break
+
+            # Adjust the range based on the error signs
+            if min_error > 0 and max_error > 0:
+                # Both errors positive - need to decrease mass flow rate range
+                logger.debug("Both errors positive - decreasing mass flow rates")
+                max_mass_rate = min_mass_rate
+                min_mass_rate = min_mass_rate * 0.1  # Reduce by factor of 10
+            elif min_error < 0 and max_error < 0:
+                # Both errors negative - need to increase mass flow rate range
+                logger.debug("Both errors negative - increasing mass flow rates")
+                min_mass_rate = max_mass_rate
+                max_mass_rate = max_mass_rate * 2  # Increase by factor of 2
+            else:
+                # One is zero - slightly perturb the range
+                logger.debug("One error is zero - perturbing range")
+                if abs(min_error) < 1e-10:
+                    min_mass_rate = min_mass_rate * 0.99
+                if abs(max_error) < 1e-10:
+                    max_mass_rate = max_mass_rate * 1.01
+
+            # Safety bounds to prevent unrealistic values
+            min_mass_rate = max(min_mass_rate, 1e-9)
+            max_mass_rate = min(max_mass_rate, 1e9)
+
+            # Ensure min is actually less than max
+            if min_mass_rate >= max_mass_rate:
+                logger.warning("Min mass rate >= max mass rate, adjusting...")
+                max_mass_rate = min_mass_rate * 100
+
+            iteration += 1
+            logger.debug(
+                f"Adjusted range: [{min_mass_rate:.6f}, {max_mass_rate:.6f}] kg/s"
+            )
+
+        if not sign_change:
+            logger.warning(
+                f"No sign change found after {max_iterations} iterations. "
+                f"Final range: [{min_mass_rate:.4f}, {max_mass_rate:.4f}] kg/s. "
+                f"Solver may not converge. Check pipe parameters, pressures, and flow conditions."
+            )
+
+        has_closed_valve = any(pipe.has_closed_valve() for pipe in self._pipes)
+        # Try to solve with the bracket we found
+        if sign_change:
+            try:
+                solution = root_scalar(
+                    error_func,
+                    bracket=[min_mass_rate, max_mass_rate],
+                    method="brentq",
+                    xtol=1e-5,
+                )
+                solution = _MockSolution(solution.root, solution.converged)
+            except ValueError as exc:
+                logger.error(f"Bracket method failed: {exc}", exc_info=True)
+                # Fall back to `scipy.optimize.fsolve` if bracket fails
+                initial_guess = (min_mass_rate + max_mass_rate) / 2
+                result = fsolve(error_func, initial_guess, full_output=True)
+                solution = _MockSolution(result[0][0], result[2] == 1)
+
+        elif has_closed_valve:
+            # If the pipeline has a closed valve, somewhere along the line flow is blocked
+            # We can simulate the flow up to the closed valve to estimate mass rate by
+            # Creating a mock pipeline up to the first closed valve and solving the
+            # flow for that segment only.
+            logger.info(
+                "Pipeline has closed valve(s); estimating flow up to the first closed valve."
+            )
+            mock_pipeline = self.copy()
+            pipes = []
+            # Get pipes up to the first closed valve
+            for pipe in mock_pipeline._pipes:
+                if pipe._start_valve is not None and pipe._start_valve.is_closed():
+                    break
+                if pipe._end_valve is not None and pipe._end_valve.is_closed():
+                    pipes.append(pipe)
+                    break
+                pipes.append(pipe)
+            mock_pipeline._pipes = pipes
+            min_mass_rate, max_mass_rate = mock_pipeline._get_mass_rate_range()
+            percentage_mocked = len(mock_pipeline._pipes) / len(self._pipes)
+            mass_rate = mock_pipeline._get_mass_rate(
+                target_downstream_pressure=target_downstream_pressure
+                * percentage_mocked,
+                min_mass_rate=min_mass_rate,
+                max_mass_rate=max_mass_rate,
+                max_iterations=10,
+            )
+            solution = _MockSolution(mass_rate, True)
+        else:
+            solution = _MockSolution(0.0, False)
+
+        # If there's a closed valve, we expect no convergence since flow is blocked
+        if not has_closed_valve and not solution.converged:
+            logger.warning("Solver did not converge. Check your bracket or function.")
+            raise RuntimeError(
+                f"Flow solver did not converge for pipeline, {self.name!r}. Check pipe parameters, pressures and flow conditions for unphysical conditions.",
+            )
+
+        mass_rate = abs(
+            float(
+                solution.root.real
+                if isinstance(solution.root, complex)
+                else solution.root
+            )
+        )
+        return mass_rate
 
     def sync(self) -> Self:
         """
@@ -3934,197 +4178,43 @@ class Pipeline:
         target_downstream_pressure = self.downstream_pressure
         logger.info("Target Downstream Pressure: %s", target_downstream_pressure)
 
-        def error_function(mass_flow_rate_guess: float) -> float:
-            """
-            Returns the difference between calculated/guessed outlet pressure and actual outlet pressure.
-            The solver will try to make this function return 0.
-
-            :param mass_flow_rate_guess: Guessed mass flow rate (kg/s)
-            :return: Difference between calculated and target downstream pressure (psi)
-            """
-            nonlocal target_downstream_pressure
-
-            # Ensure mass flow rate is real and positive
-            if isinstance(mass_flow_rate_guess, complex):
-                logger.warning(
-                    f"Complex mass flow rate detected: {mass_flow_rate_guess}. Using real part."
-                )
-                mass_flow_rate_guess = mass_flow_rate_guess.real
-
-            mass_flow_rate = Quantity(mass_flow_rate_guess, "kg/s")
-            # Guess the outlet pressure based on the guessed mass flow rate
-            calculated_downstream_pressure = self._compute_outlet_pressure(
-                mass_flow_rate
-            )
-            logger.debug(
-                "Mass Flow Rate Guess: %s, Calculated Downstream Pressure: %s, target Downstream Pressure: %s",
-                mass_flow_rate,
-                calculated_downstream_pressure,
-                target_downstream_pressure,
-            )
-            error_psi = (
-                (calculated_downstream_pressure - target_downstream_pressure)
-                .to("psi")
-                .magnitude
-            )
-            logger.debug("Error (psi): %.4f", error_psi)
-            return error_psi
-
-        min_mass_rate, max_mass_rate = self._compute_mass_rate_range()
+        min_mass_rate, max_mass_rate = self._get_mass_rate_range()
         logger.info("Min Mass Flow Rate Guess: %s", min_mass_rate)
         logger.info("Max Mass Flow Rate Guess: %s", max_mass_rate)
+        if min_mass_rate == 0 and max_mass_rate == 0:
+            self._resolve_flow(Quantity(0.0, "kg/s"), set_values=True)
+            return self
 
-        # Iteratively adjust the mass rate range until we get a sign change
-        max_iterations = 20
-        iteration = 0
-        sign_change = False
-
-        while not sign_change and iteration < max_iterations:
-            min_error = error_function(min_mass_rate)
-            max_error = error_function(max_mass_rate)
-            # Ensure errors are real numbers
-            min_error = float(
-                min_error.real if isinstance(min_error, complex) else min_error
-            )
-            max_error = float(
-                max_error.real if isinstance(max_error, complex) else max_error
-            )
-
-            sign_change = (min_error * max_error) < 0
-
-            logger.debug(
-                f"Iteration {iteration + 1}: min_error = {min_error:.6f}, max_error = {max_error:.6f}"
-            )
-
-            if sign_change:
-                logger.debug("Sign change detected! Proceeding with solver.")
-                break
-
-            # Adjust the range based on the error signs
-            if min_error > 0 and max_error > 0:
-                # Both errors positive - need to decrease mass flow rate range
-                logger.debug("Both errors positive - decreasing mass flow rates")
-                max_mass_rate = min_mass_rate
-                min_mass_rate = min_mass_rate * 0.1  # Reduce by factor of 10
-            elif min_error < 0 and max_error < 0:
-                # Both errors negative - need to increase mass flow rate range
-                logger.debug("Both errors negative - increasing mass flow rates")
-                min_mass_rate = max_mass_rate
-                max_mass_rate = max_mass_rate * 10  # Increase by factor of 10
-            else:
-                # One is zero - slightly perturb the range
-                logger.debug("One error is zero - perturbing range")
-                if abs(min_error) < 1e-10:
-                    min_mass_rate = min_mass_rate * 0.99
-                if abs(max_error) < 1e-10:
-                    max_mass_rate = max_mass_rate * 1.01
-
-            # Safety bounds to prevent unrealistic values
-            min_mass_rate = max(min_mass_rate, 1e-6)  # Minimum 0.001 g/s
-            max_mass_rate = min(max_mass_rate, 1e6)  # Maximum 1000 kg/s
-
-            # Ensure min is actually less than max
-            if min_mass_rate >= max_mass_rate:
-                logger.warning("Min mass rate >= max mass rate, adjusting...")
-                max_mass_rate = min_mass_rate * 100
-
-            iteration += 1
-            logger.debug(
-                f"Adjusted range: [{min_mass_rate:.6f}, {max_mass_rate:.6f}] kg/s"
-            )
-
-        if not sign_change:
-            logger.warning(
-                f"No sign change found after {max_iterations} iterations. "
-                f"Final range: [{min_mass_rate:.4f}, {max_mass_rate:.4f}] kg/s. "
-                f"Solver may not converge. Check pipe parameters, pressures, and flow conditions."
-            )
-
-        # Try to solve with the bracket we found
-        if sign_change:
-            try:
-                solution = root_scalar(
-                    error_function,
-                    bracket=[min_mass_rate, max_mass_rate],
-                    method="brentq",
-                    xtol=1e-5,
-                )
-                solution = _MockSolution(solution.root, solution.converged)
-            except ValueError as e:
-                logger.error(f"Bracket method failed: {e}", exc_info=True)
-                # Fall back to scipy.optimize.fsolve if bracket fails
-                initial_guess = (min_mass_rate + max_mass_rate) / 2
-                result = fsolve(error_function, initial_guess, full_output=True)
-                solution = _MockSolution(result[0][0], result[2] == 1)
-        else:
-            # No sign change found - try alternative methods
-            logger.warning("No bracketing possible - trying alternative solver methods")
-
-            # Try to find a good starting point
-            test_points = [
-                min_mass_rate,
-                max_mass_rate,
-                (min_mass_rate + max_mass_rate) / 2,
-            ]
-            best_point = min_mass_rate
-            best_error = abs(error_function(min_mass_rate))
-
-            for point in test_points:
-                error = abs(error_function(point))
-                if error < best_error:
-                    best_error = error
-                    best_point = point
-
-            logger.info(
-                f"Best starting point: {best_point:.6f} kg/s with error: {best_error:.6f}"
-            )
-
-            # Try minimize_scalar to find minimum error
-            result = minimize_scalar(
-                lambda x: abs(error_function(x)),
-                bounds=(min_mass_rate, max_mass_rate),
-                method="bounded",
-            )
-
-            if result.success and abs(result.fun) < 1e-3:
-                solution = _MockSolution(result.x, True)
-                logger.info(
-                    f"Alternative method found solution: {result.x:.6f} kg/s with error: {result.fun:.6f}"
-                )
-            else:
-                # Last resort - use the best point we found
-                solution = _MockSolution(
-                    best_point, abs(best_error) < 1.0
-                )  # Accept if error < 1 psi
-                logger.warning(
-                    f"Using best approximation: {best_point:.6f} kg/s with error: {best_error:.6f} psi"
-                )
-
-        if not solution.converged:
-            logger.warning("Solver did not converge. Check your bracket or function.")
-            raise RuntimeError(
-                f"Pipeline solver did not converge for pipeline - {self.name!r}. Check pipe parameter, pressures and flow conditions for unphysical conditions.",
-            )
-
-        mass_flow_solution = abs(
-            float(
-                solution.root.real
-                if isinstance(solution.root, complex)
-                else solution.root
-            )
+        mass_flow_rate = self._get_mass_rate(
+            target_downstream_pressure=target_downstream_pressure.magnitude,
+            min_mass_rate=min_mass_rate,
+            max_mass_rate=max_mass_rate,
+            max_iterations=20,
         )
-        actual_mass_flow_rate = Quantity(mass_flow_solution, "kg/s")
-        logger.info("Actual Mass Flow Rate: %s", actual_mass_flow_rate)
+        mass_flow_rate = Quantity(mass_flow_rate, "kg/s")
+        logger.info("Computed (Actual) Mass Flow Rate: %s", mass_flow_rate)
         # Now we run the calculation one last time with the correct flow rate
         # to update all the intermediate pressures in your pipe objects.
-        computed_downstream_pressure = self._compute_outlet_pressure(
-            actual_mass_flow_rate, set_pressures=True
+        computed_downstream_pressure = self._resolve_flow(
+            mass_flow_rate, set_values=True
         )
-        logger.info("Computed Downstream Pressure: %s", computed_downstream_pressure)
-        assert (
-            abs((computed_downstream_pressure - target_downstream_pressure).magnitude)
-            < 1e-2
-        ), "Final computed downstream pressure does not match target within tolerance."
+        has_closed_valve = any(pipe.has_closed_valve() for pipe in self._pipes)
+        # Only check final pressure if there are no closed valves, as we
+        # expect the final pressure to be zero in that case.
+        if not has_closed_valve:
+            logger.info(
+                "Computed Downstream Pressure: %s", computed_downstream_pressure
+            )
+            assert (
+                abs(
+                    (
+                        computed_downstream_pressure - target_downstream_pressure
+                    ).magnitude
+                )
+                <= 1e-2
+            ), (
+                "Final computed downstream pressure does not match target within tolerance."
+            )
         return self
 
     def connect(self, other: typing.Union[Pipe, "Pipeline"]) -> Self:
