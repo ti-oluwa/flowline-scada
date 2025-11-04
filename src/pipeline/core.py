@@ -1826,7 +1826,7 @@ class Pipe:
     @property
     def is_leaking(self) -> bool:
         """Whether the pipe has any active leaks."""
-        if self._ignore_leaks:
+        if self._ignore_leaks or self.fluid is None or self.flow_rate.magnitude <= 0:
             return False
         return any(leak.active for leak in self._leaks)
 

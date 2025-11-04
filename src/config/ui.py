@@ -316,6 +316,24 @@ class ConfigurationUI:
 
                 with ui.column().classes("w-full gap-2"):
                     with ui.row().classes("w-full gap-4 items-center"):
+                        ui.label("Sounds:").classes("w-24").tooltip(
+                            "Enable or disable sound effects in the application UI."
+                        )
+                        ui.switch(
+                            value=config.sounds_enabled,
+                            on_change=lambda e: self.config.update(
+                                "global_", sounds_enabled=e.value
+                            ),
+                        ).tooltip(
+                            "Toggle sound effects in the application UI. When enabled, actions like button clicks and notifications"
+                            " will produce sound feedback."
+                        )
+                    ui.label(
+                        "When enabled, sound effects will play for UI actions. "
+                        "When disabled, the application will be silent."
+                    ).classes("text-xs text-gray-600")
+
+                    with ui.row().classes("w-full gap-4 items-center"):
                         ui.label("Auto-save:").classes("w-24").tooltip(
                             "Controls whether configuration changes are saved automatically or require manual saving."
                         )

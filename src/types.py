@@ -352,6 +352,8 @@ class GlobalConfig:
     """Custom unit systems defined by user"""
     auto_save: bool = False
     """Whether to auto-save configurations"""
+    sounds_enabled: bool = True
+    """Whether sounds are enabled in the application"""
 
 
 @attrs.define(slots=True, frozen=True)
@@ -421,4 +423,4 @@ class EventSubscription:
             return bool(self._regex.match(event))
         if self._is_prefix:
             return event.startswith(self._prefix)
-        return event == self.pattern
+        return event == self.event

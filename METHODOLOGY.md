@@ -283,7 +283,76 @@ $$
 
 A leak is indicated when $Q_{imbalance} > \epsilon$ (threshold based on measurement accuracy).
 
-### 3.11 Thermodynamic Property Calculation
+### 3.11 Valve Control and Flow Isolation
+
+#### 3.11.1 Valve Representation
+
+Valves can be placed at the start (inlet) or end (outlet) of any pipe segment. Each valve has two states:
+
+- **Open**: Allows normal flow through the pipe segment
+- **Closed**: Blocks all flow through the valve
+
+#### 3.11.2 Flow Calculations with Closed Valves
+
+When a valve is closed, the system adjusts flow calculations as follows:
+
+**For Start Valve (Closed):**
+
+- No flow enters the pipe segment: $Q_{in} = 0$
+- All downstream pipes receive zero flow
+- Pressure remains at upstream value (no flow = no pressure drop)
+
+**For End Valve (Closed):**
+
+- Flow enters pipe segment normally: $Q_{in} = Q_{nominal}$
+- No flow exits to downstream pipes: $Q_{out} = 0$
+- Pressure drop occurs across pipe, but outlet pressure is maintained
+- Downstream pipes receive zero flow
+
+#### 3.11.3 Mass Flow Rate Range Optimization
+
+The solver optimizes mass flow rate range calculations by detecting closed valves:
+
+**Algorithm:**
+
+```python
+for each pipe in pipeline:
+    # Check if any upstream pipe has closed valve
+    if previous_pipe.has_closed_valve():
+        break  # Stop including pipes beyond blockage
+    
+    # Check current pipe's valves
+    if pipe.start_valve.is_closed():
+        break  # No flow enters this pipe
+    
+    if pipe.end_valve.is_closed():
+        # Include current pipe, then stop
+        include_pipe_in_calculation()
+        break
+    
+    # Include pipe in total length/roughness/efficiency calculations
+    include_pipe_in_calculation()
+```
+
+This ensures the solver only calculates flow through accessible pipe segments, improving convergence and accuracy.
+
+#### 3.11.4 Valve Isolation Strategies
+
+Valves enable simulation of emergency isolation procedures:
+
+**Partial Isolation:**
+
+- Close valves upstream/downstream of leak
+- Isolate affected section while maintaining flow elsewhere
+- Calculate remaining inventory in isolated section
+
+**Full Shutdown:**
+
+- Close all valves sequentially
+- Model pressure decay and inventory loss
+- Estimate blowdown time and gas release
+
+### 3.12 Thermodynamic Property Calculation
 
 The system uses **CoolProp** library to compute real-time fluid properties from pressure and temperature:
 
@@ -347,15 +416,27 @@ The physical pipeline is divided into discrete segments (pipes), each modeled as
 - Diameter (mm)
 - Discharge coefficient (typically 0.6)
 - Active/inactive status for scenario testing
+- Visual indicators with precise location markers
+- Clickable leak summary panel for quick overview
+
+**Valve Configurations:**
+
+- Start valve (inlet) and/or end valve (outlet) for each pipe segment
+- Open/closed state control
+- Visual representation (straight valves for same-direction flow, elbow valves for direction changes)
+- Color-coded status indicators (green = open, red = closed)
+- Interactive control panel for toggling valve states
 
 **Sequential Pipeline Structure:**
 
 ```text
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   Pipe 1    │───▶│   Pipe 2    │───▶│   Pipe 3    │
-│ P₁→P₂, Q₁   │    │ P₂→P₃, Q₂   │    │ P₃→P₄, Q₃   │
-│ Leak @ 0.5  │    │  No leaks   │    │ Leak @ 0.3  │
-└─────────────┘    └─────────────┘    └─────────────┘
+┌─────────────┐ [V] ┌─────────────┐     ┌─────────────┐ [V]
+│   Pipe 1    │─────│   Pipe 2    │────▶│   Pipe 3    │─────
+│ P₁→P₂, Q₁   │     │ P₂→P₃, Q₂   │     │ P₃→P₄, Q₃   │
+│ Leak @ 0.5  │     │ Valve@end   │     │ Leak @ 0.3  │
+└─────────────┘     └─────────────┘     └─────────────┘
+       ↓                  [V] = Valve (open/closed)
+    (leak)
 ```
 
 Each pipe segment:
@@ -505,11 +586,18 @@ Interactive SVG-based visualization provides real-time pipeline status:
 - **Color Coding**: Rate-based (configurable, typically blue=low, green=moderate, red=high)
 - **Flow Direction**: Animated arrows showing flow direction
 - **Leak Indicators**:
-  - Visual markers at leak locations
+  - Visual markers at precise leak locations (fractional position along pipe)
   - Spray particles animated to show escaping gas
   - Color-coded by severity (yellow=small, red=large)
-- **Connectors**: Joints between pipe segments
-- **Flow Particles**: Animated dots moving through pipes (speed ∝ flow rate)
+  - Hover tooltips showing leak details
+- **Valve Components**:
+  - Straight valves: For pipes with same flow direction
+  - Elbow valves: For direction changes in pipeline
+  - Color-coded valve body (green = open, red = closed)
+  - Dynamic handle positioning indicating outlet direction
+  - Circular valve mechanism at center of elbow junctions
+- **Connectors**: Joints between pipe segments (automatically omitted when valves present)
+- **Flow Particles**: Animated dots moving through pipes (speed ∝ flow rate, stop at closed valves)
 
 **Real-time Updates:**
 
@@ -542,11 +630,38 @@ The operator interface provides comprehensive configuration tools:
 
 **Leak Management:**
 
-- **Add Leak**: Select pipe, specify location, diameter, discharge coefficient
-- **Configure Parameters**: Adjust leak properties
+- **Add Leak**: Select pipe, specify location (0.0-1.0), diameter, discharge coefficient
+- **Configure Parameters**: Adjust leak properties interactively
 - **Activate/Deactivate**: Toggle leaks on/off for scenario testing
-- **View Summary**: Table showing all leaks with location and severity
+- **Visual Location Markers**: Precise indicators show exact leak position on pipeline
+- **Leak Summary Panel**: Toggleable panel displaying all leaks with:
+  - Pipe identification
+  - Leak location (fraction and visual position)
+  - Leak diameter and severity classification
+  - Activation status
+  - Click-to-toggle functionality for quick leak control
 - **Clear All Leaks**: Remove all leaks from system
+
+**Valve Management:**
+
+- **Add Valves**: Place start valve (inlet) or end valve (outlet) on any pipe segment
+- **Remove Valves**: Delete valves from pipe segments
+- **Toggle Valve State**: Open or close valves interactively
+- **Visual Representation**:
+  - Straight valves for pipes with same flow direction
+  - Elbow valves for pipes with direction changes
+  - Dynamic handle positioning to indicate flow direction
+  - Color-coded valve body (green = open, red = closed)
+- **Valve Summary Panel**: Toggleable panel showing all valves with:
+  - Pipe identification
+  - Valve position (start/end)
+  - Current state (open/closed)
+  - Click-to-toggle functionality
+  - Count of valves per pipe
+- **Intelligent UI Controls**:
+  - Auto-hide redundant valve options (e.g., no start valve option if previous pipe has end valve)
+  - Skip connectors when valves are present at junctions
+  - Prevent duplicate valves at same location
 
 **Fluid Properties Configuration:**
 
@@ -772,26 +887,72 @@ Where $\epsilon$ is the meter accuracy (typically 0.5-2%).
 - **Visual Update**: 500ms refresh rate
 - **Practical Detection**: Depends on leak size and flow stabilization
 
-#### 5.4.3 Current Limitations
+#### 5.4.3 Enhanced Capabilities
 
-**No Implementation of:**
+**Implemented Features:**
 
-- **Leak Location**: System doesn't automatically determine where leak is
+- **Precise Leak Location Markers**: Visual indicators show exact leak position along pipe segments
+- **Interactive Leak Summary**: Toggleable panel with complete leak inventory and status
+- **Manual Valve Isolation**: Operator can close valves to isolate leak sections
+- **Visual Leak Indicators**: Color-coded markers by severity with hover details
+
+**Current Limitations:**
+
+- **No Automated Leak Location**: System doesn't calculate leak position from sensor data
 - **Historical Trending**: No data logging or pattern analysis  
 - **Pressure Wave Analysis**: Transient methods not implemented
-- **Multiple Segment Isolation**: No automated valve control logic
+- **No Automated Isolation**: Valve control is manual, no automatic emergency response
 
 **User Must:**
 
-- Visually inspect pipeline diagram for leak location
-- Manually test different segments by adding/removing leaks
-- Rely on operator knowledge for interpretation
+- Add leaks manually at specified locations for simulation
+- Visually inspect pipeline diagram using location markers
+- Manually operate valves for isolation procedures
+- Rely on operator knowledge for leak assessment and response
 
 ---
 
 ## 6. Emergency Response Planning
 
-### 6.1 Scenario Simulation
+### 6.1 Valve-Based Isolation and Control
+
+The addition of valve controls transforms the simulator into a comprehensive emergency response training tool:
+
+#### 6.1.1 Isolation Procedures
+
+**Leak Isolation Workflow:**
+
+1. **Detect Leak**: Identify leak location via flow imbalance and visual indicators
+2. **Locate Section**: Determine which pipe segment contains the leak
+3. **Identify Isolation Valves**: Find nearest upstream and downstream valves
+4. **Close Valves**: Simulate valve closure to isolate affected section
+5. **Monitor Impact**: Observe flow redistribution and pressure changes
+6. **Calculate Inventory**: Estimate trapped gas volume in isolated section
+
+**Valve Closure Sequencing:**
+
+- **Downstream First**: Close downstream valve before upstream to prevent over-pressurization
+- **Gradual Closure**: Simulate staged valve closure to minimize water hammer effects
+- **Bypass Considerations**: Test alternative flow paths when available
+
+#### 6.1.2 Emergency Shutdown Simulation
+
+**Total Shutdown Procedure:**
+
+1. **Initiate Shutdown**: Close all inlet valves to stop new gas entry
+2. **Isolate Sections**: Close intermediate valves to create isolated segments
+3. **Blowdown Planning**: Calculate gas inventory in each section
+4. **Depressurization**: Model pressure decay over time
+5. **Safety Assessment**: Verify all sections properly isolated
+
+**Metrics Calculated:**
+
+- **Trapped Inventory**: Total gas volume in each isolated section
+- **Pressure Decay Rate**: How quickly pressure drops in isolated sections
+- **Time to Safe Pressure**: When sections reach safe maintenance pressure
+- **Vent Gas Volume**: Total gas that must be safely vented
+
+### 6.2 Scenario Simulation
 
 The system enables operators to simulate various failure scenarios:
 
@@ -804,27 +965,48 @@ The system enables operators to simulate various failure scenarios:
 - **Discharge Coefficient**: Orifice characteristic (0.4-0.8)
 - **Activation Time**: When leak occurs (for transient analysis)
 
-#### 6.1.2 "What-If" Analysis
+#### 6.2.2 "What-If" Analysis with Valve Control
 
-Operators can test:
+Operators can test comprehensive scenarios:
 
-1. **Response Time Impact**: How quickly must valve closure occur?
-2. **Isolation Strategy**: Which sections to isolate?
-3. **Pressure Management**: Optimal bleed-down procedures?
-4. **Inventory Loss**: Expected gas loss over time?
+1. **Response Time Impact**: How quickly must valve closure occur to minimize loss?
+2. **Isolation Strategy**: Which valve combination provides best isolation?
+3. **Pressure Management**: Optimal bleed-down procedures for each section?
+4. **Inventory Loss**: Expected gas loss before successful isolation?
+5. **Alternative Flow Paths**: Can flow be rerouted through other sections?
+6. **Partial Operation**: Which sections can remain operational during repairs?
 
-**Example Workflow:**
+**Example Workflow with Valves:**
 
+```text
+1. Configure normal operation (baseline) - all valves open
+2. Add simulated leak at specific location (e.g., Pipe 2 @ 0.6)
+3. Observe system response:
+   - Flow imbalance appears
+   - Leak rate displayed
+   - Pressure distribution changes
+4. Identify isolation valves:
+   - Pipe 2 end valve (downstream)
+   - Pipe 3 start valve (redundant, if present)
+5. Close isolation valves in sequence:
+   - Close downstream valve first
+   - Close upstream valve second
+6. Observe isolation effectiveness:
+   - Flow stops through affected section
+   - Leak rate continues from trapped inventory
+   - Upstream sections maintain normal operation
+7. Calculate trapped inventory and bleed-down requirements
+8. Document procedure and response time
 ```
-1. Configure normal operation (baseline)
-2. Add simulated leak at station X
-3. Observe system response (pressure, flow changes)
-4. Test isolation valve closure
-5. Evaluate residual pressure and inventory
-6. Document response procedure
-```
 
-### 6.2 Response Procedures
+**Advanced Scenarios:**
+
+- **Multiple Leaks**: Test response to simultaneous failures at different locations
+- **Valve Failure**: Simulate stuck valve, requiring alternative isolation path
+- **Cascading Shutdown**: Model domino effect of sequential valve closures
+- **Partial Restoration**: Test bringing isolated sections back online safely
+
+### 6.3 Response Procedures
 
 The system supports development of:
 
@@ -842,7 +1024,7 @@ The system supports development of:
 - Equipment activation
 - Documentation requirements
 
-### 6.3 Training Mode
+### 6.4 Training Mode
 
 A dedicated training interface allows:
 
@@ -974,17 +1156,17 @@ Key parameters tested for sensitivity:
 
 **Leak Detection:**
 
-- **No Automated Location**: System shows leak exists but doesn't calculate where
 - **No Historical Data**: No data logging, trending, or statistical analysis
-- **Manual Leak Placement**: User must add leaks manually (not real sensor-driven)
-- **No Pressure Wave Methods**: Doesn't use transient pressure analysis
+- **Manual Leak Placement**: User must add leaks manually with precise location specification (not real sensor-driven)
+- **No Pressure Wave Methods**: Doesn't use transient pressure analysis for location
 
 **Operational:**
 
 - **No Real Hardware Integration**: Simulated SCADA only, no actual sensor connections
-- **No Control Logic**: No automated valve operation or emergency shutdown sequences
+- **Manual Valve Control**: Valves controlled by operator, no automated emergency shutdown sequences
 - **No Uncertainty Modeling**: Assumes perfect sensors and measurements
 - **Limited Network Analysis**: Single pipeline only, no complex network topologies
+- **No Time-Based Automation**: Valve closures are instantaneous, no motor-operated valve timing simulation
 
 ### 10.2 Planned Enhancements
 
@@ -1019,10 +1201,17 @@ This SCADA-based flowline simulator provides petroleum engineers with a practica
 ### 11.1 Core Capabilities
 
 1. **Accurate Flow Modeling**: Automatic equation selection based on fluid properties and pipe geometry
-2. **Visual Leak Detection**: Real-time comparison of inlet vs outlet flow rates with graphical indicators  
-3. **Scenario Simulation**: Add, configure, and test multiple leak scenarios safely
-4. **Educational Tool**: Demonstrates flow balance principles and leak detection methods
-5. **Configuration Management**: Save and share pipeline setups for training and planning
+2. **Visual Leak Detection**: Real-time comparison of inlet vs outlet flow rates with precise location markers  
+3. **Valve Control System**: Interactive valve placement and control for isolation and emergency response simulation
+4. **Scenario Simulation**: Add, configure, and test multiple leak scenarios with valve isolation strategies
+5. **Enhanced Visualization**:
+   - Precise leak location indicators
+   - Color-coded valve status (open/closed)
+   - Straight and elbow valve representations
+   - Clickable summary panels for leaks and valves
+6. **Emergency Response Training**: Simulate leak isolation procedures with realistic valve operations
+7. **Educational Tool**: Demonstrates flow balance principles, leak detection methods, and isolation strategies
+8. **Configuration Management**: Save and share pipeline setups including valve configurations for training and planning
 
 ### 11.2 Practical Applications
 
@@ -1031,6 +1220,9 @@ This SCADA-based flowline simulator provides petroleum engineers with a practica
 - Teach leak detection principles to operations personnel
 - Demonstrate effects of leak size and location on system behavior
 - Practice reading SCADA displays and interpreting flow imbalances
+- **Simulate emergency isolation procedures** with valve operations
+- **Train valve sequencing** for optimal leak containment
+- Practice locating leaks using visual markers and flow imbalance data
 - Test understanding of compressible flow behavior
 
 **For Planning:**
@@ -1038,7 +1230,11 @@ This SCADA-based flowline simulator provides petroleum engineers with a practica
 - Estimate leak rates for different hole sizes
 - Understand relationship between pressure, flow rate, and leakage
 - Evaluate effects of pipeline geometry on detection sensitivity
-- Document baseline configurations for reference
+- **Design optimal valve placement** for emergency isolation
+- **Test isolation strategies** for different leak scenarios
+- **Calculate trapped inventory** in isolated sections
+- Model impact of valve closures on upstream/downstream sections
+- Document baseline configurations and emergency response procedures
 
 **For Analysis:**
 
@@ -1053,10 +1249,21 @@ The simulator bridges the gap between theoretical pipeline hydraulics and practi
 
 - **Accessibility**: Web-based interface requiring no specialized software installation
 - **Transparency**: Clear visualization of calculations and flow behavior
-- **Flexibility**: Easy configuration and scenario testing
-- **Educational Focus**: Designed for learning rather than high-fidelity predictions
+- **Flexibility**: Easy configuration and scenario testing with valve control
+- **Interactive Control**: Realistic valve operation simulation for emergency response training
+- **Visual Feedback**: Precise leak location markers and color-coded valve status
+- **Educational Focus**: Designed for learning leak detection and isolation procedures
+- **Operational Realism**: Mimics real SCADA valve control interfaces
 
-By combining rigorous industry-standard equations with an intuitive SCADA-style interface, operators and engineers can develop better intuition for pipeline behavior, leak characteristics, and detection principles—essential knowledge for maintaining natural gas pipeline safety and integrity.
+By combining rigorous industry-standard equations with an intuitive SCADA-style interface enhanced with valve control and precise leak visualization, operators and engineers can develop better intuition for:
+
+- Pipeline flow behavior under normal and emergency conditions
+- Leak characteristics and detection principles
+- Emergency isolation procedures and valve sequencing
+- Impact of valve operations on system pressure and flow distribution
+- Trapped inventory calculations for isolated sections
+
+This comprehensive understanding is essential knowledge for maintaining natural gas pipeline safety and integrity, and for developing effective emergency response procedures.
 
 ---
 

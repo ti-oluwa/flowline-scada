@@ -9,6 +9,7 @@ import typing
 import redis
 import fastapi
 from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 
 from dotenv import find_dotenv, load_dotenv
 from nicegui import Client, ui
@@ -265,6 +266,13 @@ app = fastapi.FastAPI(
     redoc_url=None,
     debug=os.getenv("DEBUG", "False").lower() in ("t", "true", "yes", "on", "1", "y"),
 )
+
+# Mount static files directory for audio and other assets
+fixtures_path = Path(__file__).parent / "fixtures"
+if fixtures_path.exists():
+    app.mount("/fixtures", StaticFiles(directory=str(fixtures_path)), name="fixtures")
+    logger.info("Mounted fixtures directory at /fixtures")
+
 ui.run_with(
     app,
     title="Pipeline Simulation System",

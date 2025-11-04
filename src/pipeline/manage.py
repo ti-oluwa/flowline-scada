@@ -5,6 +5,7 @@ Pipeline Management UI
 import datetime
 from functools import partial
 import logging
+import os
 import typing
 
 import attrs
@@ -1815,6 +1816,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         )
         self.manager.subscribe("pipeline.leaks.cleared", self.on_leaks_cleared)
 
+        # Subscribe to leak events for sound alerts
+        self.manager.subscribe("pipeline.*", self.on_leak_status_change)
+
         # Subscribe to valve events
         self.manager.subscribe("pipeline.valve.added", self.on_valve_added)
         self.manager.subscribe("pipeline.valve.removed", self.on_valve_removed)
@@ -1847,6 +1851,18 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Index of the currently selected leak, or None if no selection."""
         self.leak_edit_mode: bool = False
         """Whether we're in leak edit mode or add mode."""
+
+        # Sound alert system for leak detection
+        self.leak_alert_audio = None
+        """Audio element for leak alert sound"""
+        self.leak_alert_button = None
+        """Button to toggle leak alert sound"""
+        self.leak_alert_muted: bool = False
+        """Whether the leak alert sound is muted by user"""
+        self._leak_alert_playing: bool = False
+        """Internal state tracking if alert is currently playing"""
+        self._is_cleaned_up: bool = False
+        """Flag to track if cleanup has been called"""
 
     # For easy access to configuration properties
     @property
@@ -2064,9 +2080,144 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         self.refresh_properties_panel()
         self.refresh_pipeline_preview()
 
+    def on_leak_event(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle any leak-related event for sound alert management."""
+        # if not self._is_cleaned_up:
+        self._update_leak_alert_state()
+
+    def on_leak_status_change(self, event: str, data: typing.Optional[typing.Dict]):
+        """Handle properties updated event to check for leak status changes."""
+        # if not self._is_cleaned_up:
+        self._update_leak_alert_state()
+
+    def _update_leak_alert_state(self):
+        """Update the leak alert sound based on current leak status."""
+        # Only proceed if sound alert is initialized and UI not cleaned up
+        if self.leak_alert_audio is None:
+            return
+
+        try:
+            # Check if sounds are enabled in global config
+            sounds_enabled = self.config.state.global_.sounds_enabled
+
+            # Check if pipeline has active leaks
+            pipeline = self.manager.get_pipeline()
+            has_leaks = pipeline.is_leaking
+
+            # Determine if alert should be playing
+            should_play = sounds_enabled and has_leaks and not self.leak_alert_muted
+
+            # Update audio state if needed
+            if should_play and not self._leak_alert_playing:
+                self._play_leak_alert()
+            elif not should_play and self._leak_alert_playing:
+                self._pause_leak_alert()
+
+            # Update button visual state if it exists
+            if self.leak_alert_button is not None:
+                self._update_leak_alert_button()
+        except RuntimeError as exc:
+            # Handle cases where UI elements have been deleted
+            if "parent slot" in str(exc):
+                logger.debug("UI elements deleted during leak alert update")
+                self._is_cleaned_up = True
+            else:
+                raise
+
+    def _play_leak_alert(self):
+        """Start playing the leak alert sound."""
+        if self.leak_alert_audio is not None:
+            logger.info("Playing leak alert sound")
+            try:
+                self.leak_alert_audio.play()
+                self._leak_alert_playing = True
+                logger.debug("Leak alert sound started")
+            except Exception as exc:
+                logger.error(f"Error playing leak alert: {exc}")
+
+    def _pause_leak_alert(self):
+        """Pause the leak alert sound."""
+        if self.leak_alert_audio is not None:
+            logger.info("Pausing leak alert sound")
+            try:
+                self.leak_alert_audio.pause()
+                self._leak_alert_playing = False
+                logger.debug("Leak alert sound paused")
+            except Exception as exc:
+                logger.error(f"Error pausing leak alert: {exc}")
+
+    def _toggle_leak_alert_mute(self):
+        """Toggle the mute state of the leak alert."""
+        self.leak_alert_muted = not self.leak_alert_muted
+        logger.info(f"Leak alert muted: {self.leak_alert_muted}")
+        self._update_leak_alert_state()
+
+    def _update_leak_alert_button(self):
+        """Update the leak alert button visual state."""
+        if self.leak_alert_button is None:
+            return
+
+        has_leaks = self.manager.get_pipeline().is_leaking
+        sounds_enabled = self.config.state.global_.sounds_enabled
+
+        # Determine button icon and color
+        if not sounds_enabled:
+            icon = "volume_off"
+            color = "grey"
+            tooltip = "Sounds disabled in settings"
+            should_pulse = False
+        elif not has_leaks:
+            icon = "notifications"
+            color = "green"
+            tooltip = "No leaks detected"
+            should_pulse = False
+        elif self.leak_alert_muted:
+            icon = "notifications_off"
+            color = "orange" if has_leaks else "grey"
+            tooltip = "Leak alert muted (click to unmute)"
+            should_pulse = False
+        else:  # has_leaks and not muted
+            icon = "notifications_active"
+            color = "red"
+            tooltip = "Leak alert active (click to mute)"
+            should_pulse = True
+
+        try:
+            # Update icon
+            self.leak_alert_button._props["icon"] = icon
+            # Update color by setting props
+            self.leak_alert_button.props(f'color="{color}"')
+
+            # Update classes - remove old animation, add new if needed
+            # Remove existing pulse class first
+            classes = self.leak_alert_button._classes
+            if "animate-pulse" in classes:
+                classes.remove("animate-pulse")
+
+            # Add pulse if needed
+            if should_pulse:
+                classes.append("animate-pulse")
+
+            # Update tooltip
+            self.leak_alert_button.tooltip(tooltip)
+            # Force button update
+            self.leak_alert_button.update()
+
+            logger.debug(
+                f"Updated leak alert button: icon={icon}, color={color}, pulse={should_pulse}"
+            )
+        except Exception as exc:
+            logger.error(f"Error updating leak alert button: {exc}")
+
     def cleanup(self):
         """Clean up resources and remove observers."""
         try:
+            # Mark as cleaned up to prevent event handlers from running
+            self._is_cleaned_up = True
+            # Stop any playing alert sound
+            if self._leak_alert_playing:
+                self._pause_leak_alert()
+
             # Remove all subscriptions for this UI instance
             self.manager.unsubscribe_all(self.on_pipe_added)
             self.manager.unsubscribe_all(self.on_pipe_removed)
@@ -2075,6 +2226,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.manager.unsubscribe_all(self.on_properties_updated)
             self.manager.unsubscribe_all(self.on_validation_changed)
             self.manager.unsubscribe_all(self.on_leaks_cleared)
+            self.manager.unsubscribe_all(self.on_leak_event)
+            self.manager.unsubscribe_all(self.on_leak_status_change)
             logger.info("Pipeline Manager UI cleaned up!")
         except Exception as exc:
             logger.error(
@@ -2139,8 +2292,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 else:
                     ui.space()  # Spacer when no label
 
-                # Configuration menu button
-                self.show_config_menu_button()
+                # Right side buttons
+                buttons_row = ui.row().classes("items-center gap-2")
+                with buttons_row:
+                    # Leak alert button
+                    self.show_leak_alert_button()
+                    # Configuration menu button
+                    self.show_config_menu_button()
 
             # Top panel - Pipeline preview
             self.show_preview_panel(pipeline_label=pipeline_label)
@@ -2168,6 +2326,66 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.show_flow_station_panel(flow_station_label=flow_station_label)
 
         return self.main_container
+
+    def show_leak_alert_button(self):
+        """Show leak alert sound control button with pulsating animation when active."""
+        # Create hidden audio element for leak alert
+        self.leak_alert_audio = ui.audio(
+            src=os.getenv(
+                "LEAK_ALERT_AUDIO_URL",
+                "https://res.cloudinary.com/dcryhwztl/video/upload/v1762255356/alert-109578_jocbg8.mp3",
+            ),
+            loop=True,
+            autoplay=False,
+            controls=False,
+            muted=False,
+        ).props("preload=auto")
+
+        # Hide the audio element
+        self.leak_alert_audio.style("display: none;")
+
+        # Determine initial button state
+        has_leaks = self.manager.get_pipeline().is_leaking
+        sounds_enabled = self.config.state.global_.sounds_enabled
+        logger.info(
+            f"Initializing leak alert button: has_leaks={has_leaks}, sounds_enabled={sounds_enabled}"
+        )
+
+        if not sounds_enabled:
+            icon = "volume_off"
+            color = "grey"
+            tooltip = "Sounds disabled in settings"
+        elif self.leak_alert_muted:
+            icon = "notifications_off"
+            color = "orange" if has_leaks else "grey"
+            tooltip = "Leak alert muted (click to unmute)"
+        elif has_leaks:
+            icon = "notifications_active"
+            color = "red"
+            tooltip = "Leak alert active (click to mute)"
+        else:
+            icon = "notifications"
+            color = "green"
+            tooltip = "No leaks detected"
+
+        # Create button with pulsating animation when alert is active
+        self.leak_alert_button = (
+            ui.button(
+                icon=icon,
+                on_click=lambda: self._toggle_leak_alert_mute(),
+                color=color,
+            )
+            .props("round")
+            .classes("text-sm p-1 sm:p-2")
+            .tooltip(tooltip)
+        )
+
+        # Add pulsating animation style when leaks are detected
+        if has_leaks and not self.leak_alert_muted and sounds_enabled:
+            self.leak_alert_button.classes("animate-pulse")
+
+        # Initialize alert state after a short delay to ensure DOM is ready
+        ui.timer(0.5, lambda: self._update_leak_alert_state(), once=True)
 
     def show_config_menu_button(self):
         """Show configuration menu button"""
