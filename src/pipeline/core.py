@@ -69,7 +69,14 @@ def show_alert(
         type = "ongoing"
     else:
         type = severity
-    ui.notify(message, type=type, timeout=duration, close_button=True, position="top")
+    ui.notify(
+        message,
+        type=type,
+        timeout=duration,
+        close_button=True,
+        position="top",
+        multi_line=True,
+    )
 
 
 class Meter:
@@ -260,11 +267,21 @@ class Meter:
     def _cancel_timers(self):
         """Cancel timers to free resources."""
         if self._animation_timer is not None:
-            self._animation_timer.cancel()
+            try:
+                if self._animation_timer.active:
+                    self._animation_timer.deactivate()
+                self._animation_timer.cancel()
+            except Exception:
+                pass
             self._animation_timer = None
 
         if self._update_timer is not None:
-            self._update_timer.cancel()
+            try:
+                if self._update_timer.active:
+                    self._update_timer.deactivate()
+                self._update_timer.cancel()
+            except Exception:
+                pass
             self._update_timer = None
 
     def __del__(self):
@@ -356,42 +373,50 @@ class Meter:
 
     def _animate_value(self) -> None:
         """Animate value with multi-level acceleration for large differences."""
-        if not self.visible:
-            return
+        try:
+            if not self.visible:
+                return
 
-        diff = self._target_value - self.value
-        abs_diff = abs(diff)
+            diff = self._target_value - self.value
+            abs_diff = abs(diff)
 
-        # Snap to target if very close
-        if abs_diff < 0.01:
-            self.value = self._target_value
+            # Snap to target if very close
+            if abs_diff < 0.01:
+                self.value = self._target_value
+                self.update_viz()
+                return
+
+            base_step = self.animation_speed * self.animation_interval
+            base_step = min(base_step, 10)
+
+            # Multi-level scaling
+            if abs_diff > 1000:
+                # Very large jump, snap instantly
+                step = base_step * 20
+            elif abs_diff > 200:
+                # Large jump, fast animation
+                step = base_step * 10
+            elif abs_diff > 50:
+                # Medium jump, moderate acceleration
+                step = base_step * 5
+            else:
+                # Small jump, normal speed
+                step = base_step
+
+            # Prevent overshoot
+            if step > abs_diff:
+                step = abs_diff
+
+            # Apply direction
+            self.value += step if diff > 0 else -step
             self.update_viz()
-            return
-
-        base_step = self.animation_speed * self.animation_interval
-        base_step = min(base_step, 10)
-
-        # Multi-level scaling
-        if abs_diff > 1000:
-            # Very large jump, snap instantly
-            step = base_step * 20
-        elif abs_diff > 200:
-            # Large jump, fast animation
-            step = base_step * 10
-        elif abs_diff > 50:
-            # Medium jump, moderate acceleration
-            step = base_step * 5
-        else:
-            # Small jump, normal speed
-            step = base_step
-
-        # Prevent overshoot
-        if step > abs_diff:
-            step = abs_diff
-
-        # Apply direction
-        self.value += step if diff > 0 else -step
-        self.update_viz()
+        except RuntimeError as e:
+            # Handle parent slot deletion
+            if "parent slot" in str(e).lower():
+                self._cancel_timers()
+        except Exception:
+            # Silently ignore other errors during cleanup
+            pass
 
     def _update_value(self) -> None:
         """
@@ -399,15 +424,22 @@ class Meter:
 
         To be called periodically by timer.
         """
-        if self.update_func is not None:
-            try:
+        try:
+            if self.update_func is not None:
                 new_value = self.update_func()
                 if new_value is not None:
                     self.set_value(new_value, immediate=False)
-            except Exception as exc:
-                if self.alert_errors:
+        except RuntimeError as e:
+            # Handle parent slot deletion
+            if "parent slot" in str(e).lower():
+                self._cancel_timers()
+        except Exception as exc:
+            if self.alert_errors:
+                try:
                     show_alert(f"Error updating {self.label}: {exc}", severity="error")
-                logger.error(f"Error in update function: {exc}", exc_info=True)
+                except Exception:
+                    pass
+            logger.error(f"Error in update function: {exc}", exc_info=True)
 
     def set_value(self, value: float, immediate: bool = False) -> Self:
         """
@@ -1792,7 +1824,7 @@ class Pipe:
         """Temperature of the pipe fluid at the pipe outlet."""
         if self.flow_rate.magnitude == 0:
             return Quantity(0, "degF")
-        
+
         inlet_fluid = self.inlet_fluid
         if inlet_fluid is None:
             return None
@@ -3646,7 +3678,7 @@ class Pipeline:
                 self._pipes.pop(index)  # Rollback addition
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to synchronize pipeline properties after adding pipe - {self.name!r}: {exc}",
+                        f"Pipeline synchronization after adding pipe to {self.name!r} failed: \n{exc}",
                         severity="error",
                     )
                 raise
@@ -3690,12 +3722,12 @@ class Pipeline:
         if sync:
             try:
                 self.sync()
-            except Exception as e:
+            except Exception as exc:
                 if removed_pipe:
                     self._pipes.insert(index, removed_pipe)  # Rollback removal
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to update pipeline properties after removing pipe - {self.name!r}: {e}",
+                        f"Pipeline synchronization after removing pipe from {self.name!r} failed: \n{exc}",
                         severity="error",
                     )
                 raise

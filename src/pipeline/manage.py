@@ -1594,60 +1594,103 @@ class PipelineManager(typing.Generic[PipelineT]):
         """
         try:
             config_data = orjson.loads(json_data)
+        except Exception as exc:
+            raise ValueError(f"Invalid JSON format: {exc}")
 
-            # Clear existing pipes
-            self._pipe_configs.clear()
+        # Clear existing pipes
+        self._pipe_configs.clear()
 
-            # Import pipe configurations
-            if "pipes" in config_data:
-                for pipe_data in config_data["pipes"]:
+        # Import pipe configurations - EAFP
+        try:
+            for pipe_data in config_data.get("pipes", []):
+                try:
                     pipe_config = converter.structure(pipe_data, PipeConfig)
                     self._pipe_configs.append(pipe_config)
-
-            # Import fluid configuration
-            if "fluid" in config_data:
-                self._fluid_config = converter.structure(
-                    config_data["fluid"], FluidConfig
-                )
-
-            # Import pipeline settings if available
-            if "pipeline" in config_data:
-                pipeline_data = config_data["pipeline"]
-                if "name" in pipeline_data:
-                    self._pipeline.name = pipeline_data["name"]
-                if "scale_factor" in pipeline_data:
-                    self._pipeline.set_scale_factor(
-                        pipeline_data["scale_factor"], update_viz=False
-                    )
-                if "max_flow_rate" in pipeline_data:
-                    self._pipeline.set_max_flow_rate(
-                        structure_quantity(pipeline_data["max_flow_rate"], None),
-                        update_viz=False,
-                    )
-                if "connector_length" in pipeline_data:
-                    self._pipeline.set_connector_length(
-                        structure_quantity(pipeline_data["connector_length"], None),
-                        sync=False,
-                    )
-                if "flow_type" in pipeline_data:
-                    self._pipeline.set_flow_type(
-                        FlowType(pipeline_data["flow_type"]), sync=False
-                    )
-
-            # Rebuild pipeline from imported configs
-            self.sync(validate=True)
-            self.notify(
-                "pipeline.configuration.imported", data={"refresh_flow_stations": True}
-            )
-
-            logger.info(
-                f"Imported configuration: {len(self._pipe_configs)} pipes and fluid '{self._fluid_config.name}'"
-            )
-            return self
-
+                except Exception as exc:
+                    logger.warning(f"Failed to import pipe config: {exc}")
+                    # Continue importing other pipes
         except Exception as exc:
-            logger.error(f"Error importing configuration: {exc}", exc_info=True)
-            raise ValueError(f"Failed to import configuration: {exc}")
+            logger.error(f"Error importing pipes: {exc}", exc_info=True)
+
+        # Import fluid configuration - EAFP
+        try:
+            fluid_data = config_data["fluid"]
+            self._fluid_config = converter.structure(fluid_data, FluidConfig)
+        except KeyError:
+            logger.warning("No fluid configuration found in import")
+        except Exception as exc:
+            logger.error(f"Error importing fluid: {exc}", exc_info=True)
+
+        # Import pipeline settings if available - EAFP
+        try:
+            pipeline_data = config_data["pipeline"]
+            
+            # Name
+            try:
+                self._pipeline.name = pipeline_data["name"]
+            except (KeyError, AttributeError):
+                pass
+            
+            # Scale factor
+            try:
+                self._pipeline.set_scale_factor(
+                    pipeline_data["scale_factor"], update_viz=False
+                )
+            except (KeyError, AttributeError):
+                pass
+            
+            # Max flow rate
+            try:
+                self._pipeline.set_max_flow_rate(
+                    structure_quantity(pipeline_data["max_flow_rate"], None),
+                    update_viz=False,
+                )
+            except (KeyError, AttributeError):
+                pass
+            
+            # Connector length
+            try:
+                self._pipeline.set_connector_length(
+                    structure_quantity(pipeline_data["connector_length"], None),
+                    sync=False,
+                )
+            except (KeyError, AttributeError):
+                pass
+            
+            # Flow type
+            try:
+                self._pipeline.set_flow_type(
+                    FlowType(pipeline_data["flow_type"]), sync=False
+                )
+            except (KeyError, AttributeError, ValueError):
+                pass
+                
+        except KeyError:
+            # No pipeline settings in config
+            pass
+        except Exception as exc:
+            logger.warning(f"Error importing pipeline settings: {exc}")
+
+        # Rebuild pipeline from imported configs
+        try:
+            self.sync(validate=True)
+        except Exception as exc:
+            logger.error(f"Error syncing after import: {exc}", exc_info=True)
+            raise ValueError(f"Failed to rebuild pipeline: {exc}")
+
+        # Notify
+        try:
+            self.notify(
+                "pipeline.configuration.imported", 
+                data={"refresh_flow_stations": True}
+            )
+        except Exception:
+            pass
+
+        logger.info(
+            f"Imported configuration: {len(self._pipe_configs)} pipes and fluid '{self._fluid_config.name}'"
+        )
+        return self
 
     def get_pipeline(self) -> PipelineT:
         """Get the managed pipeline instance."""
@@ -1884,6 +1927,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Whether the leak alert sound is muted by user"""
         self._leak_alert_playing: bool = False
         """Internal state tracking if alert is currently playing"""
+        self._leak_alert_timer = None
+        """Timer for initializing leak alert state"""
         self._is_cleaned_up: bool = False
         """Flag to track if cleanup has been called"""
 
@@ -1928,7 +1973,29 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     def on_pipeline_config_imported(
         self, event: str, data: typing.Optional[typing.Dict]
     ):
+        """Handle pipeline configuration import event."""
         data = data or {}
+        
+        # Clean up and reset leak alert system before refreshing
+        if self._leak_alert_timer is not None:
+            try:
+                self._leak_alert_timer.deactivate()
+            except Exception:
+                pass
+            self._leak_alert_timer = None
+        
+        # Pause any playing alert
+        if self._leak_alert_playing:
+            try:
+                self._pause_leak_alert()
+            except Exception:
+                pass
+        
+        # Reset alert state
+        self._leak_alert_playing = False
+        self.leak_alert_muted = False
+        
+        # Refresh UI
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
         if self.flow_station_container is None or (
@@ -2249,9 +2316,27 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         try:
             # Mark as cleaned up to prevent event handlers from running
             self._is_cleaned_up = True
+            
+            # Cancel leak alert timer if it exists
+            if self._leak_alert_timer is not None:
+                try:
+                    self._leak_alert_timer.deactivate()
+                except Exception:
+                    pass
+                self._leak_alert_timer = None
+            
             # Stop any playing alert sound
             if self._leak_alert_playing:
                 self._pause_leak_alert()
+            
+            # Clean up flow stations' timers
+            if self.current_flow_stations:
+                for station in self.current_flow_stations:
+                    for meter in station.meters:
+                        try:
+                            meter._cancel_timers()
+                        except Exception:
+                            pass
 
             # Remove all subscriptions for this UI instance
             self.manager.unsubscribe_all(self.on_pipe_added)
@@ -2420,7 +2505,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             self.leak_alert_button.classes("animate-pulse")
 
         # Initialize alert state after a short delay to ensure DOM is ready
-        ui.timer(0.5, lambda: self._update_leak_alert_state(), once=True)
+        # Store timer reference for cleanup
+        self._leak_alert_timer = ui.timer(
+            0.5, lambda: self._update_leak_alert_state(), once=True
+        )
 
     def show_config_menu_button(self):
         """Show configuration menu button"""
@@ -2588,8 +2676,16 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     # Pipe info
                     pipe_info = ui.column().classes("flex-1 min-w-0")
                     with pipe_info:
-                        ui.label(f"{pipe_config.name}").classes(
-                            "font-medium text-sm sm:text-base truncate"
+                        # Clickable pipe name that opens details modal
+                        pipe_name_label = (
+                            ui.label(f"{pipe_config.name}")
+                            .classes(
+                                "font-medium text-sm sm:text-base truncate cursor-pointer hover:underline"
+                            )
+                            .style(f"color: {self.theme_color}")
+                        )
+                        pipe_name_label.on(
+                            "click", lambda idx=i: self.show_pipe_details_modal(idx)
                         )
 
                         # Display length, diameter, pressures, and flow rates in current unit system
@@ -2693,6 +2789,520 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             "Remove pipe from flowline" if pipe_count > 1 else ""
                         )
 
+    def show_pipe_details_modal(self, pipe_index: int):
+        """
+        Show a detailed modal with comprehensive pipe information.
+
+        :param pipe_index: Index of the pipe to display details for
+        """
+        pipe_configs = self.manager.get_pipe_configs()
+        if pipe_index >= len(pipe_configs):
+            return
+
+        pipe_config = pipe_configs[pipe_index]
+        pipeline = self.manager.get_pipeline()
+        pipe = (
+            pipeline.pipes[pipe_index]
+            if pipeline and pipe_index < len(pipeline.pipes)
+            else None
+        )
+        # Get units
+        length_unit = self.unit_system["length"]
+        diameter_unit = self.unit_system["diameter"]
+        pressure_unit = self.unit_system["pressure"]
+        temperature_unit = self.unit_system["temperature"]
+        flow_unit = self.unit_system["flow_rate"]
+        roughness_unit = self.unit_system["roughness"]
+        elevation_unit = self.unit_system["elevation"]
+
+        with (
+            ui.dialog() as dialog,
+            ui.card().classes("w-full max-w-3xl mx-2 p-4 max-h-[90vh] overflow-y-auto"),
+        ):
+            # Header with pipe name
+            header = ui.row().classes(
+                "w-full items-center justify-between mb-4 pb-3 border-b"
+            )
+            with header:
+                ui.label(pipe_config.name).classes(
+                    f"text-2xl font-bold text-{self.theme_color}-700"
+                )
+                ui.button(icon="close", on_click=dialog.close, color="grey").props(
+                    "flat round"
+                ).classes("text-sm")
+
+            # Basic Properties
+            basic_card = ui.card().classes(f"w-full mb-3 bg-{self.theme_color}-50")
+            with basic_card:
+                header_row = ui.row().classes("items-center gap-2 mb-2")
+                with header_row:
+                    ui.icon("settings")
+                    ui.label("Basic Properties").classes("text-lg font-semibold")
+
+                props_grid = ui.grid(columns=2).classes("w-full gap-3")
+                with props_grid:
+                    # Length
+                    with ui.column().classes("gap-1"):
+                        ui.label("Length").classes("text-xs text-gray-500 font-medium")
+                        ui.label(
+                            f"{pipe_config.length.to(length_unit.unit).magnitude:.4f} {length_unit}"
+                        ).classes("text-sm font-semibold")
+
+                    # Diameter
+                    with ui.column().classes("gap-1"):
+                        ui.label("Internal Diameter").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(
+                            f"{pipe_config.internal_diameter.to(diameter_unit.unit).magnitude:.4f} {diameter_unit}"
+                        ).classes("text-sm font-semibold")
+
+                    # Material
+                    with ui.column().classes("gap-1"):
+                        ui.label("Material").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(pipe_config.material).classes("text-sm font-semibold")
+
+                    # Direction
+                    with ui.column().classes("gap-1"):
+                        ui.label("Flow Direction").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(pipe_config.direction.value.title()).classes(
+                            "text-sm font-semibold"
+                        )
+
+                    # Efficiency
+                    with ui.column().classes("gap-1"):
+                        ui.label("Efficiency").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(f"{pipe_config.efficiency * 100:.2f}%").classes(
+                            "text-sm font-semibold"
+                        )
+
+            # Pressure & Flow
+            pressure_card = ui.card().classes("w-full mb-3 bg-blue-50")
+            with pressure_card:
+                header_row = ui.row().classes("items-center gap-2 mb-2")
+                with header_row:
+                    ui.icon("speed")
+                    ui.label("Pressure & Flow").classes("text-lg font-semibold")
+
+                flow_grid = ui.grid(columns=2).classes("w-full gap-3")
+                with flow_grid:
+                    # Upstream Pressure
+                    with ui.column().classes("gap-1"):
+                        ui.label("Upstream Pressure (P₁)").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(
+                            f"{pipe_config.upstream_pressure.to(pressure_unit.unit).magnitude:.4f} {pressure_unit}"
+                        ).classes("text-sm font-semibold")
+
+                    # Downstream Pressure
+                    with ui.column().classes("gap-1"):
+                        ui.label("Downstream Pressure (P₂)").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(
+                            f"{pipe_config.downstream_pressure.to(pressure_unit.unit).magnitude:.4f} {pressure_unit}"
+                        ).classes("text-sm font-semibold")
+
+                    # Flow Rate (if available)
+                    if pipe:
+                        with ui.column().classes("gap-1"):
+                            ui.label("Flow Rate").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            flow_val = pipe.flow_rate.to(flow_unit.unit)
+                            ui.label(f"{flow_val.magnitude:.4f} {flow_unit}").classes(
+                                "text-sm font-semibold"
+                            )
+
+                        # Pressure Drop
+                        with ui.column().classes("gap-1"):
+                            ui.label("Pressure Drop (ΔP)").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            pressure_drop = (
+                                pipe_config.upstream_pressure
+                                - pipe_config.downstream_pressure
+                            ).to(pressure_unit.unit)
+                            ui.label(
+                                f"{pressure_drop.magnitude:.4f} {pressure_unit}"
+                            ).classes("text-sm font-semibold")
+
+            # Advanced Properties
+            advanced_expansion = ui.expansion("More Properties", icon="tune").classes(
+                "w-full mb-3"
+            )
+            with advanced_expansion:
+                advanced_grid = ui.grid(columns=2).classes("w-full gap-3 p-2")
+                with advanced_grid:
+                    # Roughness
+                    with ui.column().classes("gap-1"):
+                        ui.label("Roughness").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(
+                            f"{pipe_config.roughness.to(roughness_unit.unit).magnitude:.6f} {roughness_unit}"
+                        ).classes("text-sm font-semibold")
+
+                    # Elevation Difference
+                    with ui.column().classes("gap-1"):
+                        ui.label("Elevation Difference").classes(
+                            "text-xs text-gray-500 font-medium"
+                        )
+                        ui.label(
+                            f"{pipe_config.elevation_difference.to(elevation_unit.unit).magnitude:.4f} {elevation_unit}"
+                        ).classes("text-sm font-semibold")
+
+                    if pipe:
+                        # Friction Factor
+                        with ui.column().classes("gap-1"):
+                            ui.label("Friction Factor").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            ui.label(
+                                f"{pipe.friction_factor:.6f}"
+                                if pipe.friction_factor
+                                else "N/A"
+                            ).classes("text-sm font-semibold")
+
+                        # Reynolds Number
+                        with ui.column().classes("gap-1"):
+                            ui.label("Reynolds Number").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            ui.label(
+                                f"{pipe.reynolds_number:.2f}"
+                                if pipe.reynolds_number
+                                else "N/A"
+                            ).classes("text-sm font-semibold")
+
+            # Temperature Data
+            temp_expansion = ui.expansion(
+                "Temperature Data", icon="thermostat"
+            ).classes("w-full mb-3")
+            with temp_expansion:
+                temp_grid = ui.grid(columns=2).classes("w-full gap-3 p-2")
+                with temp_grid:
+                    if pipe:
+                        # Upstream Temperature
+                        with ui.column().classes("gap-1"):
+                            ui.label("Upstream Temperature").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            if pipe.upstream_temperature is not None:
+                                temp_val = pipe.upstream_temperature.to(
+                                    temperature_unit.unit
+                                )
+                                ui.label(
+                                    f"{temp_val.magnitude:.2f} {temperature_unit}"
+                                ).classes("text-sm font-semibold")
+                            else:
+                                ui.label("N/A").classes(
+                                    "text-sm font-semibold text-gray-400"
+                                )
+
+                        # Downstream Temperature
+                        with ui.column().classes("gap-1"):
+                            ui.label("Downstream Temperature").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            if pipe.downstream_temperature is not None:
+                                temp_val = pipe.downstream_temperature.to(
+                                    temperature_unit.unit
+                                )
+                                ui.label(
+                                    f"{temp_val.magnitude:.2f} {temperature_unit}"
+                                ).classes("text-sm font-semibold")
+                            else:
+                                ui.label("N/A").classes(
+                                    "text-sm font-semibold text-gray-400"
+                                )
+                    else:
+                        ui.label("Temperature data not available").classes(
+                            "text-sm text-gray-500 italic"
+                        )
+
+            # Leaks
+            if pipe_config.leaks:
+                leaks_expansion = ui.expansion(
+                    f"Leaks ({len(pipe_config.leaks)})", icon="warning"
+                ).classes("w-full mb-3 bg-red-50")
+                with leaks_expansion:
+                    for leak_idx, leak_config in enumerate(pipe_config.leaks):
+                        # Get the actual PipeLeak object from the pipe if available
+                        leak_obj = None
+                        if pipe and leak_idx < len(pipe._leaks):
+                            leak_obj = pipe._leaks[leak_idx]
+
+                        leak_card = ui.card().classes(
+                            f"w-full mb-2 p-3 {'bg-red-100' if leak_config.active else 'bg-gray-100'}"
+                        )
+                        with leak_card:
+                            leak_header = ui.row().classes(
+                                "w-full items-center justify-between mb-2"
+                            )
+                            with leak_header:
+                                ui.label(
+                                    f"Leak {leak_idx + 1}: {leak_config.name or 'Unnamed'}"
+                                ).classes("font-semibold text-sm")
+                                ui.badge(
+                                    "Active" if leak_config.active else "Inactive",
+                                    color="red" if leak_config.active else "grey",
+                                ).classes("text-xs")
+
+                            leak_grid = ui.grid(columns=3).classes("w-full gap-2")
+                            with leak_grid:
+                                # Diameter
+                                with ui.column().classes("gap-1"):
+                                    ui.label("Diameter").classes(
+                                        "text-xs text-gray-500"
+                                    )
+                                    ui.label(
+                                        f"{leak_config.diameter.to(diameter_unit.unit).magnitude:.4f} {diameter_unit}"
+                                    ).classes("text-xs font-medium")
+
+                                # Location
+                                with ui.column().classes("gap-1"):
+                                    ui.label("Location").classes(
+                                        "text-xs text-gray-500"
+                                    )
+                                    ui.label(
+                                        f"{leak_config.location * 100:.1f}%"
+                                    ).classes("text-xs font-medium")
+
+                                # Discharge Coefficient
+                                with ui.column().classes("gap-1"):
+                                    ui.label("Discharge Coeff.").classes(
+                                        "text-xs text-gray-500"
+                                    )
+                                    ui.label(
+                                        f"{leak_config.discharge_coefficient:.2f}"
+                                    ).classes("text-xs font-medium")
+
+                                # Local Pressure at Leak Location
+                                local_pressure = None
+                                if pipe and leak_obj:
+                                    local_pressure = pipe.estimate_pressure_at_location(
+                                        leak_obj.location
+                                    )
+                                    with ui.column().classes("gap-1"):
+                                        ui.label("Local Pressure").classes(
+                                            "text-xs text-gray-500"
+                                        )
+                                        ui.label(
+                                            f"{local_pressure.to(pressure_unit.unit).magnitude:.2f} {pressure_unit}"
+                                        ).classes("text-xs font-medium text-blue-600")
+
+                                # Leak Rate
+                                if (
+                                    pipe
+                                    and leak_obj
+                                    and leak_obj.active
+                                    and pipe.fluid
+                                    and local_pressure is not None
+                                ):
+                                    # Calculate leak rate using the actual leak object
+                                    try:
+                                        leak_rate = leak_obj.compute_rate(
+                                            pipe_pressure=local_pressure,
+                                            ambient_pressure=pipe.ambient_pressure,
+                                            fluid_density=pipe.fluid.density,
+                                        )
+                                    except Exception:
+                                        leak_rate = None
+
+                                    with ui.column().classes("gap-1"):
+                                        ui.label("Leak Rate").classes(
+                                            "text-xs text-gray-500"
+                                        )
+                                        if leak_rate:
+                                            ui.label(
+                                                f"{leak_rate.to(flow_unit.unit).magnitude:.4f} {flow_unit}"
+                                            ).classes(
+                                                "text-xs font-medium text-red-600 font-bold"
+                                            )
+                                        else:
+                                            ui.label("N/A").classes(
+                                                "text-xs font-medium text-gray-400"
+                                            )
+
+                                    # Leak Severity
+                                    if leak_rate:
+                                        severity = leak_obj.get_severity(leak_rate)
+                                        severity_colors = {
+                                            "pinhole": "green",
+                                            "small": "yellow",
+                                            "moderate": "orange",
+                                            "large": "red",
+                                            "critical": "red",
+                                        }
+                                        with ui.column().classes("gap-1"):
+                                            ui.label("Severity").classes(
+                                                "text-xs text-gray-500"
+                                            )
+                                            ui.badge(
+                                                severity.title(),
+                                                color=severity_colors.get(
+                                                    severity, "grey"
+                                                ),
+                                            ).classes("text-xs")
+
+            # Valves
+            if pipe_config.valves:
+                valves_expansion = ui.expansion(
+                    f"Valves ({len(pipe_config.valves)})", icon="valve"
+                ).classes("w-full mb-3")
+                with valves_expansion:
+                    valves_grid = ui.grid(columns=2).classes("w-full gap-3 p-2")
+                    with valves_grid:
+                        for valve_config in pipe_config.valves:
+                            with ui.column().classes("gap-1"):
+                                ui.label(
+                                    f"{valve_config.position.title()} Valve"
+                                ).classes("text-xs text-gray-500 font-medium")
+
+                                # Get actual valve state from pipe if available
+                                if pipe:
+                                    actual_valve = pipe.get_valve(valve_config.position)
+                                    valve_state = (
+                                        "Open"
+                                        if actual_valve and actual_valve.is_open()
+                                        else "Closed"
+                                    )
+                                else:
+                                    valve_state = valve_config.state.title()
+
+                                valve_color = (
+                                    "green" if valve_state == "Open" else "red"
+                                )
+                                ui.badge(valve_state, color=valve_color)
+
+            # Fluid Properties
+            fluid_expansion = ui.expansion(
+                "Fluid Properties", icon="water_drop"
+            ).classes("w-full mb-3")
+            with fluid_expansion:
+                fluid_config = self.manager.get_fluid_config()
+                if pipe and pipe.fluid:
+                    fluid = pipe.fluid
+                    fluid_grid = ui.grid(columns=2).classes("w-full gap-3 p-2")
+                    with fluid_grid:
+                        # Name
+                        with ui.column().classes("gap-1"):
+                            ui.label("Name").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            ui.label(fluid_config.name).classes("text-sm font-semibold")
+
+                        # Phase
+                        with ui.column().classes("gap-1"):
+                            ui.label("Phase").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            ui.label(fluid_config.phase.title()).classes(
+                                "text-sm font-semibold"
+                            )
+
+                        # Temperature
+                        with ui.column().classes("gap-1"):
+                            ui.label("Temperature").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            temp_val = fluid.temperature.to(temperature_unit.unit)
+                            ui.label(
+                                f"{temp_val.magnitude:.2f} {temperature_unit}"
+                            ).classes("text-sm font-semibold")
+
+                        # Molecular Weight
+                        with ui.column().classes("gap-1"):
+                            ui.label("Molecular Weight").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            mol_weight_unit = self.unit_system["molecular_weight"]
+                            mol_val = fluid_config.molecular_weight.to(
+                                mol_weight_unit.unit
+                            )
+                            ui.label(
+                                f"{mol_val.magnitude:.2f} {mol_weight_unit}"
+                            ).classes("text-sm font-semibold")
+
+                        # Density
+                        with ui.column().classes("gap-1"):
+                            ui.label("Density").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            density = fluid.density
+                            density_unit = "kg/m³"
+                            ui.label(
+                                f"{density.to(density_unit).magnitude:.2f} {density_unit}"
+                            ).classes("text-sm font-semibold")
+
+                        # Viscosity
+                        with ui.column().classes("gap-1"):
+                            ui.label("Dynamic Viscosity").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            viscosity = fluid.viscosity
+                            viscosity_unit = "Pa·s"
+                            ui.label(
+                                f"{viscosity.to(viscosity_unit).magnitude:.6f} {viscosity_unit}"
+                            ).classes("text-sm font-semibold")
+
+                        # Pressure
+                        with ui.column().classes("gap-1"):
+                            ui.label("Pressure").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            fluid_pressure = fluid.pressure.to(pressure_unit.unit)
+                            ui.label(
+                                f"{fluid_pressure.magnitude:.2f} {pressure_unit}"
+                            ).classes("text-sm font-semibold")
+
+                        # Compressibility Factor (for gases)
+                        if fluid.phase == "gas":
+                            with ui.column().classes("gap-1"):
+                                ui.label("Compressibility Factor").classes(
+                                    "text-xs text-gray-500 font-medium"
+                                )
+                                ui.label(f"{fluid.compressibility_factor:.4f}").classes(
+                                    "text-sm font-semibold"
+                                )
+
+                        # Specific Gravity
+                        with ui.column().classes("gap-1"):
+                            ui.label("Specific Gravity").classes(
+                                "text-xs text-gray-500 font-medium"
+                            )
+                            ui.label(f"{fluid.specific_gravity:.4f}").classes(
+                                "text-sm font-semibold"
+                            )
+                else:
+                    ui.label("Fluid data not available").classes(
+                        "text-sm text-gray-500 italic p-2"
+                    )
+
+            # Action buttons at the bottom
+            ui.separator().classes("my-3")
+            actions_row = ui.row().classes("w-full justify-end gap-2")
+            with actions_row:
+                ui.button(
+                    "Edit Pipe",
+                    icon="edit",
+                    on_click=lambda: (dialog.close(), self.select_pipe(pipe_index)),
+                    color=self.theme_color,
+                ).classes("px-4 py-2")
+                ui.button(
+                    "Close", icon="close", on_click=dialog.close, color="grey"
+                ).props("outline").classes("px-4 py-2")
+
+        dialog.open()
+
     def refresh_validation_display(self):
         """Refresh the validation display."""
         if self.validation_container is None:
@@ -2789,6 +3399,17 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         if self.flow_station_container is None:
             return
         logger.debug("Refreshing flow stations...")
+
+        # Clean up old flow stations' timers before clearing
+        if self.current_flow_stations:
+            for station in self.current_flow_stations:
+                # Cancel timers in all meters
+                for meter in station.meters:
+                    try:
+                        meter._cancel_timers()
+                    except Exception:
+                        pass
+                # Regulators don't have timers, so no need to clean them
 
         self.flow_station_container.clear()
         with self.flow_station_container:
@@ -3329,17 +3950,34 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         "Name of the fluid being transported (e.g., Water, Methane, Octane). Must be supported by `CoolProp`"
                     )
                 )
-                phase_select = (
-                    ui.select(
-                        options=["gas", "liquid"],
-                        value=fluid_config.phase,
-                        label="Phase",
+
+                # Only allow phase selection if the pipeline is doing compressible flow
+                pipeline = self.manager.get_pipeline()
+                if pipeline._flow_type == FlowType.COMPRESSIBLE:
+                    phase_select = (
+                        ui.select(
+                            options=["gas", "liquid"],
+                            value=fluid_config.phase,
+                            label="Phase",
+                        )
+                        .classes("flex-1 min-w-0")
+                        .tooltip(
+                            "Physical phase affects flow equations and property calculations"
+                        )
                     )
-                    .classes("flex-1 min-w-0")
-                    .tooltip(
-                        "Physical phase affects flow equations and property calculations"
+                else:
+                    phase_select = (
+                        ui.select(
+                            options=["liquid"],
+                            value="liquid",
+                            label="Phase",
+                        )
+                        .classes("flex-1 min-w-0")
+                        .props("disabled")
+                        .tooltip(
+                            "Only liquid phase is supported for incompressible flow"
+                        )
                     )
-                )
 
             ui.button(
                 "Update Fluid",
@@ -4267,10 +4905,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     async def import_pipe_configuration(self, event):
         """Import pipe configuration from an uploaded JSON file."""
         try:
-            # Read the uploaded file content
-            # NiceGUI's upload event provides the file via event.file
             content = await event.file.read()
-
+            
             # Decode if bytes
             if isinstance(content, bytes):
                 content = content.decode("utf-8")
