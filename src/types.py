@@ -221,6 +221,8 @@ class FluidConfig:
     """Name of the fluid supported by CoolProp"""
     phase: typing.Literal["gas", "liquid"] = "gas"
     """Phase of the fluid - gas or liquid"""
+    pressure: Quantity = attrs.field(factory=lambda: Quantity(14.7, "psi"))  # type: ignore
+    """Pressure of the fluid"""
     temperature: Quantity = attrs.field(factory=lambda: Quantity(60, "degF"))  # type: ignore
     """Temperature of the fluid"""
     molecular_weight: Quantity = attrs.field(factory=lambda: Quantity(16.04, "g/mol"))  # type: ignore

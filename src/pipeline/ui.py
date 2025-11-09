@@ -409,7 +409,7 @@ class HorizontalPipeComponent:
                 
                 <!-- LeakInfo severity indicator -->
                 <text x="{}" y="{}" text-anchor="middle" 
-                      font-size="8" fill="{}" font-weight="bold" opacity="0.8">
+                      font-size="4" fill="{}" font-weight="bold" opacity="0.8">
                     {}
                 </text>
             </g>
@@ -417,7 +417,7 @@ class HorizontalPipeComponent:
                 leak_x,
                 center_y - pipe_diameter_pixels / 2 - 10,
                 leak_color,
-                leak.severity[0].upper(),  # First letter of severity
+                leak.severity.upper(),  # First letter of severity
             )
 
         # Generate unique ID for this component
@@ -705,7 +705,7 @@ class VerticalPipeComponent:
                 
                 <!-- LeakInfo severity indicator -->
                 <text x="{}" y="{}" text-anchor="middle" 
-                      font-size="8" fill="{}" font-weight="bold" opacity="0.8">
+                      font-size="4" fill="{}" font-weight="bold" opacity="0.8">
                     {}
                 </text>
             </g>
@@ -713,7 +713,7 @@ class VerticalPipeComponent:
                 center_x + pipe_diameter_pixels / 2 + 15,
                 leak_y,
                 leak_color,
-                leak.severity[0].upper(),  # First letter of severity
+                leak.severity.upper(),  # First letter of severity
             )
 
         # Generate unique ID for this component

@@ -101,7 +101,7 @@ IMPERIAL = UnitSystem(
         "molecular_weight": QuantityUnit(
             unit="g/mol", display="g/mol", default=16.04
         ),  # Methane MW
-        "roughness": QuantityUnit(unit="inch", display="in", default=None),
+        "roughness": QuantityUnit(unit="meter", display="m", default=None),
         "elevation": QuantityUnit(unit="ft", display="ft", default=0.0),  # Sea level
         "area": QuantityUnit(unit="inch^2", display="in²", default=None),
         "velocity": QuantityUnit(unit="ft/s", display="ft/s", default=None),
@@ -143,13 +143,13 @@ OIL_FIELD = UnitSystem(
         "temperature": QuantityUnit(
             unit="degR", display="°R", default=520.0
         ),  # Room temperature
-        "flow_rate": QuantityUnit(unit="Mscf/day", display="Mscf/day", default=None),
-        "mass_flow_rate": QuantityUnit(unit="lb/hr", display="lb/hr", default=None),
+        "flow_rate": QuantityUnit(unit="MMscf/day", display="MMscf/day", default=None),
+        "mass_flow_rate": QuantityUnit(unit="kg/s", display="kg/s", default=None),
         "flow_volume": QuantityUnit(unit="scf", display="scf", default=None),
         "molecular_weight": QuantityUnit(
             unit="g/mol", display="g/mol", default=16.04
         ),  # Methane MW
-        "roughness": QuantityUnit(unit="inch", display="in", default=None),
+        "roughness": QuantityUnit(unit="meter", display="m", default=None),
         "elevation": QuantityUnit(unit="ft", display="ft", default=0.0),  # Sea level
         "area": QuantityUnit(unit="inch^2", display="in²", default=None),
         "velocity": QuantityUnit(unit="ft/s", display="ft/s", default=None),

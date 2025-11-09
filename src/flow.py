@@ -33,7 +33,7 @@ def is_supported_fluid(fluid_name: str) -> bool:
         return False
 
 
-@attrs.define
+@attrs.define(frozen=True, hash=True, slots=True)
 class Fluid:
     """Model representing a fluid with its properties."""
 
@@ -45,6 +45,8 @@ class Fluid:
     """Density of the fluid"""
     viscosity: PlainQuantity[float] = attrs.field()
     """Dynamic viscosity of the fluid"""
+    pressure: PlainQuantity[float] = attrs.field()
+    """Pressure of the fluid"""
     temperature: PlainQuantity[float] = attrs.field()
     """Temperature of the fluid"""
     molecular_weight: PlainQuantity[float] = attrs.field()
@@ -73,6 +75,10 @@ class Fluid:
         if self.phase == "gas":
             return density_at_stp.magnitude / AIR_DENSITY.to("kg/m^3").magnitude
         return density_at_stp.magnitude / WATER_DENSITY.to("kg/m^3").magnitude
+
+    @property
+    def joule_thomson_coefficient(self) -> PlainQuantity[float]:
+        return self.get_joule_thomson_coefficient(self.pressure)
 
     @classmethod
     def from_coolprop(
@@ -117,9 +123,47 @@ class Fluid:
             phase=phase,
             density=density,
             viscosity=viscosity,
+            pressure=pressure,
             temperature=temperature,
             molecular_weight=molecular_weight,
             compressibility_factor=compressibility_factor,
+        )
+
+    def for_pressure_temperature(
+        self,
+        pressure: PlainQuantity[float],
+        temperature: PlainQuantity[float],
+    ) -> "Fluid":
+        """
+        Get a new Fluid instance with properties updated for given pressure and temperature.
+
+        :param pressure: New fluid pressure (as a Quantity, convertible to Pa).
+        :param temperature: New fluid temperature (as a Quantity, convertible to K).
+        :return: New Fluid instance with updated properties.
+        """
+        return Fluid.from_coolprop(
+            fluid_name=self.name,
+            pressure=pressure,
+            temperature=temperature,
+            phase=self.phase,
+        )
+
+    def get_joule_thomson_coefficient(
+        self,
+        pressure: typing.Optional[PlainQuantity[float]] = None,
+        temperature: typing.Optional[PlainQuantity[float]] = None,
+    ) -> PlainQuantity[float]:
+        """
+        Get the Joule-Thomson coefficient of the fluid at given conditions.
+
+        :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
+        :param temperature: Fluid temperature (as a Quantity, convertible to K).
+        :return: Joule-Thomson coefficient of the fluid (K/Pa).
+        """
+        return compute_joule_thomson_coefficient(
+            pressure=pressure if pressure is not None else self.pressure,
+            temperature=temperature if temperature is not None else self.temperature,
+            fluid_name=self.name,
         )
 
 
@@ -148,6 +192,7 @@ def compute_fluid_density(
     return Quantity(density_kg_per_m3, "kg/m^3")
 
 
+@functools.lru_cache(maxsize=128)
 def compute_molecular_weight(fluid_name: str) -> PlainQuantity[float]:
     """
     Compute the molecular weight of a fluid using CoolProp.
@@ -160,6 +205,7 @@ def compute_molecular_weight(fluid_name: str) -> PlainQuantity[float]:
     return Quantity(molecular_weight_kg_per_mol, "kg/mol")
 
 
+@functools.lru_cache(maxsize=128)
 def compute_fluid_viscosity(
     pressure: PlainQuantity[float],
     temperature: PlainQuantity[float],
@@ -181,6 +227,7 @@ def compute_fluid_viscosity(
     return Quantity(viscosity_pa_s, "Pa.s")
 
 
+@functools.lru_cache(maxsize=128)
 def compute_fluid_compressibility_factor(
     pressure: PlainQuantity[float],
     temperature: PlainQuantity[float],
@@ -202,6 +249,44 @@ def compute_fluid_compressibility_factor(
         "Z", "P", pressure_pa, "T", temperature_k, fluid_name
     )
     return Quantity(compressibility_factor, "dimensionless")
+
+
+@functools.lru_cache(maxsize=128)
+def compute_joule_thomson_coefficient(
+    pressure: PlainQuantity[float],
+    temperature: PlainQuantity[float],
+    fluid_name: str,
+    pressure_step: PlainQuantity[float] = PlainQuantity(1000, "Pa"),
+) -> PlainQuantity[float]:
+    """
+    Compute the Joule-Thomson coefficient (μ_JT) of a fluid using CoolProp.
+    The coefficient is obtained through an isenthalpic finite-difference
+    expansion defined as:
+
+        μ_JT = (T₂ - T₁) / (P₁ - P₂) = ΔT / (-ΔP)
+
+    :param pressure: Fluid pressure (as a Quantity, convertible to Pa).
+    :param temperature: Fluid temperature (as a Quantity, convertible to K).
+    :param fluid_name: Name of the fluid as recognized by CoolProp
+        (e.g., "Methane", "CO2", "Water", "Nitrogen").
+    :param pressure_step: Small pressure interval used for the finite
+        difference calculation (default: 1000 Pa).
+    :return: Joule-Thomson coefficient of the fluid (K/Pa).
+    """
+    pressure_pa = pressure.to("Pa").magnitude
+    temperature_k = temperature.to("K").magnitude
+    delta_pressure_pa = pressure_step.to("Pa").magnitude
+
+    enthalpy_j_per_kg = PropsSI("H", "P", pressure_pa, "T", temperature_k, fluid_name)
+
+    new_temperature_k = PropsSI(
+        "T", "P", pressure_pa - delta_pressure_pa, "H", enthalpy_j_per_kg, fluid_name
+    )
+
+    joule_thomson_coefficient = (new_temperature_k - temperature_k) / (
+        -delta_pressure_pa
+    )
+    return Quantity(joule_thomson_coefficient, "K/Pa")
 
 
 def compute_reynolds_number(

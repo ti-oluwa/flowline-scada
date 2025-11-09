@@ -4,7 +4,6 @@ import logging
 import math
 import typing
 
-from attrs import evolve
 from nicegui import ui
 from nicegui.elements.html import Html
 from nicegui.elements.row import Row
@@ -42,7 +41,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PipeDirection",
     "PipelineConnectionError",
-    "check_directions_compatibility",
+    "check_direction_compatibility",
     "Meter",
     "FlowMeter",
     "MassFlowMeter",
@@ -90,7 +89,7 @@ class Meter:
         alarm_high: typing.Optional[float] = None,
         alarm_low: typing.Optional[float] = None,
         animation_speed: float = 5.0,
-        animation_interval: float = 0.01,
+        animation_interval: float = 0.05,
         update_func: typing.Optional[
             typing.Callable[[], typing.Optional[float]]
         ] = None,
@@ -356,27 +355,42 @@ class Meter:
         return f"#{r:02x}{g:02x}{b:02x}"
 
     def _animate_value(self) -> None:
-        """Animate value changes smoothly (paused when not visible)"""
-        # Skip animation if not visible to save resources
+        """Animate value with multi-level acceleration for large differences."""
         if not self.visible:
             return
 
-        if math.isclose(self.value, self._target_value, abs_tol=0.01):
+        diff = self._target_value - self.value
+        abs_diff = abs(diff)
+
+        # Snap to target if very close
+        if abs_diff < 0.01:
             self.value = self._target_value
             self.update_viz()
             return
 
-        # Calculate animation step with better responsiveness
-        diff = self._target_value - self.value
-        # Base step on both animation speed and difference magnitude
         base_step = self.animation_speed * self.animation_interval
-        magnitude_factor = min(abs(diff) * 0.15, 100.0)  # Scale with difference size
-        step = min(abs(diff), base_step * (1 + magnitude_factor))
+        base_step = min(base_step, 10)
 
-        if diff < 0:
-            step = -step
+        # Multi-level scaling
+        if abs_diff > 1000:
+            # Very large jump, snap instantly
+            step = base_step * 20
+        elif abs_diff > 200:
+            # Large jump, fast animation
+            step = base_step * 10
+        elif abs_diff > 50:
+            # Medium jump, moderate acceleration
+            step = base_step * 5
+        else:
+            # Small jump, normal speed
+            step = base_step
 
-        self.value += step
+        # Prevent overshoot
+        if step > abs_diff:
+            step = abs_diff
+
+        # Apply direction
+        self.value += step if diff > 0 else -step
         self.update_viz()
 
     def _update_value(self) -> None:
@@ -1340,7 +1354,7 @@ class Regulator:
             "update:model-value", lambda e: update_value(e.args), throttle=1.5
         )
         self.input_element.on(
-            "update:model-value", lambda e: update_value(e.args), throttle=3.0
+            "update:model-value", lambda e: update_value(e.args), throttle=1.5
         )
 
     def get_status_color(self) -> str:
@@ -1478,7 +1492,7 @@ class PipelineConnectionError(Exception):
     pass
 
 
-def check_directions_compatibility(*directions: PipeDirection) -> bool:
+def check_direction_compatibility(*directions: PipeDirection) -> bool:
     """
     Check if two pipe directions are compatible for connection.
 
@@ -1643,6 +1657,7 @@ class Pipe:
         internal_diameter: PlainQuantity[float],
         upstream_pressure: PlainQuantity[float],
         downstream_pressure: PlainQuantity[float],
+        upstream_temperature: typing.Optional[PlainQuantity[float]] = None,
         material: str = "Steel",
         roughness: PlainQuantity[float] = Quantity(0, "m"),
         efficiency: float = 1.0,
@@ -1699,6 +1714,7 @@ class Pipe:
 
         self.upstream_pressure = upstream_pressure
         self.downstream_pressure = downstream_pressure
+        self._upstream_temperature = upstream_temperature
         self.material = material
         self.roughness = roughness
         self.efficiency = efficiency
@@ -1709,7 +1725,7 @@ class Pipe:
         self.ambient_pressure = ambient_pressure
         self.alert_errors = alert_errors
 
-        self._fluid = evolve(fluid) if fluid else None
+        self._fluid = fluid if fluid else None
         self.scale_factor = scale_factor
         self._flow_rate = Quantity(0.0, "ft^3/s")
         self.max_flow_rate = max_flow_rate
@@ -1724,6 +1740,90 @@ class Pipe:
 
         self.pipe_viz = None  # Placeholder for pipe visualization element
         self.sync()
+
+    @property
+    def fluid(self) -> typing.Optional[Fluid]:
+        """Fluid properties at pipe's upstream pressure and temperature."""
+        if (fluid := self._fluid) is None:
+            return None
+
+        upstream_pressure = self.upstream_pressure
+        if upstream_pressure.magnitude == 0:
+            return self._fluid
+
+        return fluid.for_pressure_temperature(
+            pressure=upstream_pressure,
+            temperature=self.upstream_temperature,
+        )
+
+    @property
+    def upstream_fluid(self) -> typing.Optional[Fluid]:
+        """Fluid properties at the pipe inlet."""
+        return self.fluid
+
+    inlet_fluid = upstream_fluid  # Alias for clarity
+
+    @property
+    def downstream_fluid(self) -> typing.Optional[Fluid]:
+        """Fluid properties at the pipe outlet."""
+        if self.fluid is None or self.downstream_pressure.magnitude == 0:
+            return None
+
+        outlet_temp = self.downstream_temperature
+        if outlet_temp is None:
+            return None
+
+        return self.fluid.for_pressure_temperature(
+            pressure=self.downstream_pressure,
+            temperature=outlet_temp,
+        )
+
+    outlet_fluid = downstream_fluid  # Alias for clarity
+
+    @property
+    def upstream_temperature(self) -> typing.Optional[PlainQuantity[float]]:
+        """Temperature of the pipe fluid at the pipe inlet."""
+        if self._upstream_temperature is None and self._fluid is not None:
+            self._upstream_temperature = self._fluid.temperature
+        return self._upstream_temperature
+
+    @property
+    def downstream_temperature(self) -> typing.Optional[PlainQuantity[float]]:
+        """Temperature of the pipe fluid at the pipe outlet."""
+        if self.flow_rate.magnitude == 0:
+            return Quantity(0, "degF")
+        
+        inlet_fluid = self.inlet_fluid
+        if inlet_fluid is None:
+            return None
+
+        inlet_temp = inlet_fluid.temperature
+        if inlet_fluid.phase == "gas" and self.flow_type == FlowType.COMPRESSIBLE:
+            try:
+                jt_coefficient = (
+                    inlet_fluid.get_joule_thomson_coefficient(
+                        pressure=self.upstream_pressure
+                    )
+                    .to("degF/psi")
+                    .magnitude
+                )
+            except ValueError:
+                ui.notify(
+                    f"Could not compute Joule-Thomson coefficient for fluid in pipe - {self.name!r}."
+                    " Ensure fluid is a gas and has valid properties at the given pressure.",
+                    type="error",
+                    multi_line=True,
+                )
+                jt_coefficient = 0.0
+        else:
+            jt_coefficient = 0.0
+
+        pressure_drop = self.pressure_drop.to("psi").magnitude
+        # T2 = T1 + μ(JT) * ΔP
+        outlet_temp_value = inlet_temp.to("degF").magnitude + (
+            jt_coefficient * pressure_drop
+        )
+        return Quantity(outlet_temp_value, "degF")
 
     @property
     def pressure_drop(self) -> PlainQuantity[float]:
@@ -1814,14 +1914,61 @@ class Pipe:
         return Quantity(total_leak_rate, "ft^3/s")
 
     @property
-    def fluid(self) -> typing.Optional[Fluid]:
-        """Fluid properties."""
-        return self._fluid
-
-    @property
     def flow_type(self) -> FlowType:
         """Flow type."""
         return self._flow_type
+
+    @property
+    def flow_equation(self) -> typing.Optional[FlowEquation]:
+        """Appropriate pipe flow equation based on pipe and fluid properties."""
+        if (fluid := self.fluid) is None:
+            return None
+
+        try:
+            flow_equation = determine_pipe_flow_equation(
+                pressure_drop=self.pressure_drop,
+                upstream_pressure=self.upstream_pressure,
+                internal_diameter=self.internal_diameter,
+                length=self.length,
+                fluid_phase=fluid.phase,
+                flow_type=self._flow_type,
+            )
+        except Exception:
+            if self.alert_errors:
+                show_alert(
+                    f"Error determining flow equation for pipe - {self.name!r}.",
+                    severity="error",
+                )
+            logger.error(
+                f"Error determining flow equation for pipe - {self.name!r}.",
+                exc_info=True,
+            )
+            return None
+        return flow_equation
+
+    @property
+    def mass_rate(self) -> PlainQuantity[float]:
+        """Mass flow rate in pipe in (lb/s) based on current flow rate and fluid density."""
+        if self.fluid is None:
+            return Quantity(0.0, "lb/s")
+        density = self.fluid.density.to("lb/ft^3").magnitude
+        volumetric_rate = self.flow_rate.to("ft^3/s").magnitude
+        mass_rate = Quantity(density * volumetric_rate, "lb/s")
+        return mass_rate
+
+    @property
+    def flow_velocity(self) -> PlainQuantity[float]:
+        """Flow velocity of the fluid in the pipe in (ft/s) based on current flow rate and pipe cross-sectional area."""
+        area = self.cross_sectional_area.to("ft^2").magnitude
+        if area <= 0:
+            if self.alert_errors:
+                show_alert(
+                    f"Error calculating flow velocity in pipe - {self.name!r}: Cross-sectional area is zero.",
+                    severity="error",
+                )
+            return Quantity(0.0, "ft/s")
+        volumetric_rate = self.flow_rate.to("ft^3/s").magnitude
+        return Quantity(volumetric_rate / area, "ft/s")
 
     @property
     def is_leaking(self) -> bool:
@@ -1840,7 +1987,6 @@ class Pipe:
         # If end valve is closed, no flow exits pipe
         if self._end_valve is not None and self._end_valve.is_closed():
             return Quantity(0.0, "ft^3/s")
-
         return self.flow_rate
 
     @property
@@ -1888,7 +2034,6 @@ class Pipe:
 
         if sync:
             self.sync()
-
         return self
 
     def remove_valve(
@@ -1910,7 +2055,6 @@ class Pipe:
 
         if sync:
             self.sync()
-
         return removed_valve
 
     def open_valve(
@@ -2108,74 +2252,6 @@ class Pipe:
         if update_viz:
             self.update_viz()
         return self
-
-    def set_fluid_temperature(
-        self, temperature: PlainQuantity[float], *, sync: bool = True
-    ) -> Self:
-        """
-        Update pipe fluid temperature and optionally recalculate flow rate.
-
-        :param temperature: New temperature to set
-        :param sync: Whether to update flow rate after changing temperature
-        :return: self or updated Pipe instance
-        """
-        if self.fluid is not None:
-            self._fluid = evolve(self.fluid, temperature=temperature)
-        if sync:
-            self.sync()
-        return self
-
-    @property
-    def flow_equation(self) -> typing.Optional[FlowEquation]:
-        """Appropriate pipe flow equation based on pipe and fluid properties."""
-        if self.fluid is None:
-            return None
-
-        try:
-            flow_equation = determine_pipe_flow_equation(
-                pressure_drop=self.pressure_drop,
-                upstream_pressure=self.upstream_pressure,
-                internal_diameter=self.internal_diameter,
-                length=self.length,
-                fluid_phase=self.fluid.phase,
-                flow_type=self._flow_type,
-            )
-        except Exception:
-            if self.alert_errors:
-                show_alert(
-                    f"Error determining flow equation for pipe - {self.name!r}.",
-                    severity="error",
-                )
-            logger.error(
-                f"Error determining flow equation for pipe - {self.name!r}.",
-                exc_info=True,
-            )
-            return None
-        return flow_equation
-
-    @property
-    def mass_rate(self) -> PlainQuantity[float]:
-        """Mass flow rate in pipe in (lb/s) based on current flow rate and fluid density."""
-        if self.fluid is None:
-            return Quantity(0.0, "lb/s")
-        density = self.fluid.density.to("lb/ft^3").magnitude
-        volumetric_rate = self.flow_rate.to("ft^3/s").magnitude
-        mass_rate = Quantity(density * volumetric_rate, "lb/s")
-        return mass_rate
-
-    @property
-    def flow_velocity(self) -> PlainQuantity[float]:
-        """Flow velocity of the fluid in the pipe in (ft/s) based on current flow rate and pipe cross-sectional area."""
-        area = self.cross_sectional_area.to("ft^2").magnitude
-        if area <= 0:
-            if self.alert_errors:
-                show_alert(
-                    f"Error calculating flow velocity in pipe - {self.name!r}: Cross-sectional area is zero.",
-                    severity="error",
-                )
-            return Quantity(0.0, "ft/s")
-        volumetric_rate = self.flow_rate.to("ft^3/s").magnitude
-        return Quantity(volumetric_rate / area, "ft/s")
 
     def show(
         self,
@@ -2495,6 +2571,21 @@ class Pipe:
             self.sync()
         return self
 
+    def set_upstream_temperature(
+        self, temperature: PlainQuantity[float], *, sync: bool = True
+    ) -> Self:
+        """
+        Update pipe (inlet) fluid temperature and optionally recalculate flow rate.
+
+        :param temperature: New temperature to set
+        :param sync: Whether to update flow rate after changing temperature
+        :return: self or updated Pipe instance
+        """
+        self._upstream_temperature = temperature.to("degF")
+        if sync:
+            self.sync()
+        return self
+
     def get_pipeline_type(self) -> typing.Type["Pipeline"]:
         """
         Get the pipeline type for this pipe.
@@ -2523,7 +2614,7 @@ class Pipe:
             raise TypeError("Can only connect to another Pipe instance")
 
         # Validate flow direction compatibility
-        if not check_directions_compatibility(self.direction, other.direction):
+        if not check_direction_compatibility(self.direction, other.direction):
             error_msg = (
                 f"Cannot connect pipes with opposing flow directions: "
                 f"{self.direction.value} to {other.direction.value}. "
@@ -2608,12 +2699,12 @@ class Pipeline:
         self.pipeline_viz = None
         self._flow_type = flow_type
         self.connector_length = connector_length
-        self._fluid = fluid
         self.alert_errors = alert_errors
         self._ignore_leaks = ignore_leaks
         self._upstream_pressure = None
         self._downstream_pressure = None
         self._upstream_temperature = upstream_temperature
+        self._fluid = fluid
 
         if upstream_pressure is not None:
             self.set_upstream_pressure(upstream_pressure)
@@ -2630,8 +2721,105 @@ class Pipeline:
 
     @property
     def fluid(self) -> typing.Optional[Fluid]:
-        """Get the fluid in the pipeline."""
+        """The fluid in the pipeline at pipeline upstream pressure and temperature"""
+        if (fluid := self._fluid) is None or self.upstream_pressure.magnitude == 0:
+            return None
+
+        upstream_temperature = self.upstream_temperature
+        return fluid.for_pressure_temperature(
+            pressure=self.upstream_pressure,
+            temperature=upstream_temperature
+            if upstream_temperature is not None
+            else self._fluid.temperature,
+        )
+
+    @property
+    def upstream_fluid(self) -> typing.Optional[Fluid]:
+        """Get the fluid at the upstream end of the pipeline."""
+        if self._pipes:
+            return self._pipes[0].inlet_fluid
         return self._fluid
+
+    inlet_fluid = upstream_fluid
+
+    @property
+    def downstream_fluid(self) -> typing.Optional[Fluid]:
+        """Get the fluid at the downstream end of the pipeline."""
+        if self._pipes:
+            return self._pipes[-1].outlet_fluid
+        return self._fluid
+
+    outlet_fluid = downstream_fluid
+
+    @property
+    def upstream_pressure(self) -> PlainQuantity[float]:
+        """The upstream pressure of the pipeline."""
+        if self._upstream_pressure is None:
+            if self._pipes:
+                self._upstream_pressure = self._pipes[0].upstream_pressure
+            else:
+                return Quantity(0.0, "psi")
+        return self._upstream_pressure.to("psi")
+
+    @property
+    def downstream_pressure(self) -> PlainQuantity[float]:
+        """The downstream pressure (psi) of the pipeline."""
+        if self._downstream_pressure is None:
+            if self._pipes:
+                self._downstream_pressure = self._pipes[-1].downstream_pressure
+            else:
+                return Quantity(0.0, "psi")
+        return self._downstream_pressure.to("psi")
+
+    @property
+    def pressure_drop(self) -> PlainQuantity[float]:
+        """The total pressure drop (psi) across the pipeline."""
+        return self.upstream_pressure.to("psi") - self.downstream_pressure.to("psi")
+
+    @property
+    def upstream_temperature(self) -> typing.Optional[PlainQuantity[float]]:
+        """The temperature of the fluid upstream in the pipeline"""
+        if (
+            self._upstream_temperature is None
+            and (inlet_fluid := self.inlet_fluid) is not None
+        ):
+            self._upstream_temperature = inlet_fluid.temperature
+        return self._upstream_temperature
+
+    @property
+    def downstream_temperature(self) -> typing.Optional[PlainQuantity[float]]:
+        """The temperature of the fluid downstream in the pipeline."""
+        if not self._pipes:
+            return self.upstream_temperature
+        return self._pipes[-1].downstream_temperature
+
+    @property
+    def inlet_flow_rate(self) -> PlainQuantity[float]:
+        """The inlet/upstream flow rate (ft^3/s) of the pipeline (from the first pipe)."""
+        if self._pipes:
+            return self._pipes[0].flow_rate.to("ft^3/s")
+        return Quantity(0, "ft^3/s")
+
+    @property
+    def outlet_flow_rate(self) -> PlainQuantity[float]:
+        """The outlet/downstream flow rate of the pipeline (ft^3/s) (from the last pipe)."""
+        if self._pipes:
+            return self._pipes[-1].flow_rate.to("ft^3/s")
+        return Quantity(0, "ft^3/s")
+
+    @property
+    def inlet_mass_rate(self) -> PlainQuantity[float]:
+        """The inlet/upstream mass flow rate (lb/s) of the pipeline (from the first pipe)."""
+        if self._pipes:
+            return self._pipes[0].mass_rate.to("lb/s")
+        return Quantity(0, "lb/s")
+
+    @property
+    def outlet_mass_rate(self) -> PlainQuantity[float]:
+        """The outlet/downstream mass flow rate (lb/s) of the pipeline (from the last pipe)."""
+        if self._pipes:
+            return self._pipes[-1].mass_rate.to("lb/s")
+        return Quantity(0, "lb/s")
 
     @property
     def is_leaking(self) -> bool:
@@ -2676,11 +2864,17 @@ class Pipeline:
         )
         return Quantity(total_leak_rate, "ft^3/s")
 
-    def set_fluid(self, value: Fluid, *, sync: bool = True) -> Self:
-        """Set the fluid in the pipeline and update all pipes."""
-        self._fluid = value
+    @property
+    def has_valves(self) -> bool:
+        """Check if any pipe in the pipeline has a valve."""
+        return any(pipe.has_valve for pipe in self._pipes)
+
+    def set_fluid(self, fluid: Fluid, *, sync: bool = True) -> Self:
+        """Set the (inlet) fluid in the pipeline."""
+        self._fluid = fluid
         for pipe in self._pipes:
-            pipe.set_fluid(value, sync=False)
+            pipe.set_fluid(fluid, sync=False)
+
         if sync:
             self.sync()
         return self
@@ -2731,11 +2925,6 @@ class Pipeline:
         if sync:
             self.sync()
         return self
-
-    @property
-    def has_valves(self) -> bool:
-        """Check if any pipe in the pipeline has a valve."""
-        return any(pipe.has_valve for pipe in self._pipes)
 
     def add_valve(
         self,
@@ -2904,54 +3093,6 @@ class Pipeline:
         if sync:
             self.sync()
         return self
-
-    @property
-    def upstream_pressure(self) -> PlainQuantity[float]:
-        """The upstream pressure of the pipeline."""
-        if self._upstream_pressure is None:
-            if self._pipes:
-                self._upstream_pressure = self._pipes[0].upstream_pressure
-            else:
-                return Quantity(0, "psi")
-        return self._upstream_pressure
-
-    @property
-    def downstream_pressure(self) -> PlainQuantity[float]:
-        """The downstream pressure (psi) of the pipeline."""
-        if self._downstream_pressure is None:
-            if self._pipes:
-                self._downstream_pressure = self._pipes[-1].downstream_pressure
-            else:
-                return Quantity(0, "psi")
-        return self._downstream_pressure
-
-    @property
-    def inlet_flow_rate(self) -> PlainQuantity[float]:
-        """The inlet/upstream flow rate (ft^3/s) of the pipeline (from the first pipe)."""
-        if self._pipes:
-            return self._pipes[0].flow_rate.to("ft^3/s")
-        return Quantity(0, "ft^3/s")
-
-    @property
-    def outlet_flow_rate(self) -> PlainQuantity[float]:
-        """The outlet/downstream flow rate of the pipeline (ft^3/s) (from the last pipe)."""
-        if self._pipes:
-            return self._pipes[-1].flow_rate.to("ft^3/s")
-        return Quantity(0, "ft^3/s")
-
-    @property
-    def inlet_mass_rate(self) -> PlainQuantity[float]:
-        """The inlet/upstream mass flow rate (lb/s) of the pipeline (from the first pipe)."""
-        if self._pipes:
-            return self._pipes[0].mass_rate.to("lb/s")
-        return Quantity(0, "lb/s")
-
-    @property
-    def outlet_mass_rate(self) -> PlainQuantity[float]:
-        """The outlet/downstream mass flow rate (lb/s) of the pipeline (from the last pipe)."""
-        if self._pipes:
-            return self._pipes[-1].mass_rate.to("lb/s")
-        return Quantity(0, "lb/s")
 
     def __iter__(self) -> typing.Iterator[Pipe]:
         """Iterate over the pipes in the pipeline."""
@@ -3332,7 +3473,7 @@ class Pipeline:
         component2 = self._pipes[component2_idx]
 
         # Check direction compatibility (only check for direction compatibility now)
-        direction_compatible = check_directions_compatibility(
+        direction_compatible = check_direction_compatibility(
             component1.direction, component2.direction
         )
         return direction_compatible
@@ -3366,10 +3507,10 @@ class Pipeline:
         if self._pipes:
             try:
                 self._pipes[0].set_upstream_pressure(pressure, check=False, sync=False)
-            except Exception as e:
+            except Exception as exc:
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to set upstream pressure in first pipe - {self.name!r}: {e}",
+                        f"Failed to set upstream pressure in first pipe - {self.name!r}: {exc}",
                         severity="error",
                     )
                 raise
@@ -3409,10 +3550,10 @@ class Pipeline:
                 self._pipes[-1].set_downstream_pressure(
                     pressure, check=False, sync=False
                 )
-            except Exception as e:
+            except Exception as exc:
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to set downstream pressure in last pipe - {self.name!r}: {e}",
+                        f"Failed to set downstream pressure in last pipe - {self.name!r}: {exc}",
                         severity="error",
                     )
                 raise
@@ -3422,7 +3563,7 @@ class Pipeline:
         return self
 
     def set_upstream_temperature(
-        self, temperature: typing.Union[PlainQuantity[float], float]
+        self, temperature: typing.Union[PlainQuantity[float], float], sync: bool = True
     ) -> Self:
         """Set the upstream fluid temperature for the pipeline (applied to the first pipe)."""
         if self.fluid is None:
@@ -3438,17 +3579,18 @@ class Pipeline:
         self._upstream_temperature = temperature_q
         if self._pipes:
             try:
-                self.set_fluid(
-                    evolve(self.fluid, temperature=temperature_q), sync=False
-                )
-            except Exception as e:
+                self._pipes[0].set_upstream_temperature(temperature_q, sync=False)
+            except Exception as exc:
                 if self.alert_errors:
                     show_alert(
-                        f"Failed to set upstream temperature in first pipe - {self.name!r}: {e}",
+                        f"Failed to set upstream temperature in first pipe - {self.name!r}: {exc}",
                         severity="error",
                     )
                 raise
-        self.sync()
+
+        if sync:
+            self.sync()
+        return self
 
     def add_pipe(self, pipe: Pipe, index: int = -1, *, sync: bool = True) -> Self:
         """
@@ -3463,7 +3605,7 @@ class Pipeline:
         if self._pipes:
             # Validate flow direction compatibility
             last_pipe = self._pipes[-1]
-            if not check_directions_compatibility(last_pipe.direction, pipe.direction):
+            if not check_direction_compatibility(last_pipe.direction, pipe.direction):
                 error_msg = (
                     f"Cannot add pipe with opposing flow direction: "
                     f"{last_pipe.direction.value} to {pipe.direction.value}. "
@@ -3501,7 +3643,7 @@ class Pipeline:
             try:
                 self.sync()
             except Exception as exc:
-                # self._pipes.pop(index)  # Rollback addition
+                self._pipes.pop(index)  # Rollback addition
                 if self.alert_errors:
                     show_alert(
                         f"Failed to synchronize pipeline properties after adding pipe - {self.name!r}: {exc}",
@@ -3534,7 +3676,7 @@ class Pipeline:
                     current_pipe = self._pipes[i]
                     next_pipe = self._pipes[i + 1]
 
-                    if not check_directions_compatibility(
+                    if not check_direction_compatibility(
                         current_pipe.direction, next_pipe.direction
                     ):
                         error_msg = (
@@ -3643,7 +3785,14 @@ class Pipeline:
             mass_flow_rate,
         )
         current_pressure = self.upstream_pressure
-        current_temp = fluid.temperature  # Assume constant temperature for simplicity
+        current_temp = self.upstream_temperature
+        if fluid.phase == "gas" and self._flow_type == FlowType.COMPRESSIBLE:
+            fluid_jt_coefficient = fluid.get_joule_thomson_coefficient(
+                pressure=current_pressure, temperature=current_temp
+            ).to("degF/psi")
+        else:
+            fluid_jt_coefficient = 0.0 * ureg("degF/psi")
+
         current_mass_flow_rate = mass_flow_rate.to("lb/s")
         pipe_count = len(self._pipes)
         flow_discontinued = False
@@ -3693,12 +3842,9 @@ class Pipeline:
                 continue
 
             # Get fluid properties at the current pressure and temperature
-            fluid_at_pipe_inlet = Fluid.from_coolprop(
-                fluid_name=fluid.name,
-                phase=fluid.phase,
+            pipe_inlet_fluid = fluid.for_pressure_temperature(
                 pressure=current_pressure,
                 temperature=current_temp,
-                molecular_weight=fluid.molecular_weight,
             )
 
             mass_rate_in = current_mass_flow_rate
@@ -3707,7 +3853,7 @@ class Pipeline:
             if not self._ignore_leaks and (pipe.leak_rate.magnitude > 0):
                 leak_mass_rate = pipe.leak_rate.to(
                     "ft^3/s"
-                ) * fluid_at_pipe_inlet.density.to("lb/ft^3")
+                ) * pipe_inlet_fluid.density.to("lb/ft^3")
                 mass_rate_out = mass_rate_in - min(leak_mass_rate, mass_rate_in)
             else:
                 mass_rate_out = mass_rate_in
@@ -3723,7 +3869,7 @@ class Pipeline:
             # Calculate volumetric flow rate from mass flow rate
             volumetric_flow_rate = average_mass_rate.to(
                 "lb/s"
-            ) / fluid_at_pipe_inlet.density.to("lb/ft^3")
+            ) / pipe_inlet_fluid.density.to("lb/ft^3")
             logger.debug(
                 "Pipe %d Volumetric Flow Rate: %s", i + 1, volumetric_flow_rate
             )
@@ -3742,11 +3888,11 @@ class Pipeline:
                 relative_roughness=pipe.relative_roughness,
                 efficiency=pipe.efficiency,
                 elevation_difference=pipe.elevation_difference,
-                specific_gravity=fluid_at_pipe_inlet.specific_gravity,
-                temperature=fluid_at_pipe_inlet.temperature,
-                compressibility_factor=fluid_at_pipe_inlet.compressibility_factor,
-                density=fluid_at_pipe_inlet.density,
-                viscosity=fluid_at_pipe_inlet.viscosity,
+                specific_gravity=pipe_inlet_fluid.specific_gravity,
+                temperature=pipe_inlet_fluid.temperature,
+                compressibility_factor=pipe_inlet_fluid.compressibility_factor,
+                density=pipe_inlet_fluid.density,
+                viscosity=pipe_inlet_fluid.viscosity,
                 flow_rate=volumetric_flow_rate,
                 flow_equation=flow_equation,
             )
@@ -3772,6 +3918,7 @@ class Pipeline:
                 pipe.set_downstream_pressure(
                     downstream_pipe_pressure, check=False, sync=False
                 )
+                pipe.set_upstream_temperature(current_temp, sync=False)
 
             # Check if this is the last pipe
             if i == (pipe_count - 1):
@@ -3788,12 +3935,11 @@ class Pipeline:
                 current_mass_flow_rate = mass_rate_out
                 continue
 
-            fluid_at_connector_inlet = Fluid.from_coolprop(
-                fluid_name=fluid.name,
-                phase=fluid.phase,
+            # Update fluid temperature for pressure drop across pipe
+            current_temp = current_temp + (fluid_jt_coefficient * pipe_pressure_drop)
+            connector_inlet_fluid = fluid.for_pressure_temperature(
                 pressure=downstream_pipe_pressure,
                 temperature=current_temp,
-                molecular_weight=fluid.molecular_weight,
             )
 
             is_elbow_connected = pipe.direction != next_pipe.direction
@@ -3844,11 +3990,11 @@ class Pipeline:
                     relative_roughness=0.0001,  # Assume very smooth connector
                     efficiency=connector_efficiency,
                     elevation_difference=connector_elevation_difference,
-                    specific_gravity=fluid_at_connector_inlet.specific_gravity,
-                    temperature=fluid_at_connector_inlet.temperature,
-                    compressibility_factor=fluid_at_connector_inlet.compressibility_factor,
-                    density=fluid_at_connector_inlet.density,
-                    viscosity=fluid_at_connector_inlet.viscosity,
+                    specific_gravity=connector_inlet_fluid.specific_gravity,
+                    temperature=connector_inlet_fluid.temperature,
+                    compressibility_factor=connector_inlet_fluid.compressibility_factor,
+                    density=connector_inlet_fluid.density,
+                    viscosity=connector_inlet_fluid.viscosity,
                     flow_rate=volumetric_flow_rate,
                     flow_equation=FlowEquation.DARCY_WEISBACH
                     if self._flow_type is FlowType.INCOMPRESSIBLE
@@ -3860,8 +4006,8 @@ class Pipeline:
                     pipe_inlet_diameter=pipe.internal_diameter,
                     pipe_outlet_diameter=next_pipe.internal_diameter,
                     pipe_length=connector_length,  # Your connector length
-                    fluid_density=fluid_at_connector_inlet.density,
-                    fluid_dynamic_viscosity=fluid_at_connector_inlet.viscosity,
+                    fluid_density=connector_inlet_fluid.density,
+                    fluid_dynamic_viscosity=connector_inlet_fluid.viscosity,
                     pipe_relative_roughness=0.000001,  # Assume very smooth connector
                     gradual_angle_threshold_deg=15.0,  # Assume gradual if angle < 15 degrees
                 )
@@ -3874,6 +4020,10 @@ class Pipeline:
 
             # Update the pressure for the start of the next pipe
             current_pressure = downstream_pipe_pressure - connector_pressure_drop
+            # Update fluid temperature for pressure drop across the connector
+            current_temp = current_temp + (
+                fluid_jt_coefficient * connector_pressure_drop
+            )
             current_mass_flow_rate = mass_rate_out
 
         # This part should ideally not be reached if the loop returns
@@ -3969,6 +4119,7 @@ class Pipeline:
         min_mass_rate: float,
         max_mass_rate: float,
         max_iterations: int = 50,
+        partial: bool = True,
     ) -> float:
         """
         Estimate a mass flow rate that would achieve the target downstream pressure.
@@ -3980,6 +4131,7 @@ class Pipeline:
         :param min_mass_rate: Minimum mass flow rate to consider (kg/s)
         :param max_mass_rate: Maximum mass flow rate to consider (kg/s)
         :param max_iterations: Maximum number of iterations for the solver
+        :param partial: Whether to allow partial flow solutions if (some) valves are closed
         :return: Estimated mass flow rate (kg/s)
         """
 
@@ -4099,7 +4251,7 @@ class Pipeline:
                 result = fsolve(error_func, initial_guess, full_output=True)
                 solution = _MockSolution(result[0][0], result[2] == 1)
 
-        elif has_closed_valve:
+        elif partial and has_closed_valve:
             # If the pipeline has a closed valve, somewhere along the line flow is blocked
             # We can simulate the flow up to the closed valve to estimate mass rate by
             # Creating a mock pipeline up to the first closed valve and solving the
@@ -4117,16 +4269,25 @@ class Pipeline:
                     pipes.append(pipe)
                     break
                 pipes.append(pipe)
-            mock_pipeline._pipes = pipes
+
+            mock_pipeline._pipes.clear()
+            for pipe in pipes:
+                mock_pipeline.add_pipe(pipe, sync=False)
+
             min_mass_rate, max_mass_rate = mock_pipeline._get_mass_rate_range()
-            percentage_mocked = len(mock_pipeline._pipes) / len(self._pipes)
-            mass_rate = mock_pipeline._get_mass_rate(
-                target_downstream_pressure=target_downstream_pressure
-                * percentage_mocked,
-                min_mass_rate=min_mass_rate,
-                max_mass_rate=max_mass_rate,
-                max_iterations=10,
-            )
+            try:
+                mass_rate = mock_pipeline._get_mass_rate(
+                    target_downstream_pressure=target_downstream_pressure,
+                    min_mass_rate=min_mass_rate,
+                    max_mass_rate=max_mass_rate,
+                    max_iterations=10,
+                    partial=False,  # To prevent infinite recursion
+                )
+            except RuntimeError as exc:
+                logger.error(
+                    f"Failed to estimate flow up to closed valve: {exc}", exc_info=True
+                )
+                mass_rate = 0.0
             solution = _MockSolution(mass_rate, True)
         else:
             solution = _MockSolution(0.0, False)

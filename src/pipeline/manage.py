@@ -166,8 +166,8 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             """,
         )
         temperature_gauge = TemperatureGauge(
-            value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
-            if pipeline.fluid
+            value=pipeline.upstream_temperature.to(temperature_unit.unit).magnitude
+            if pipeline.upstream_temperature is not None
             else 0,
             min_value=cfg.temperature_guage.min_value,
             max_value=cfg.temperature_guage.max_value,
@@ -180,10 +180,10 @@ class UpstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.temperature_guage.alarm_low,
             animation_speed=cfg.temperature_guage.animation_speed,
             animation_interval=cfg.temperature_guage.animation_interval,
-            update_func=lambda: pipeline.fluid.temperature.to(
+            update_func=lambda: pipeline.upstream_temperature.to(
                 temperature_unit.unit
             ).magnitude
-            if pipeline.fluid
+            if pipeline.upstream_temperature is not None
             else 0,
             update_interval=cfg.temperature_guage.update_interval,
             theme_color=theme_color,
@@ -347,8 +347,8 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             """,
         )
         temperature_gauge = TemperatureGauge(
-            value=pipeline.fluid.temperature.to(temperature_unit.unit).magnitude
-            if pipeline.fluid
+            value=pipeline.downstream_temperature.to(temperature_unit.unit).magnitude
+            if pipeline.downstream_temperature is not None
             else 0,
             min_value=cfg.temperature_guage.min_value,
             max_value=cfg.temperature_guage.max_value,
@@ -361,10 +361,10 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
             alarm_low=cfg.temperature_guage.alarm_low,
             animation_speed=cfg.temperature_guage.animation_speed,
             animation_interval=cfg.temperature_guage.animation_interval,
-            update_func=lambda: pipeline.fluid.temperature.to(
+            update_func=lambda: pipeline.downstream_temperature.to(
                 temperature_unit.unit
             ).magnitude
-            if pipeline.fluid
+            if pipeline.downstream_temperature is not None
             else 0,
             update_interval=cfg.temperature_guage.update_interval,
             theme_color=theme_color,
@@ -664,6 +664,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             self._fluid_config = FluidConfig(
                 name=self._pipeline.fluid.name,
                 phase=self._pipeline.fluid.phase,
+                pressure=self._pipeline.fluid.pressure,  # type: ignore
                 temperature=self._pipeline.fluid.temperature,  # type: ignore
                 molecular_weight=self._pipeline.fluid.molecular_weight,  # type: ignore
             )
@@ -822,12 +823,14 @@ class PipelineManager(typing.Generic[PipelineT]):
         :param fluid_config: The `FluidConfig` to build from.
         :return: A new Fluid instance.
         """
+        upstream_temperature = self._pipeline.upstream_temperature
         return Fluid.from_coolprop(
             fluid_name=fluid_config.name,
             phase=fluid_config.phase,
-            temperature=fluid_config.temperature,
+            temperature=upstream_temperature
+            if upstream_temperature is not None
+            else fluid_config.temperature,
             pressure=self._pipeline.upstream_pressure,
-            molecular_weight=fluid_config.molecular_weight,
         )
 
     def build_pipe(
@@ -961,16 +964,17 @@ class PipelineManager(typing.Generic[PipelineT]):
             # Remove and re-add the pipe
             pipe_config = self._pipe_configs[from_index]
             removed = False
+            removed_pipe = None
             try:
-                self._pipeline.remove_pipe(from_index, sync=True)
+                removed_pipe = self._pipeline.remove_pipe(from_index, sync=True)
                 removed = True
                 # Build a new pipe and add it at new position
                 pipe = self.build_pipe(pipe_config)
                 self._pipeline.add_pipe(pipe, to_index, sync=True)
             except Exception:
                 if removed:
-                    pipe = self.build_pipe(pipe_config)
-                    self._pipeline.add_pipe(pipe, from_index, sync=True)
+                    old_pipe = removed_pipe or self.build_pipe(pipe_config)
+                    self._pipeline.add_pipe(old_pipe, from_index, sync=True)
                 raise
 
             self.sync(validate=True)
@@ -999,12 +1003,23 @@ class PipelineManager(typing.Generic[PipelineT]):
         :return: Self for method chaining.
         """
         if 0 <= index < len(self._pipe_configs):
-            # Remove old pipe and add updated one
-            self._pipeline.remove_pipe(index, sync=True)
-
-            # Create new pipe with updated config
-            pipe = self.build_pipe(pipe_config)
-            self._pipeline.add_pipe(pipe, index, sync=True)
+            removed = False
+            removed_pipe = None
+            try:
+                # Remove old pipe and add updated one
+                removed_pipe = self._pipeline.remove_pipe(index, sync=True)
+                removed = True
+                # Create new pipe with updated config
+                pipe = self.build_pipe(pipe_config)
+                self._pipeline.add_pipe(pipe, index, sync=True)
+            except Exception as exc:
+                if removed:
+                    # Re-add the old pipe if adding the new one fails
+                    old_pipe = removed_pipe or self.build_pipe(
+                        self._pipe_configs[index]
+                    )
+                    self._pipeline.add_pipe(old_pipe, index, sync=True)
+                raise exc
 
             self.sync(validate=True)
             if self.is_valid():
@@ -1076,16 +1091,7 @@ class PipelineManager(typing.Generic[PipelineT]):
 
     def set_upstream_temperature(self, temperature: Quantity) -> Self:
         """Set the upstream temperature of the pipeline fluid."""
-        if self._pipeline.fluid is None:
-            ui.notify(
-                "Cannot set temperature: No fluid is set in the pipeline.",
-                type="warning",
-                position="top",
-            )
-            logger.warning("Attempted to set temperature with no fluid in pipeline")
-            return self
-
-        self._pipeline.set_upstream_temperature(temperature)
+        self._pipeline.set_upstream_temperature(temperature, sync=True)
         self.sync(validate=True)
         if self.is_valid():
             self.notify(
@@ -1115,7 +1121,9 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Only update flow stations if this is the first leak being added
         update_flow_stations = len(leaks) == 1
         self.update_pipe(
-            pipe_index, updated_pipe_config, update_flow_stations=update_flow_stations
+            index=pipe_index,
+            pipe_config=updated_pipe_config,
+            update_flow_stations=update_flow_stations,
         )
         logger.info(f"Added leak to pipe '{pipe_config.name}' at index {pipe_index}")
         return self
@@ -1145,7 +1153,9 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Only update flow stations if this was the last leak being removed
         update_flow_stations = len(leaks) == 0
         self.update_pipe(
-            pipe_index, updated_pipe_config, update_flow_stations=update_flow_stations
+            index=pipe_index,
+            pipe_config=updated_pipe_config,
+            update_flow_stations=update_flow_stations,
         )
         logger.info(
             f"Removed leak from pipe '{pipe_config.name}' at index {pipe_index}"
@@ -1177,7 +1187,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         updated_pipe_config = attrs.evolve(pipe_config, leaks=leaks)
 
         # Update the actual pipe
-        self.update_pipe(pipe_index, updated_pipe_config)
+        self.update_pipe(index=pipe_index, pipe_config=updated_pipe_config)
         logger.info(f"Updated leak in pipe '{pipe_config.name}' at index {pipe_index}")
         return self
 
@@ -1205,7 +1215,9 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Clear all leaks
         updated_pipe_config = attrs.evolve(pipe_config, leaks=[])
         # Update the actual pipe
-        self.update_pipe(pipe_index, updated_pipe_config, update_flow_stations=True)
+        self.update_pipe(
+            index=pipe_index, pipe_config=updated_pipe_config, update_flow_stations=True
+        )
         logger.info(f"Cleared {leak_count} leaks from pipe '{pipe_config.name}'")
         return self
 
@@ -1225,7 +1237,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             if pipe_config.leaks:
                 updated_pipe_config = attrs.evolve(pipe_config, leaks=[])
                 pipe = self.build_pipe(updated_pipe_config)
-                # Remive and re-add pipes
+                # Remove and re-add pipes
                 self._pipeline.remove_pipe(i, sync=False)
                 self._pipeline.add_pipe(pipe, i, sync=False)
 
@@ -1260,7 +1272,11 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Toggle leak active state
         leak_config = pipe_config.leaks[leak_index]
         updated_leak_config = attrs.evolve(leak_config, active=not leak_config.active)
-        return self.update_pipe_leak(pipe_index, leak_index, updated_leak_config)
+        return self.update_pipe_leak(
+            pipe_index=pipe_index,
+            leak_index=leak_index,
+            leak_config=updated_leak_config,
+        )
 
     def get_pipe_leaks(self, pipe_index: int) -> typing.List[PipeLeakConfig]:
         """
@@ -1620,7 +1636,9 @@ class PipelineManager(typing.Generic[PipelineT]):
 
             # Rebuild pipeline from imported configs
             self.sync(validate=True)
-            self.notify("pipeline.configuration.imported")
+            self.notify(
+                "pipeline.configuration.imported", data={"refresh_flow_stations": True}
+            )
 
             logger.info(
                 f"Imported configuration: {len(self._pipe_configs)} pipes and fluid '{self._fluid_config.name}'"
@@ -1762,13 +1780,15 @@ class PipelineManager(typing.Generic[PipelineT]):
             # Build fluid
             fluid_config = converter.structure(fluid_data, FluidConfig)
             try:
+                upstream_temperature = pipeline.upstream_temperature
                 fluid = Fluid.from_coolprop(
                     fluid_name=fluid_config.name,
                     phase=fluid_config.phase,
-                    temperature=fluid_config.temperature,
+                    temperature=upstream_temperature
+                    if upstream_temperature is not None
+                    else fluid_config.temperature,
                     pressure=pipeline.upstream_pressure
                     or Quantity(101325, "Pa"),  # Default to 1 atm if not specified
-                    molecular_weight=fluid_config.molecular_weight,
                 )
             except Exception as exc:
                 ui.notify(
@@ -1813,6 +1833,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         )
         self.manager.subscribe(
             "pipeline.validation.changed", self.on_validation_changed
+        )
+        self.manager.subscribe(
+            "pipeline.configuration.imported", self.on_pipeline_config_imported
         )
         self.manager.subscribe("pipeline.leaks.cleared", self.on_leaks_cleared)
 
@@ -1902,10 +1925,22 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         base_classes = "bg-red-500 hover:bg-red-600 text-white"
         return f"{base_classes} {additional_classes}".strip()
 
+    def on_pipeline_config_imported(
+        self, event: str, data: typing.Optional[typing.Dict]
+    ):
+        data = data or {}
+        self.refresh_pipes_list()
+        self.refresh_pipeline_preview()
+        if self.flow_station_container is None or (
+            data.get("refresh_flow_stations", False)
+        ):
+            self.refresh_flow_stations()
+
     def on_pipe_added(self, event: str, data: typing.Optional[typing.Dict]):
         """Handle pipe added events."""
         if data is None:
             return
+
         ui.notify(
             f"Pipe '{data['pipe_config'].name}' added at index {data['index']}",
             type="success",
@@ -2587,10 +2622,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         )
 
                         ui.label(
-                            f"L: {length_val.magnitude:.2f} {length_unit}, "
-                            f"D: {diameter_val.magnitude:.2f} {diameter_unit}, "
-                            f"P₁: {upstream_pressure_val.magnitude:.2f} {pressure_unit}, "
-                            f"P₂: {downstream_pressure_val.magnitude:.2f} {pressure_unit}, "
+                            f"L: {length_val.magnitude:.2f}{length_unit}, "
+                            f"D: {diameter_val.magnitude:.2f}{diameter_unit}, "
+                            f"P₁: {upstream_pressure_val.magnitude:.2f}{pressure_unit}, "
+                            f"P₂: {downstream_pressure_val.magnitude:.2f}{pressure_unit}, "
                             f"Flow: {flow_str}"
                         ).classes("text-xs sm:text-sm text-gray-600")
 
@@ -3257,6 +3292,28 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         form_container = ui.column().classes("w-full gap-2 sm:gap-3")
         with form_container:
+            # Temperature and pressure row
+            temp_pressure_row = ui.row().classes(
+                "w-full gap-2 flex-wrap sm:flex-nowrap"
+            )
+            with temp_pressure_row:
+                temperature = fluid_config.temperature.to(temp_unit.unit).magnitude
+                ui.label("Operating Temperature").classes("text-xs font-medium")
+                ui.label(f"{temperature:.3f}{temp_unit}").classes(
+                    "text-xs text-gray-600"
+                )
+
+            # Molecular weight and specific gravity row
+            mol_gravity_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
+            with mol_gravity_row:
+                molecular_weight = fluid_config.molecular_weight.to(
+                    mol_weight_unit.unit
+                ).magnitude
+                ui.label("Molecular Weight").classes("text-xs font-medium")
+                ui.label(f"{molecular_weight:.3f}{mol_weight_unit}").classes(
+                    "text-xs text-gray-600"
+                )
+
             # Name and phase row
             name_phase_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
             with name_phase_row:
@@ -3284,52 +3341,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     )
                 )
 
-            # Temperature and pressure row
-            temp_pressure_row = ui.row().classes(
-                "w-full gap-2 flex-wrap sm:flex-nowrap"
-            )
-            with temp_pressure_row:
-                temperature_input = (
-                    ui.number(
-                        f"Temperature ({temp_unit})",
-                        value=fluid_config.temperature.to(temp_unit.unit).magnitude,
-                        step=1,
-                        precision=3,
-                    )
-                    .classes("flex-1 min-w-0")
-                    .tooltip(
-                        "Operating temperature of the fluid. Defaults to flowline temperature if not specified."
-                    )
-                )
-
-            # Molecular weight and specific gravity row
-            mol_gravity_row = ui.row().classes("w-full gap-2 flex-wrap sm:flex-nowrap")
-            with mol_gravity_row:
-                molecular_weight_input = (
-                    ui.number(
-                        f"Molecular Weight ({mol_weight_unit})",
-                        value=fluid_config.molecular_weight.to(
-                            mol_weight_unit.unit
-                        ).magnitude,
-                        min=0.1,
-                        step=0.1,
-                        precision=4,
-                    )
-                    .classes("flex-1 min-w-0")
-                    .tooltip(
-                        "Molecular weight of the fluid (Optional). Will be estimated if not provided."
-                    )
-                )
-
             ui.button(
                 "Update Fluid",
                 on_click=lambda: self.save_fluid_form(
                     name=name_select.value,
                     phase=phase_select.value,
-                    temperature=temperature_input.value,
-                    molecular_weight=molecular_weight_input.value,
-                    temperature_unit=temp_unit.unit,
-                    molecular_weight_unit=mol_weight_unit.unit,
                 ),
                 color=self.theme_color,
             ).classes(
@@ -3393,15 +3409,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Error updating pipe: {exc}", exc_info=True)
 
-    def save_fluid_form(
-        self,
-        name: str,
-        phase: str,
-        temperature: float,
-        molecular_weight: float,
-        temperature_unit: str,
-        molecular_weight_unit: str,
-    ):
+    def save_fluid_form(self, name: str, phase: str):
         """
         Save fluid from form data.
 
@@ -3413,15 +3421,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         :param molecular_weight_unit: Unit for molecular weight.
         """
         try:
-            updated_config = FluidConfig(
-                name=name.strip() or "Methane",
-                phase=phase,
-                temperature=Quantity(temperature, temperature_unit),  # type: ignore
-                molecular_weight=Quantity(
-                    molecular_weight,
-                    molecular_weight_unit,  # type: ignore
-                ),
-            )
+            updated_config = FluidConfig(name=name.strip() or "Methane", phase=phase)
             self.manager.set_fluid(updated_config)
         except Exception as exc:
             logger.error(f"Error updating fluid: {exc}", exc_info=True)
@@ -3766,8 +3766,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         try:
             self.manager.toggle_leak(pipe_index, leak_index)
         except Exception as exc:
-            ui.notify(f"Error toggling leak status: {str(exc)}", type="negative")
-            logger.error(f"Error toggling leak status: {exc}", exc_info=True)
+            logger.error(f"Failed to toggle leak: {exc}", exc_info=True)
 
     def confirm_leak_removal(self, pipe_index: int, leak_index: int) -> None:
         """Show confirmation dialog for removing a leak."""
