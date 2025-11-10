@@ -185,7 +185,7 @@ class JSONFileStorage(StorageBackend):
     def __init__(self, storage_dir: typing.Union[str, Path], namespace: str):
         super().__init__(namespace)
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self.storage_dir.mkdir(parents=True, exist_ok=True, mode=0o777)
         logger.debug(
             f"Initialized {self.__class__.__name__} with storage directory: {storage_dir}"
         )

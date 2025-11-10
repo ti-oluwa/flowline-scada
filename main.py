@@ -26,7 +26,7 @@ from src.pipeline.manage import (
 )
 from src.units import Quantity
 
-load_dotenv(find_dotenv(".env"))
+load_dotenv(find_dotenv(Path.cwd() / ".env"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -270,7 +270,7 @@ app = fastapi.FastAPI(
 # Mount static files directory for audio and other assets
 fixtures_path = Path(__file__).parent / "fixtures"
 if fixtures_path.exists():
-    app.mount("/fixtures", StaticFiles(directory=str(fixtures_path)), name="fixtures")
+    app.mount("/fixtures", StaticFiles(directory=fixtures_path), name="fixtures")
     logger.info("Mounted fixtures directory at /fixtures")
 
 ui.run_with(
