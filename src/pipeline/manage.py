@@ -428,8 +428,8 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
         # If pipeline has leaks, the meters above will show the flow properties with the leak losses
         # But we also want to show the expected flow properties assuming no leaks
         if pipeline.is_leaking:
-            # Make a copy of the pipeline and disable leaks on it to get the no-leak flow rates
-            no_leak_pipeline = pipeline.copy()
+            # Make a (shallow) copy of the pipeline and disable leaks on it to get the no-leak flow rates
+            no_leak_pipeline = pipeline.copy(deep_copy_pipes=True)
             no_leak_pipeline.set_ignore_leaks(True, sync=True)
 
             leak_rate_meter = FlowMeter(
@@ -1580,7 +1580,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 "connector_length": unstructure_quantity(
                     self._pipeline.connector_length
                 ),
-                "flow_type": self._pipeline._flow_type.value,
+                "flow_type": self._pipeline.flow_type.value,
             },
         }
         return orjson.dumps(config_data, option=orjson.OPT_INDENT_2).decode("utf-8")
@@ -1624,13 +1624,13 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Import pipeline settings if available - EAFP
         try:
             pipeline_data = config_data["pipeline"]
-            
+
             # Name
             try:
                 self._pipeline.name = pipeline_data["name"]
             except (KeyError, AttributeError):
                 pass
-            
+
             # Scale factor
             try:
                 self._pipeline.set_scale_factor(
@@ -1638,7 +1638,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 )
             except (KeyError, AttributeError):
                 pass
-            
+
             # Max flow rate
             try:
                 self._pipeline.set_max_flow_rate(
@@ -1647,7 +1647,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 )
             except (KeyError, AttributeError):
                 pass
-            
+
             # Connector length
             try:
                 self._pipeline.set_connector_length(
@@ -1656,7 +1656,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 )
             except (KeyError, AttributeError):
                 pass
-            
+
             # Flow type
             try:
                 self._pipeline.set_flow_type(
@@ -1664,7 +1664,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 )
             except (KeyError, AttributeError, ValueError):
                 pass
-                
+
         except KeyError:
             # No pipeline settings in config
             pass
@@ -1681,8 +1681,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         # Notify
         try:
             self.notify(
-                "pipeline.configuration.imported", 
-                data={"refresh_flow_stations": True}
+                "pipeline.configuration.imported", data={"refresh_flow_stations": True}
             )
         except Exception:
             pass
@@ -1713,12 +1712,13 @@ class PipelineManager(typing.Generic[PipelineT]):
             "pipeline": {
                 "name": self._pipeline.name,
                 "max_flow_rate": unstructure_quantity(self._pipeline.max_flow_rate),
-                "flow_type": self._pipeline._flow_type.value,
+                "flow_type": self._pipeline.flow_type.value,
                 "scale_factor": self._pipeline.scale_factor,
                 "connector_length": unstructure_quantity(
                     self._pipeline.connector_length
                 ),
                 "alert_errors": self._pipeline.alert_errors,
+                "ignore_leaks": self._pipeline._ignore_leaks,
             },
             "fluid": converter.unstructure(self._fluid_config),
             "pipes": [converter.unstructure(pc) for pc in self._pipe_configs],
@@ -1817,6 +1817,7 @@ class PipelineManager(typing.Generic[PipelineT]):
                 Quantity,
             ),
             alert_errors=pipeline_data.get("alert_errors", True),
+            ignore_leaks=pipeline_data.get("ignore_leaks", False),
         )
 
         if fluid_data:
@@ -1975,7 +1976,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     ):
         """Handle pipeline configuration import event."""
         data = data or {}
-        
+
         # Clean up and reset leak alert system before refreshing
         if self._leak_alert_timer is not None:
             try:
@@ -1983,18 +1984,18 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             except Exception:
                 pass
             self._leak_alert_timer = None
-        
+
         # Pause any playing alert
         if self._leak_alert_playing:
             try:
                 self._pause_leak_alert()
             except Exception:
                 pass
-        
+
         # Reset alert state
         self._leak_alert_playing = False
         self.leak_alert_muted = False
-        
+
         # Refresh UI
         self.refresh_pipes_list()
         self.refresh_pipeline_preview()
@@ -2316,7 +2317,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         try:
             # Mark as cleaned up to prevent event handlers from running
             self._is_cleaned_up = True
-            
+
             # Cancel leak alert timer if it exists
             if self._leak_alert_timer is not None:
                 try:
@@ -2324,11 +2325,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 except Exception:
                     pass
                 self._leak_alert_timer = None
-            
+
             # Stop any playing alert sound
             if self._leak_alert_playing:
                 self._pause_leak_alert()
-            
+
             # Clean up flow stations' timers
             if self.current_flow_stations:
                 for station in self.current_flow_stations:
@@ -2960,26 +2961,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         ).classes("text-sm font-semibold")
 
                     if pipe:
-                        # Friction Factor
-                        with ui.column().classes("gap-1"):
-                            ui.label("Friction Factor").classes(
-                                "text-xs text-gray-500 font-medium"
-                            )
-                            ui.label(
-                                f"{pipe.friction_factor:.6f}"
-                                if pipe.friction_factor
-                                else "N/A"
-                            ).classes("text-sm font-semibold")
-
                         # Reynolds Number
                         with ui.column().classes("gap-1"):
                             ui.label("Reynolds Number").classes(
                                 "text-xs text-gray-500 font-medium"
                             )
+                            reynolds_number = pipe.reynolds_number
                             ui.label(
-                                f"{pipe.reynolds_number:.2f}"
-                                if pipe.reynolds_number
-                                else "N/A"
+                                f"{reynolds_number:.2f}" if reynolds_number else "N/A"
                             ).classes("text-sm font-semibold")
 
             # Temperature Data
@@ -3088,8 +3077,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                 # Local Pressure at Leak Location
                                 local_pressure = None
                                 if pipe and leak_obj:
-                                    local_pressure = pipe.estimate_pressure_at_location(
-                                        leak_obj.location
+                                    local_pressure = pipeline.estimate_leak_pressure(
+                                        pipe_index=pipe_index,
+                                        leak_location=leak_obj.location,
                                     )
                                     with ui.column().classes("gap-1"):
                                         ui.label("Local Pressure").classes(
@@ -3953,7 +3943,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                 # Only allow phase selection if the pipeline is doing compressible flow
                 pipeline = self.manager.get_pipeline()
-                if pipeline._flow_type == FlowType.COMPRESSIBLE:
+                if pipeline.flow_type == FlowType.COMPRESSIBLE:
                     phase_select = (
                         ui.select(
                             options=["gas", "liquid"],
@@ -4906,7 +4896,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """Import pipe configuration from an uploaded JSON file."""
         try:
             content = await event.file.read()
-            
+
             # Decode if bytes
             if isinstance(content, bytes):
                 content = content.decode("utf-8")

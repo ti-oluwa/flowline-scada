@@ -195,6 +195,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cachetools"
+version = "6.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/7e/b975b5814bd36faf009faebe22c1072a1fa1168db34d285ef0ba071ad78c/cachetools-6.2.1.tar.gz", hash = "sha256:3f391e4bd8f8bf0931169baf7456cc822705f4e2a31f840d218f445b9a854201", size = 31325, upload-time = "2025-10-12T14:55:30.139Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/c5/1e741d26306c42e2bf6ab740b2202872727e0f606033c9dd713f8b93f5a8/cachetools-6.2.1-py3-none-any.whl", hash = "sha256:09868944b6dde876dfd44e1d47e18484541eaf12f26f29b7af91b26cc892d701", size = 11280, upload-time = "2025-10-12T14:55:28.382Z" },
+]
+
+[[package]]
 name = "cattrs"
 version = "25.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -318,6 +327,37 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/82/99/b4de7e39e8eaf8207ba1a8fa2241dd98b2ba72ae6e16960d8351736d8702/flexparser-0.4.tar.gz", hash = "sha256:266d98905595be2ccc5da964fe0a2c3526fbbffdc45b65b3146d75db992ef6b2", size = 31799, upload-time = "2024-11-07T02:00:56.249Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/5e/3be305568fe5f34448807976dc82fc151d76c3e0e03958f34770286278c1/flexparser-0.4-py3-none-any.whl", hash = "sha256:3738b456192dcb3e15620f324c447721023c0293f6af9955b481e91d00179846", size = 27625, upload-time = "2024-11-07T02:00:54.523Z" },
+]
+
+[[package]]
+name = "flowline-scada"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "attrs" },
+    { name = "cachetools" },
+    { name = "cattrs" },
+    { name = "coolprop" },
+    { name = "nicegui" },
+    { name = "orjson" },
+    { name = "pint" },
+    { name = "python-dotenv" },
+    { name = "redis" },
+    { name = "scipy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "attrs", specifier = ">=25.3.0" },
+    { name = "cachetools", specifier = ">=6.2.1" },
+    { name = "cattrs", specifier = ">=25.2.0" },
+    { name = "coolprop", specifier = ">=7.0.0" },
+    { name = "nicegui", specifier = ">=2.22.2" },
+    { name = "orjson", specifier = ">=3.11.2" },
+    { name = "pint", specifier = ">=0.25" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
+    { name = "redis", specifier = ">=6.4.0" },
+    { name = "scipy", specifier = ">=1.16.2" },
 ]
 
 [[package]]
@@ -930,35 +970,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5a/cb/e6ffaf3d019e8501b1264dac529bf829ac2f1fe1d488cfcf67f1fccadacf/pint-0.25.tar.gz", hash = "sha256:22911a30d682ee0540d656571c19a7b1806ce00b2be88a16f67218108b7b8cc2", size = 253010, upload-time = "2025-08-15T19:49:12.72Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/76/cc/c528311d798e22ec884b816e8aa2989e0f1f28cdc8e5969e2be5f10bce85/pint-0.25-py3-none-any.whl", hash = "sha256:cc20ae3dff010b9bbea41fb80c2de008f683cc83512cea73633d55aead80aa1e", size = 305462, upload-time = "2025-08-15T19:49:11.083Z" },
-]
-
-[[package]]
-name = "pipeline-scada"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "attrs" },
-    { name = "cattrs" },
-    { name = "coolprop" },
-    { name = "nicegui" },
-    { name = "orjson" },
-    { name = "pint" },
-    { name = "python-dotenv" },
-    { name = "redis" },
-    { name = "scipy" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "attrs", specifier = ">=25.3.0" },
-    { name = "cattrs", specifier = ">=25.2.0" },
-    { name = "coolprop", specifier = ">=7.0.0" },
-    { name = "nicegui", specifier = ">=2.22.2" },
-    { name = "orjson", specifier = ">=3.11.2" },
-    { name = "pint", specifier = ">=0.25" },
-    { name = "python-dotenv", specifier = ">=1.1.1" },
-    { name = "redis", specifier = ">=6.4.0" },
-    { name = "scipy", specifier = ">=1.16.2" },
 ]
 
 [[package]]

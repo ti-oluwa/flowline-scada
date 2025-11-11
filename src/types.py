@@ -1,11 +1,15 @@
 import enum
 import typing
+from typing_extensions import ParamSpec
 import attrs
 import cattrs
 import re
 from pint.facets.plain import PlainQuantity
 
 from src.units import Quantity, Unit, UnitSystem, QuantityUnit, IMPERIAL, SI, OIL_FIELD
+
+P = ParamSpec("P")
+R = typing.TypeVar("R")
 
 
 def structure_quantity(obj: typing.Any, _) -> PlainQuantity:
@@ -386,6 +390,8 @@ class PipelineConfig:
         )
     )
     """Default pipe properties"""
+    ignore_leaks: bool = attrs.field(alias="_ignore_leaks", default=False)
+    """Whether to ignore leaks in the pipeline"""
 
 
 EventCallback = typing.Callable[[str, typing.Any], None]

@@ -1,11 +1,12 @@
 [project]
-name = "pipeline-scada"
+name = "flowline-scada"
 version = "0.1.0"
-description = "A SCADA system for pipeline monitoring and control."
+description = "Hydrocarbon Flowline SCADA - Simulation and Leak detection."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "attrs>=25.3.0",
+    "cachetools>=6.2.1",
     "cattrs>=25.2.0",
     "coolprop>=7.0.0",
     "nicegui>=2.22.2",

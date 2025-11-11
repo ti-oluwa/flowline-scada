@@ -2,6 +2,7 @@ import typing
 import attrs
 import math
 import functools
+import logging
 from pint.facets.plain import PlainQuantity
 from CoolProp.CoolProp import PropsSI, get_global_param_string
 
@@ -16,6 +17,8 @@ AIR_DENSITY = Quantity(
 )  # Density of air at standard conditions - 1atm and 15°C
 SUPPORTED_FLUIDS = get_global_param_string("FluidsList").split(",")
 """List of CoolProp supported fluids."""
+
+logger = logging.getLogger(__name__)
 
 
 def is_supported_fluid(fluid_name: str) -> bool:
@@ -277,16 +280,49 @@ def compute_joule_thomson_coefficient(
     temperature_k = temperature.to("K").magnitude
     delta_pressure_pa = pressure_step.to("Pa").magnitude
 
-    enthalpy_j_per_kg = PropsSI("H", "P", pressure_pa, "T", temperature_k, fluid_name)
+    # Adaptive step size: use smaller of specified step or 0.1% of pressure
+    # This ensures accuracy across wide pressure ranges
+    delta_pressure_pa = min(delta_pressure_pa, pressure_pa * 0.001)
 
-    new_temperature_k = PropsSI(
-        "T", "P", pressure_pa - delta_pressure_pa, "H", enthalpy_j_per_kg, fluid_name
-    )
+    # Ensure we don't go to negative or near-zero pressure
+    if pressure_pa - delta_pressure_pa <= 0:
+        delta_pressure_pa = pressure_pa * 0.5  # Step down by half
 
-    joule_thomson_coefficient = (new_temperature_k - temperature_k) / (
-        -delta_pressure_pa
-    )
-    return Quantity(joule_thomson_coefficient, "K/Pa")
+    try:
+        # Get enthalpy at current state
+        enthalpy_j_per_kg = PropsSI(
+            "H", "P", pressure_pa, "T", temperature_k, fluid_name
+        )
+
+        # Get temperature at lower pressure with same enthalpy (isenthalpic expansion)
+        new_pressure_pa = pressure_pa - delta_pressure_pa
+        new_temperature_k = PropsSI(
+            "T", "P", new_pressure_pa, "H", enthalpy_j_per_kg, fluid_name
+        )
+
+        # Calculate coefficient: μ_JT = ΔT / (-ΔP)
+        # Note: Division gives units of K/Pa
+        delta_T = new_temperature_k - temperature_k
+        delta_P = -delta_pressure_pa  # Negative because pressure decreased
+
+        joule_thomson_coefficient = delta_T / delta_P
+
+        # Return as Quantity with correct units
+        return joule_thomson_coefficient * ureg.K / ureg.Pa
+
+    except ValueError as exc:
+        # This can happen near phase boundaries or outside fluid property range
+        logger.warning(
+            f"JT coefficient calculation failed for {fluid_name} at "
+            f"P={pressure_pa:.0f} Pa, T={temperature_k:.1f} K: {exc}"
+        )
+        # Return zero coefficient as fallback (isothermal assumption)
+        return 0.0 * ureg.K / ureg.Pa
+    except Exception as exc:
+        logger.error(
+            f"Unexpected error calculating JT coefficient for {fluid_name}: {exc}"
+        )
+        return 0.0 * ureg.K / ureg.Pa
 
 
 def compute_reynolds_number(

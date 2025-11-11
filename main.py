@@ -26,11 +26,14 @@ from src.pipeline.manage import (
 )
 from src.units import Quantity
 
-load_dotenv(find_dotenv(Path.cwd() / ".env"))
+load_dotenv(
+    find_dotenv(Path.cwd() / ".env", raise_error_if_not_found=False), encoding="utf-8"
+)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - [%(name)s:%(funcName)s:%(lineno)d] - %(levelname)s - %(message)s",
+    force=True,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,6 +169,7 @@ def root(client: Client) -> ui.element:
                     scale_factor=pipeline_config.scale_factor,
                     connector_length=pipeline_config.connector_length,
                     alert_errors=pipeline_config.alert_errors,
+                    ignore_leaks=pipeline_config.ignore_leaks,
                 )
 
                 fluid_config = pipeline_config.fluid
