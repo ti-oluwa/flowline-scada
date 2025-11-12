@@ -255,7 +255,6 @@ class FlowSolver:
         :param inlet_state: Flow state at segment inlet
         :return: Tuple of (outlet_pressure, outlet_mass_flow_rate)
         """
-        # Check for required properties
         if pipe.fluid is None:
             logger.error(f"Pipe {pipe.name!r} has no fluid defined")
             return Quantity(0.0, "Pa"), Quantity(0.0, "kg/s")
@@ -282,21 +281,6 @@ class FlowSolver:
             logger.error(f"Pipe {pipe.name!r} has no flow equation determined")
             return Quantity(0.0, "Pa"), Quantity(0.0, "kg/s")
 
-        # Calculate Reynolds number for this segment
-        # try:
-        #     reynolds_number = compute_reynolds_number(
-        #         current_flow_rate=volumetric_flow,
-        #         pipe_internal_diameter=pipe.internal_diameter,
-        #         fluid_density=fluid_props.density,
-        #         fluid_dynamic_viscosity=fluid_props.viscosity,
-        #     )
-        # except Exception as exc:
-        #     logger.error(
-        #         f"Reynolds number calculation failed for {pipe.name!r}: {exc}",
-        #         exc_info=True,
-        #     )
-        #     return Quantity(0.0, "Pa"), Quantity(0.0, "kg/s")
-
         # Compute pressure drop using the pipe's designated flow equation
         # Note: We scale the pipe properties to segment length
         try:
@@ -306,8 +290,6 @@ class FlowSolver:
 
             # For this segment, assume downstream pressure is inlet minus some drop
             # We'll iterate if needed, but first approximation:
-            estimated_outlet_pressure = inlet_state.pressure * 0.95  # rough guess
-
             # Calculate pressure drop for this segment using the proper equation
             segment_pressure_drop = compute_pipe_pressure_drop(
                 upstream_pressure=inlet_state.pressure,
@@ -481,8 +463,11 @@ class FlowSolver:
                     pipe_relative_roughness=0.000001,  # Very smooth connector
                     gradual_angle_threshold_deg=15.0,
                 )
-            except Exception as e:
-                logger.error(f"Tapered connector pressure drop calculation failed: {e}")
+            except Exception as exc:
+                logger.error(
+                    f"Tapered connector pressure drop calculation failed: {exc}",
+                    exc_info=True,
+                )
                 connector_pressure_drop = Quantity(0.0, "Pa")
 
         return connector_pressure_drop
@@ -495,14 +480,17 @@ class FlowSolver:
 
         This maintains proper pressure tracking and respects each segment's physics.
 
+        Valve logic:
+        - Start valve closed: No flow enters pipe, returns zero flow state
+        - End valve closed: Flow occurs in pipe but doesn't exit (outlet mass flow = 0)
+
         :param pipe: Pipe object to solve
         :param inlet_state: Flow state at pipe inlet
         :param set_values: Whether to set calculated values on the pipe object
         :return: Flow state at pipe outlet
         """
-        # Check for closed valves
+        # Check for closed START valve - no flow enters pipe at all
         if pipe._start_valve is not None and pipe._start_valve.is_closed():
-            # No flow enters pipe
             zero_state = FlowState(
                 pressure=Quantity(0.0, "Pa"),
                 temperature=inlet_state.temperature,
@@ -510,9 +498,30 @@ class FlowSolver:
                 position=1.0,
             )
             if set_values:
+                pipe.set_upstream_pressure(Quantity(0.0, "Pa"), check=False, sync=False)
+                pipe.set_downstream_pressure(
+                    Quantity(0.0, "Pa"), check=False, sync=False
+                )
                 pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
             return zero_state
 
+        # Check if inlet flow is already zero (from upstream blockage)
+        if inlet_state.mass_flow_rate.magnitude <= 0:
+            zero_state = FlowState(
+                pressure=Quantity(0.0, "Pa"),
+                temperature=inlet_state.temperature,
+                mass_flow_rate=Quantity(0.0, "kg/s"),
+                position=1.0,
+            )
+            if set_values:
+                pipe.set_upstream_pressure(Quantity(0.0, "Pa"), check=False, sync=False)
+                pipe.set_downstream_pressure(
+                    Quantity(0.0, "Pa"), check=False, sync=False
+                )
+                pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+            return zero_state
+
+        # Flow CAN enter the pipe - solve normally
         segments = self._segment_pipe_with_leaks(pipe)
         current_state = inlet_state
 
@@ -564,28 +573,30 @@ class FlowSolver:
             )
 
             # Convert mass flow to volumetric flow for pipe
-            if pipe.fluid and current_state.mass_flow_rate.magnitude > 0:
+            # Use INLET mass flow (what flows THROUGH the pipe), not outlet mass flow
+            # This ensures correct display when end valve is closed (flow happens inside pipe)
+            if pipe.fluid and inlet_state.mass_flow_rate.magnitude > 0:
                 fluid_props = self._get_fluid_properties(
-                    current_state.pressure, current_state.temperature
+                    inlet_state.pressure, inlet_state.temperature
                 )
                 if fluid_props:
-                    volumetric_flow = current_state.mass_flow_rate / fluid_props.density
+                    volumetric_flow = inlet_state.mass_flow_rate / fluid_props.density
                     pipe.set_flow_rate(volumetric_flow.to("ft^3/s"))
                 else:
                     pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
             else:
                 pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
 
-        # Check for closed end valve
+        # Check for closed END valve - flow occurred IN pipe but doesn't EXIT
         if pipe._end_valve is not None and pipe._end_valve.is_closed():
-            # Flow occurs in pipe but doesn't exit
+            # Flow happened inside the pipe (flow_rate is set above)
+            # But no mass flow exits to next pipe
             return FlowState(
-                pressure=current_state.pressure,
+                pressure=current_state.pressure,  # Pressure builds up at end
                 temperature=current_state.temperature,
-                mass_flow_rate=Quantity(0.0, "kg/s"),
+                mass_flow_rate=Quantity(0.0, "kg/s"),  # ZERO mass exits
                 position=1.0,
             )
-
         return current_state
 
     def _estimate_initial_mass_flow(self) -> PlainQuantity[float]:
@@ -612,14 +623,14 @@ class FlowSolver:
             return Quantity(0.0, "kg/s")
 
         # Get fluid properties at inlet conditions
-        upstream_temp = self.pipeline.upstream_temperature
-        inlet_temp = (
-            upstream_temp
-            if upstream_temp is not None
+        upstream_temperature = self.pipeline.upstream_temperature
+        inlet_temperature = (
+            upstream_temperature
+            if upstream_temperature is not None
             else self.pipeline.fluid.temperature
         )
         fluid_props = self._get_fluid_properties(
-            self.pipeline.upstream_pressure, inlet_temp
+            self.pipeline.upstream_pressure, inlet_temperature
         )
         if fluid_props is None:
             return Quantity(1.0, "kg/s")  # Fallback
@@ -668,12 +679,26 @@ class FlowSolver:
                 pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
             return False
 
+        # Check if first pipe has closed start valve - no flow can enter pipeline
+        first_pipe = self.pipeline._pipes[0]
+        if first_pipe._start_valve is not None and first_pipe._start_valve.is_closed():
+            logger.info(
+                f"Pipeline {self.pipeline.name!r}: First pipe has closed start valve - setting all pipes to zero flow"
+            )
+            for pipe in self.pipeline._pipes:
+                pipe.set_upstream_pressure(Quantity(0.0, "Pa"), check=False, sync=False)
+                pipe.set_downstream_pressure(
+                    Quantity(0.0, "Pa"), check=False, sync=False
+                )
+                pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+            return True
+
         target_outlet_p = self.pipeline.downstream_pressure.to("Pa").magnitude
-        inlet_p = self.pipeline.upstream_pressure
-        upstream_temp = self.pipeline.upstream_temperature
-        inlet_t = (
-            upstream_temp
-            if upstream_temp is not None
+        inlet_pressure = self.pipeline.upstream_pressure
+        upstream_temperature = self.pipeline.upstream_temperature
+        inlet_temperature = (
+            upstream_temperature
+            if upstream_temperature is not None
             else self.pipeline.fluid.temperature
         )
 
@@ -685,11 +710,11 @@ class FlowSolver:
             :return: Pressure error in Pa (positive if too high, negative if too low)
             """
             if mass_flow_rate_kg_s <= 0:
-                return inlet_p.to("Pa").magnitude - target_outlet_p
+                return inlet_pressure.to("Pa").magnitude - target_outlet_p
 
             current_state = FlowState(
-                pressure=inlet_p,
-                temperature=inlet_t,
+                pressure=inlet_pressure,
+                temperature=inlet_temperature,
                 mass_flow_rate=Quantity(mass_flow_rate_kg_s, "kg/s"),
                 position=0.0,
             )
@@ -698,9 +723,20 @@ class FlowSolver:
             num_pipes = len(self.pipeline._pipes)
             for i, pipe in enumerate(self.pipeline._pipes):
                 # Solve flow through this pipe
+                # The pipe itself will handle its start valve (blocks entry)
+                # and end valve (blocks exit but allows internal flow)
                 current_state = self._solve_pipe_flow(
                     pipe, current_state, set_values=False
                 )
+
+                # If current_state has zero mass flow, all downstream pipes get zero
+                if current_state.mass_flow_rate.magnitude <= 0:
+                    # This means either:
+                    # 1. Start valve of this pipe was closed, OR
+                    # 2. End valve of previous pipe was closed, OR
+                    # 3. End valve of this pipe was closed
+                    # In all cases, no flow continues downstream
+                    return current_state.pressure.to("Pa").magnitude - target_outlet_p
 
                 if current_state.pressure.magnitude <= 0:
                     return -target_outlet_p
@@ -708,18 +744,6 @@ class FlowSolver:
                 # Add connector pressure drop if not the last pipe
                 if i < num_pipes - 1:
                     next_pipe = self.pipeline._pipes[i + 1]
-
-                    # Check for valves blocking flow to next pipe
-                    if (
-                        pipe._end_valve is not None and pipe._end_valve.is_closed()
-                    ) or (
-                        next_pipe._start_valve is not None
-                        and next_pipe._start_valve.is_closed()
-                    ):
-                        # No flow to next pipe
-                        return (
-                            current_state.pressure.to("Pa").magnitude - target_outlet_p
-                        )
 
                     # Calculate connector pressure drop
                     connector_pressure_drop = self._compute_connector_pressure_drop(
@@ -753,15 +777,13 @@ class FlowSolver:
                                 f"JT coefficient calculation failed: {exc}",
                                 exc_info=True,
                             )
-                            pass
 
                     current_state = FlowState(
                         pressure=new_pressure,
                         temperature=new_temp,
-                        mass_flow_rate=current_state.mass_flow_rate,
+                        mass_flow_rate=current_state.mass_flow_rate,  # Carries through
                         position=0.0,  # Reset position for next pipe
                     )
-
                     if new_pressure.magnitude <= 0:
                         return -target_outlet_p
 
@@ -781,7 +803,7 @@ class FlowSolver:
                 f_lower = objective(lower_bound)
                 f_upper = objective(upper_bound)
 
-                if f_lower * f_upper < 0:
+                if f_lower * f_upper < 0:  # Sign change found ( -ve * +ve = -ve )
                     bracket_found = True
                     break
 
@@ -814,72 +836,78 @@ class FlowSolver:
                 objective,
                 lower_bound,
                 upper_bound,
-                xtol=tolerance / inlet_p.to("Pa").magnitude,
+                xtol=tolerance / inlet_pressure.to("Pa").magnitude,
                 maxiter=max_iterations,
             )
 
             # Apply solution to all pipes (final pass with set_values=True)
             current_state = FlowState(
-                pressure=inlet_p,
-                temperature=inlet_t,
+                pressure=inlet_pressure,
+                temperature=inlet_temperature,
                 mass_flow_rate=Quantity(solution, "kg/s"),
                 position=0.0,
             )
 
             num_pipes = len(self.pipeline._pipes)
             for i, pipe in enumerate(self.pipeline._pipes):
+                # Solve this pipe with set_values=True
                 current_state = self._solve_pipe_flow(
                     pipe, current_state, set_values=True
                 )
 
+                # If no flow exits this pipe, all downstream pipes get zero
+                if current_state.mass_flow_rate.magnitude <= 0:
+                    # Set all remaining downstream pipes to zero
+                    for j in range(i + 1, num_pipes):
+                        downstream_pipe = self.pipeline._pipes[j]
+                        downstream_pipe.set_upstream_pressure(
+                            Quantity(0.0, "Pa"), check=False, sync=False
+                        )
+                        downstream_pipe.set_downstream_pressure(
+                            Quantity(0.0, "Pa"), check=False, sync=False
+                        )
+                        downstream_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+                    break
+
                 # Apply connector effects if not last pipe
                 if i < num_pipes - 1:
                     next_pipe = self.pipeline._pipes[i + 1]
+                    connector_pressure_drop = self._compute_connector_pressure_drop(
+                        pipe, next_pipe, current_state
+                    )
 
-                    if not (
-                        (pipe._end_valve and pipe._end_valve.is_closed())
-                        or (
-                            next_pipe._start_valve
-                            and next_pipe._start_valve.is_closed()
-                        )
+                    new_pressure = current_state.pressure - connector_pressure_drop
+                    new_pressure = Quantity(
+                        max(0.0, new_pressure.magnitude), new_pressure.units
+                    )
+
+                    new_temp = current_state.temperature
+                    if (
+                        pipe.fluid
+                        and pipe.fluid.phase == "gas"
+                        and pipe.flow_type == FlowType.COMPRESSIBLE
                     ):
-                        connector_pressure_drop = self._compute_connector_pressure_drop(
-                            pipe, next_pipe, current_state
-                        )
+                        try:
+                            jt_coeff = pipe.fluid.get_joule_thomson_coefficient(
+                                pressure=current_state.pressure,
+                                temperature=current_state.temperature,
+                            )
+                            new_temp = current_state.temperature.to("degF") + (
+                                jt_coeff.to("degF/Pa")
+                                * connector_pressure_drop.to("Pa")
+                            )
+                        except Exception as exc:
+                            logger.debug(
+                                f"JT coefficient calculation failed: {exc}",
+                                exc_info=True,
+                            )
 
-                        new_pressure = current_state.pressure - connector_pressure_drop
-                        new_pressure = Quantity(
-                            max(0.0, new_pressure.magnitude), new_pressure.units
-                        )
-
-                        new_temp = current_state.temperature
-                        if (
-                            pipe.fluid
-                            and pipe.fluid.phase == "gas"
-                            and pipe.flow_type == FlowType.COMPRESSIBLE
-                        ):
-                            try:
-                                jt_coeff = pipe.fluid.get_joule_thomson_coefficient(
-                                    pressure=current_state.pressure,
-                                    temperature=current_state.temperature,
-                                )
-                                new_temp = current_state.temperature.to("degF") + (
-                                    jt_coeff.to("degF/Pa")
-                                    * connector_pressure_drop.to("Pa")
-                                )
-                            except Exception as exc:
-                                logger.debug(
-                                    f"JT coefficient calculation failed: {exc}",
-                                    exc_info=True,
-                                )
-                                pass
-
-                        current_state = FlowState(
-                            pressure=new_pressure,
-                            temperature=new_temp,
-                            mass_flow_rate=current_state.mass_flow_rate,
-                            position=0.0,
-                        )
+                    current_state = FlowState(
+                        pressure=new_pressure,
+                        temperature=new_temp,
+                        mass_flow_rate=current_state.mass_flow_rate,
+                        position=0.0,
+                    )
 
             logger.info(
                 f"Pipeline {self.pipeline.name!r} converged: "
@@ -940,19 +968,19 @@ class FlowSolver:
         segments = self._segment_pipe_with_leaks(pipe)
 
         # Find which segment contains the target location
-        inlet_pressure = pipe.upstream_pressure
+        inlet_pressureressure = pipe.upstream_pressure
         fluid = pipe.fluid
-        upstream_temp = pipe.upstream_temperature
-        inlet_temp = (
-            upstream_temp
-            if upstream_temp is not None
+        upstream_temperature = pipe.upstream_temperature
+        inlet_temperature = (
+            upstream_temperature
+            if upstream_temperature is not None
             else (fluid.temperature if fluid else Quantity(298.15, "K"))
         )
         mass_flow = pipe._flow_rate.to("ft^3/s") * fluid.density.to("lb/ft^3")
 
         current_state = FlowState(
-            pressure=inlet_pressure,
-            temperature=inlet_temp,
+            pressure=inlet_pressureressure,
+            temperature=inlet_temperature,
             mass_flow_rate=mass_flow,
             position=0.0,
         )
