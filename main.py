@@ -1,10 +1,11 @@
 """
-Main Entry Point for Flowline Simulation Application.
+Main entry point for the application.
 """
 
 import hashlib
 import logging
 import os
+import sys
 import typing
 import redis
 import fastapi
@@ -12,7 +13,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from dotenv import find_dotenv, load_dotenv
-from nicegui import Client, ui
+from nicegui import Client, ui, native
 
 from src.config import ConfigurationState, Configuration
 from src.storages import JSONFileStorage, RedisStorage
@@ -31,9 +32,8 @@ load_dotenv(
 )
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s - [%(name)s:%(funcName)s:%(lineno)d] - %(levelname)s - %(message)s",
-    force=True,
 )
 
 logger = logging.getLogger(__name__)
@@ -248,12 +248,12 @@ def root(client: Client) -> ui.element:
 def main():
     """Main application entry point."""
     logger.info("Starting Pipeline Simulation System")
+    should_reload = sys.argv.count("--reload") > 0
     ui.run(
         title="Pipeline Simulation System",
-        port=8080,
+        port=native.find_open_port(8000),
         host="0.0.0.0",
-        reload=os.getenv("DEBUG", "False").lower()
-        in ("t", "true", "yes", "on", "1", "y"),
+        reload=should_reload,
         show=True,
         favicon="🌐",
         dark=False,

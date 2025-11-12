@@ -16,3 +16,15 @@ dependencies = [
     "redis>=6.4.0",
     "scipy>=1.16.2",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.16.0",
+]
+
+[tool.nicegui-pack.app]
+entry = "main.py"
+name = "FlowlineSCADA"
+onefile = true
+windowed = true
+include_data = true
