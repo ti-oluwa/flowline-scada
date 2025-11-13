@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "redis>=6.4.0",
     "scipy>=1.16.2",
+    "pywebview[qt]>=4.0.8",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,8 @@ dev = [
 
 [tool.nicegui-pack.app]
 entry = "main.py"
-name = "FlowlineSCADA"
+name = "FlowlineSCADA.exe"
 onefile = true
+icon = "assets/pipeline.ico"
 windowed = true
 include_data = true

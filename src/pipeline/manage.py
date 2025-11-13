@@ -11,6 +11,7 @@ import typing
 import attrs
 from nicegui import ui
 import orjson
+from pint.facets.plain import PlainQuantity
 from typing_extensions import Self
 
 from src.config.core import Configuration, ConfigurationState
@@ -675,7 +676,7 @@ class PipelineManager(typing.Generic[PipelineT]):
             for leak in pipe._leaks:
                 leak_config = PipeLeakConfig(
                     location=leak.location,
-                    diameter=leak.diameter,
+                    diameter=leak.diameter,  # type: ignore[arg-type]
                     discharge_coefficient=leak.discharge_coefficient,
                     active=leak.active,
                     name=leak.name,
@@ -687,13 +688,13 @@ class PipelineManager(typing.Generic[PipelineT]):
             if pipe._start_valve is not None:
                 valve_config = ValveConfig(
                     position="start",
-                    state=pipe._start_valve.state.value.lower(),
+                    state=pipe._start_valve.state.value.lower(),  # type: ignore[arg-type]
                 )
                 valve_configs.append(valve_config)
             if pipe._end_valve is not None:
                 valve_config = ValveConfig(
                     position="end",
-                    state=pipe._end_valve.state.value.lower(),
+                    state=pipe._end_valve.state.value.lower(),  # type: ignore[arg-type]
                 )
                 valve_configs.append(valve_config)
 
@@ -806,6 +807,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         self._pipeline.set_connector_length(
             pipeline_config.connector_length, sync=False
         )
+        self._pipeline.set_ignore_leaks(pipeline_config.ignore_leaks, sync=False)
         # Synchronize the pipeline state after applying all config changes
         self._pipeline.sync()
         self.sync(validate=True)
@@ -1065,7 +1067,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         logger.info(f"Updated fluid configuration: {fluid_config.name}")
         return self
 
-    def set_upstream_pressure(self, pressure: Quantity) -> Self:
+    def set_upstream_pressure(self, pressure: PlainQuantity[float]) -> Self:
         """Set the upstream pressure of the pipeline."""
         self._pipeline.set_upstream_pressure(pressure, sync=True)
         self.sync(validate=True)
@@ -1077,7 +1079,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         logger.info(f"Set upstream pressure to {pressure}")
         return self
 
-    def set_downstream_pressure(self, pressure: Quantity) -> Self:
+    def set_downstream_pressure(self, pressure: PlainQuantity[float]) -> Self:
         """Set the downstream pressure of the pipeline."""
         self._pipeline.set_downstream_pressure(pressure, sync=True)
         self.sync(validate=True)
@@ -1089,7 +1091,7 @@ class PipelineManager(typing.Generic[PipelineT]):
         logger.info(f"Set downstream pressure to {pressure}")
         return self
 
-    def set_upstream_temperature(self, temperature: Quantity) -> Self:
+    def set_upstream_temperature(self, temperature: PlainQuantity[float]) -> Self:
         """Set the upstream temperature of the pipeline fluid."""
         self._pipeline.set_upstream_temperature(temperature, sync=True)
         self.sync(validate=True)
@@ -1356,7 +1358,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to add valve: {exc}", exc_info=True)
             raise
-
         return self
 
     def remove_valve(
@@ -1373,7 +1374,6 @@ class PipelineManager(typing.Generic[PipelineT]):
             raise ValueError(f"Invalid pipe index: {pipe_index}")
 
         pipe_config = self._pipe_configs[pipe_index]
-
         try:
             self._pipeline.remove_valve(pipe_index, position=position)
             self.sync(validate=True)
@@ -1391,7 +1391,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to remove valve: {exc}", exc_info=True)
             raise
-
         return self
 
     def toggle_valve(
@@ -1408,7 +1407,6 @@ class PipelineManager(typing.Generic[PipelineT]):
             raise ValueError(f"Invalid pipe index: {pipe_index}")
 
         pipe_config = self._pipe_configs[pipe_index]
-
         try:
             self._pipeline.toggle_valve(pipe_index, position=position)
             valve = self._pipeline.pipes[pipe_index].get_valve(position)
@@ -1429,7 +1427,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to toggle valve: {exc}", exc_info=True)
             raise
-
         return self
 
     def open_valve(
@@ -1446,7 +1443,6 @@ class PipelineManager(typing.Generic[PipelineT]):
             raise ValueError(f"Invalid pipe index: {pipe_index}")
 
         pipe_config = self._pipe_configs[pipe_index]
-
         try:
             self._pipeline.open_valve(pipe_index, position=position)
             self.sync(validate=True)
@@ -1464,7 +1460,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to open valve: {exc}", exc_info=True)
             raise
-
         return self
 
     def close_valve(
@@ -1481,7 +1476,6 @@ class PipelineManager(typing.Generic[PipelineT]):
             raise ValueError(f"Invalid pipe index: {pipe_index}")
 
         pipe_config = self._pipe_configs[pipe_index]
-
         try:
             self._pipeline.close_valve(pipe_index, position=position)
             self.sync(validate=True)
@@ -1499,7 +1493,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to close valve: {exc}", exc_info=True)
             raise
-
         return self
 
     def open_all_valves(self) -> Self:
@@ -1516,7 +1509,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to open all valves: {exc}", exc_info=True)
             raise
-
         return self
 
     def close_all_valves(self) -> Self:
@@ -1533,7 +1525,6 @@ class PipelineManager(typing.Generic[PipelineT]):
         except Exception as exc:
             logger.error(f"Failed to close all valves: {exc}", exc_info=True)
             raise
-
         return self
 
     def validate(self):
@@ -2011,7 +2002,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         ui.notify(
             f"Pipe '{data['pipe_config'].name}' added at index {data['index']}",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2027,7 +2018,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             return
         ui.notify(
             f"Pipe at index {data['index']} removed.",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2049,7 +2040,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             return
         ui.notify(
             f"Pipe '{data['pipe_config'].name}' moved.",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2065,7 +2056,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             return
         ui.notify(
             f"Pipe '{data['pipe_config'].name}' updated.",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2098,7 +2089,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             return
         ui.notify(
             f"Cleared {data['leak_count']} leak(s) from pipeline.",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2117,7 +2108,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
         ui.notify(
             f"Added {position} valve to {pipe_name}",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2132,7 +2123,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
         ui.notify(
             f"Removed {position} valve from {pipe_name}",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2146,7 +2137,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         status = data.get("status", "")
         ui.notify(
             f"Valve {status}",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2161,7 +2152,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
         ui.notify(
             f"Opened {position} valve on {pipe_name}",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2176,7 +2167,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         pipe_name = data.get("pipe_config", {}).name if data.get("pipe_config") else ""
         ui.notify(
             f"Closed {position} valve on {pipe_name}",
-            type="success",
+            type="positive",
             position="top",
         )
         self.refresh_pipes_list()
@@ -2686,7 +2677,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             .style(f"color: {self.theme_color}")
                         )
                         pipe_name_label.on(
-                            "click", lambda idx=i: self.show_pipe_details_modal(idx)
+                            "click",
+                            lambda idx=i: self.show_pipe_details_modal(pipe_index=idx),  # type: ignore[arg-type]
                         )
 
                         # Display length, diameter, pressures, and flow rates in current unit system
@@ -2743,7 +2735,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     with actions:
                         ui.button(
                             "Edit",
-                            on_click=partial(self.select_pipe, i),
+                            on_click=partial(self.select_pipe, index=i),
                             color=self.theme_color,
                         ).classes(
                             self.get_primary_button_classes(
@@ -2752,7 +2744,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         ).tooltip("Edit pipe properties and manage leaks")
                         ui.button(
                             "↑",
-                            on_click=partial(self.move_pipe_up, i),
+                            on_click=partial(self.move_pipe_up, index=i),
                             color=self.theme_color,
                         ).classes(
                             self.get_secondary_button_classes(
@@ -2765,7 +2757,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         )
                         ui.button(
                             "↓",
-                            on_click=partial(self.move_pipe_down, i),
+                            on_click=partial(self.move_pipe_down, index=i),
                             color=self.theme_color,
                         ).classes(
                             self.get_secondary_button_classes(
@@ -2781,7 +2773,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             else ""
                         )
                         ui.button(
-                            "✕", on_click=partial(self.remove_pipe, i), color="red"
+                            "✕",
+                            on_click=partial(self.remove_pipe, index=i),
+                            color="red",
                         ).classes(
                             self.get_danger_button_classes(
                                 "text-xs sm:text-sm px-2 py-1"
@@ -3159,7 +3153,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
                                 # Get actual valve state from pipe if available
                                 if pipe:
-                                    actual_valve = pipe.get_valve(valve_config.position)
+                                    actual_valve = pipe.get_valve(
+                                        position=valve_config.position
+                                    )
                                     valve_state = (
                                         "Open"
                                         if actual_valve and actual_valve.is_open()
@@ -3284,7 +3280,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ui.button(
                     "Edit Pipe",
                     icon="edit",
-                    on_click=lambda: (dialog.close(), self.select_pipe(pipe_index)),
+                    on_click=lambda: (
+                        dialog.close(),
+                        self.select_pipe(index=pipe_index),
+                    ),
                     color=self.theme_color,
                 ).classes("px-4 py-2")
                 ui.button(
@@ -3333,7 +3332,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             if self.selected_pipe_index is not None:
                 pipe_configs = self.manager.get_pipe_configs()
                 if self.selected_pipe_index < len(pipe_configs):
-                    self.show_pipe_form(pipe_configs[self.selected_pipe_index])
+                    self.show_pipe_form(
+                        pipe_config=pipe_configs[self.selected_pipe_index]
+                    )
             else:
                 # Show pipeline summaries when no pipe is selected
                 has_leaks = self.manager.has_leaks()
@@ -3627,6 +3628,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             "px-4 py-2 flex-1 sm:flex-none"
                         )
                     )
+                    direction = direction_select.value or "east"
+                    position = position_select.value or "end"
                     ui.button(
                         "Add Pipe",
                         on_click=lambda: self.save_pipe_add_form(
@@ -3636,12 +3639,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             diameter=diameter_input.value,
                             upstream_pressure=upstream_pressure_input.value,
                             downstream_pressure=downstream_pressure_input.value,
-                            direction=direction_select.value,
+                            direction=direction,
                             material=material_input.value,
                             roughness=roughness_input.value,
                             elevation=elevation_input.value,
                             efficiency=efficiency_input.value,
-                            position=position_select.value,
+                            position=position,
                             length_unit=length_unit.unit,
                             diameter_unit=diameter_unit.unit,
                             pressure_unit=pressure_unit.unit,
@@ -3697,7 +3700,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         """
         try:
             pipe_config = PipeConfig(
-                name=name.strip() or f"Pipe-{len(self.manager.get_pipe_configs()) + 1}",
+                name=name.strip()
+                if name
+                else f"Pipe-{len(self.manager.get_pipe_configs()) + 1}",
                 length=Quantity(length, length_unit),  # type: ignore
                 internal_diameter=Quantity(diameter, diameter_unit),  # type: ignore
                 upstream_pressure=Quantity(
@@ -3722,7 +3727,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 pipe_num = int(position.split()[-1]) - 1  # type: ignore
                 index = pipe_num
 
-            self.manager.add_pipe(pipe_config, index)
+            self.manager.add_pipe(pipe_config=pipe_config, index=index)
             dialog.close()
 
         except Exception as exc:
@@ -3845,13 +3850,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Action buttons - responsive
             buttons_row = ui.row().classes("w-full gap-2 mt-3 flex-wrap")
             with buttons_row:
+                direction = direction_select.value or "east"
                 ui.button(
                     "Update Pipe",
                     on_click=lambda: self.save_pipe_form(
                         name=name_input.value,
                         length=length_input.value,
                         diameter=diameter_input.value,
-                        direction=direction_select.value,
+                        direction=direction,
                         material=material_input.value,
                         efficiency=efficiency_input.value,
                         roughness=roughness_input.value,
@@ -3876,11 +3882,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
         # Show leak management section
         ui.separator().classes("my-4")
-        self.show_leak_management_panel(self.selected_pipe_index)
+        if self.selected_pipe_index is not None:
+            self.show_leak_management_panel(pipe_index=self.selected_pipe_index)
 
-        # Show valve management section
-        ui.separator().classes("my-4")
-        self.show_valve_management_panel(self.selected_pipe_index)
+            # Show valve management section
+            ui.separator().classes("my-4")
+            self.show_valve_management_panel(pipe_index=self.selected_pipe_index)
 
     def show_fluid_form(self):
         """Create form for editing fluid properties."""
@@ -3972,8 +3979,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.button(
                 "Update Fluid",
                 on_click=lambda: self.save_fluid_form(
-                    name=name_select.value,
-                    phase=phase_select.value,
+                    name=name_select.value,  # type: ignore[arg-type]
+                    phase=phase_select.value,  # type: ignore[arg-type]
                 ),
                 color=self.theme_color,
             ).classes(
@@ -4049,8 +4056,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         :param molecular_weight_unit: Unit for molecular weight.
         """
         try:
-            updated_config = FluidConfig(name=name.strip() or "Methane", phase=phase)
-            self.manager.set_fluid(updated_config)
+            updated_config = FluidConfig(name=name.strip() or "Methane", phase=phase)  # type: ignore[arg-type]
+            self.manager.set_fluid(fluid_config=updated_config)
         except Exception as exc:
             logger.error(f"Error updating fluid: {exc}", exc_info=True)
 
@@ -4086,7 +4093,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                     icon="add",
                     color=self.theme_color,
                 ).classes("flex-1").on(
-                    "click", lambda: self.show_add_leak_dialog(pipe_index)
+                    "click", lambda: self.show_add_leak_dialog(pipe_index=pipe_index)
                 ).tooltip("Add a new leak to this pipe")
 
                 if leak_count > 0:
@@ -4095,7 +4102,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         icon="clear_all",
                         color="orange",
                     ).classes("flex-1").on(
-                        "click", lambda: self.confirm_clear_all_leaks(pipe_index)
+                        "click",
+                        lambda: self.confirm_clear_all_leaks(pipe_index=pipe_index),
                     ).tooltip("Remove all leaks from this pipe")
 
             # Leak list
@@ -4104,7 +4112,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 leak_list_container = ui.column().classes("w-full gap-2")
                 with leak_list_container:
                     for leak_index, leak_config in enumerate(pipe_config.leaks):
-                        self.show_leak_item(pipe_index, leak_index, leak_config)
+                        self.show_leak_item(
+                            pipe_index=pipe_index,
+                            leak_index=leak_index,
+                            leak_config=leak_config,
+                        )
             else:
                 ui.label("No leaks in this pipe").classes(
                     "text-gray-500 text-center py-4 italic"
@@ -4158,7 +4170,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                         icon="leak_add" if leak_config.active else "leak_remove",
                         on_click=lambda pipe_index=pipe_index,
                         leak_index=leak_index: self.toggle_pipe_leak(
-                            pipe_index, leak_index
+                            pipe_index=pipe_index,  # type: ignore[arg-type]
+                            leak_index=leak_index,  # type: ignore[arg-type]
                         ),
                     ).classes("cursor-pointer")
 
@@ -4170,10 +4183,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             color=self.theme_color,
                         ).props("size=sm").on(
                             "click",
-                            lambda p=pipe_index,
+                            lambda pipe_index=pipe_index,
                             leak_idx=leak_index,
                             cfg=leak_config: self.show_edit_leak_dialog(
-                                p, leak_idx, cfg
+                                pipe_index=pipe_index,  # type: ignore[arg-type]
+                                leak_index=leak_idx,
+                                leak_config=cfg,
                             ),
                         ).tooltip("Edit leak")
 
@@ -4182,8 +4197,11 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             color="red",
                         ).props("size=sm").on(
                             "click",
-                            lambda p=pipe_index,
-                            leak_idx=leak_index: self.confirm_leak_removal(p, leak_idx),
+                            lambda pipe_index=pipe_index,
+                            leak_idx=leak_index: self.confirm_leak_removal(
+                                pipe_index=pipe_index,  # type: ignore[arg-type]
+                                leak_index=leak_idx,
+                            ),
                         ).tooltip("Remove leak")
 
     def show_add_leak_dialog(self, pipe_index: int) -> None:
@@ -4211,7 +4229,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             ui.label(f"Edit {leak_name} in {pipe_name}").classes(
                 "text-lg font-semibold mb-3"
             )
-            self.show_leak_form(dialog, leak_config)
+            self.show_leak_form(dialog=dialog, existing_leak=leak_config)
 
     def show_leak_form(
         self, dialog: ui.dialog, existing_leak: typing.Optional[PipeLeakConfig] = None
@@ -4351,6 +4369,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
         :param active: Whether the leak is active.
         :param diameter_unit: Unit for diameter.
         """
+        if self.selected_pipe_index is None:
+            ui.notify("No pipe selected for adding/editing leak", type="negative")
+            return
+
         try:
             # Validation
             if diameter <= 0:
@@ -4369,7 +4391,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
 
             leak_config = PipeLeakConfig(
                 name=name if name.strip() else None,
-                diameter=Quantity(diameter, diameter_unit),
+                diameter=Quantity(diameter, diameter_unit),  # type: ignore[arg-type]
                 location=location,
                 discharge_coefficient=discharge_coefficient,
                 active=active,
@@ -4377,12 +4399,14 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Add or update leak
             if self.leak_edit_mode and self.selected_leak_index is not None:
                 self.manager.update_pipe_leak(
-                    self.selected_pipe_index,
-                    self.selected_leak_index,
-                    leak_config,
+                    pipe_index=self.selected_pipe_index,
+                    leak_index=self.selected_leak_index,
+                    leak_config=leak_config,
                 )
             else:
-                self.manager.add_pipe_leak(self.selected_pipe_index, leak_config)
+                self.manager.add_pipe_leak(
+                    pipe_index=self.selected_pipe_index, leak_config=leak_config
+                )
             dialog.close()
 
         except Exception as exc:
@@ -4414,7 +4438,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                 ui.button("Remove", color="red").on(
                     "click",
                     lambda: (
-                        self.manager.remove_pipe_leak(pipe_index, leak_index),
+                        self.manager.remove_pipe_leak(
+                            pipe_index=pipe_index, leak_index=leak_index
+                        ),
                         dialog.close(),
                     ),
                 )
@@ -4509,8 +4535,8 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                     else "leak_remove",
                                     on_click=lambda pipe_index=pipe_index,
                                     leak=leak_config: self.toggle_pipe_leak(
-                                        pipe_index,
-                                        pipe_config.leaks.index(leak),
+                                        pipe_index=pipe_index,  # type: ignore[arg-type]
+                                        leak_index=pipe_config.leaks.index(leak),
                                     ),
                                 )
             else:
@@ -4614,8 +4640,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                             icon="toggle_on"
                                             if start_valve.is_open()
                                             else "toggle_off",
-                                            on_click=lambda pi=pipe_index: self.toggle_valve(
-                                                pi, "start"
+                                            on_click=lambda pipe_index=pipe_index: self.toggle_valve(
+                                                pipe_index=pipe_index,  # type: ignore[arg-type]
+                                                position="start",
                                             ),
                                         ).tooltip("Click to toggle")
 
@@ -4632,8 +4659,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                             icon="toggle_on"
                                             if end_valve.is_open()
                                             else "toggle_off",
-                                            on_click=lambda pi=pipe_index: self.toggle_valve(
-                                                pi, "end"
+                                            on_click=lambda pipe_index=pipe_index: self.toggle_valve(
+                                                pipe_index=pipe_index,  # type: ignore[arg-type]
+                                                position="end",
                                             ),
                                         ).tooltip("Click to toggle")
             else:
@@ -4736,7 +4764,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                 )
                                 toggle_btn.on(
                                     "click",
-                                    lambda: self.toggle_valve(pipe_index, "start"),
+                                    lambda: self.toggle_valve(
+                                        pipe_index=pipe_index, position="start"
+                                    ),
                                 )
 
                                 # Remove button
@@ -4745,7 +4775,9 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                     color="orange",
                                 ).props("size=sm").on(
                                     "click",
-                                    lambda: self.remove_valve(pipe_index, "start"),
+                                    lambda: self.remove_valve(
+                                        pipe_index=pipe_index, position="start"
+                                    ),
                                 ).tooltip("Remove valve")
                             else:
                                 # Add button
@@ -4753,7 +4785,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                     icon="add",
                                     color=self.theme_color,
                                 ).props("size=sm").on(
-                                    "click", lambda: self.add_valve(pipe_index, "start")
+                                    "click",
+                                    lambda: self.add_valve(
+                                        pipe_index=pipe_index, position="start"
+                                    ),
                                 ).tooltip("Add start valve")
 
             # End Valve Section
@@ -4810,7 +4845,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                 icon="delete",
                                 color="orange",
                             ).props("size=sm").on(
-                                "click", lambda: self.remove_valve(pipe_index, "end")
+                                "click",
+                                lambda: self.remove_valve(
+                                    pipe_index=pipe_index, position="end"
+                                ),
                             ).tooltip("Remove valve")
                         else:
                             # Add button
@@ -4818,7 +4856,10 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                                 icon="add",
                                 color=self.theme_color,
                             ).props("size=sm").on(
-                                "click", lambda: self.add_valve(pipe_index, "end")
+                                "click",
+                                lambda: self.add_valve(
+                                    pipe_index=pipe_index, position="end"
+                                ),
                             ).tooltip("Add end valve")
 
         return valve_panel
@@ -4828,7 +4869,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     ) -> None:
         """Add a valve to a pipe."""
         try:
-            self.manager.add_valve(pipe_index, position=position)
+            self.manager.add_valve(pipe_index=pipe_index, position=position)
         except Exception as exc:
             ui.notify(
                 f"Failed to add valve: {exc}",
@@ -4842,7 +4883,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     ) -> None:
         """Remove a valve from a pipe."""
         try:
-            self.manager.remove_valve(pipe_index, position=position)
+            self.manager.remove_valve(pipe_index=pipe_index, position=position)
         except Exception as exc:
             ui.notify(
                 f"Failed to remove valve: {exc}",
@@ -4856,7 +4897,7 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
     ) -> None:
         """Toggle a valve's state."""
         try:
-            self.manager.toggle_valve(pipe_index, position=position)
+            self.manager.toggle_valve(pipe_index=pipe_index, position=position)
         except Exception as exc:
             ui.notify(
                 f"Failed to toggle valve: {exc}",

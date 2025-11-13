@@ -5,6 +5,7 @@ import typing
 import functools
 
 from nicegui import ui
+from nicegui.elements.column import Column
 from nicegui.elements.html import Html
 from nicegui.elements.row import Row
 from pint.facets.plain import PlainQuantity
@@ -1808,11 +1809,11 @@ class Pipe:
     outlet_fluid = downstream_fluid  # Alias for clarity
 
     @property
-    def upstream_temperature(self) -> typing.Optional[PlainQuantity[float]]:
+    def upstream_temperature(self) -> PlainQuantity[float]:
         """Temperature of the pipe fluid at the pipe inlet."""
         if self._upstream_temperature is None and self._fluid is not None:
             self._upstream_temperature = self._fluid.temperature
-        return self._upstream_temperature
+        return typing.cast(PlainQuantity[float], self._upstream_temperature)
 
     @property
     def downstream_temperature(self) -> typing.Optional[PlainQuantity[float]]:
@@ -1838,7 +1839,7 @@ class Pipe:
                 ui.notify(
                     f"Could not compute Joule-Thomson coefficient for fluid in pipe - {self.name!r}."
                     " Ensure fluid is a gas and has valid properties at the given pressure.",
-                    type="error",
+                    type="negative",
                     multi_line=True,
                 )
                 jt_coefficient = 0.0
@@ -2047,7 +2048,7 @@ class Pipe:
             current_flow_rate=flow_rate,
             pipe_internal_diameter=self.internal_diameter,
             fluid_density=fluid.density,
-            fluid_viscosity=fluid.viscosity,
+            fluid_dynamic_viscosity=fluid.viscosity,
         )
 
     @property
@@ -2770,14 +2771,14 @@ class Pipe:
         if include_valves:
             if self._start_valve is not None:
                 new_pipe._start_valve = Valve(
-                    position=self._start_valve.position,
+                    position=self._start_valve.position,  # type: ignore[arg-type]
                     state=self._start_valve.state,
                     name=self._start_valve.name,
                 )
 
             if self._end_valve is not None:
                 new_pipe._end_valve = Valve(
-                    position=self._end_valve.position,
+                    position=self._end_valve.position,  # type: ignore[arg-type]
                     state=self._end_valve.state,
                     name=self._end_valve.name,
                 )
@@ -2936,7 +2937,7 @@ class Pipeline:
             pressure=self.upstream_pressure,
             temperature=upstream_temperature
             if upstream_temperature is not None
-            else self._fluid.temperature,
+            else fluid.temperature,
         )
 
     @property
@@ -3330,7 +3331,7 @@ class Pipeline:
         height: str = "800px",
         label: typing.Optional[str] = None,
         show_label: bool = True,
-    ) -> Row:
+    ) -> Column:
         """
         Display the pipeline as a UI component.
 
@@ -3922,7 +3923,8 @@ class Pipeline:
                 raise
 
         # Clear reference to this pipeline
-        removed_pipe._pipeline = None
+        if removed_pipe is not None:
+            removed_pipe._pipeline = None
         return removed_pipe
 
     @_invalidates_solver_cache

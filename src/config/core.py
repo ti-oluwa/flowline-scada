@@ -123,7 +123,7 @@ class ConfigurationState:
             else:
                 raise ValueError(f"Invalid configuration path: {path}")
 
-        if not attrs.has(obj):
+        if not attrs.has(obj):  # type: ignore[arg-type]
             setattr(obj, path, kwargs)
             return self
 
@@ -136,7 +136,7 @@ class ConfigurationState:
                 new_obj = attrs.evolve(parent_obj, **{part: new_obj})
             else:
                 new_obj = attrs.evolve(self, **{part: new_obj})
-        return attrs.evolve(new_obj, last_updated=datetime.now())
+        return attrs.evolve(new_obj, last_updated=datetime.now())  # type: ignore
 
 
 class Configuration:

@@ -114,7 +114,7 @@ class FlowSolver:
         self._segment_cache.clear()
         self._pipe_fluid_cache.clear()
 
-    def _get_fluid_properties(
+    def get_fluid_properties(
         self, pressure: PlainQuantity[float], temperature: PlainQuantity[float]
     ) -> typing.Optional[CachedFluidProperties]:
         """
@@ -155,7 +155,7 @@ class FlowSolver:
             logger.error(f"Failed to compute fluid properties: {exc}", exc_info=True)
             return None
 
-    def _segment_pipe_with_leaks(self, pipe: Pipe) -> typing.List[PipeSegment]:
+    def segment_pipe_with_leaks(self, pipe: Pipe) -> typing.List[PipeSegment]:
         """
         Divide pipe into segments based on leak locations.
 
@@ -241,7 +241,7 @@ class FlowSolver:
         self._segment_cache[cache_key] = segments
         return segments
 
-    def _compute_segment_pressure_drop(
+    def compute_segment_pressure_drop(
         self, segment: PipeSegment, pipe: Pipe, inlet_state: FlowState
     ) -> typing.Tuple[PlainQuantity[float], PlainQuantity[float]]:
         """
@@ -264,7 +264,7 @@ class FlowSolver:
             return inlet_state.pressure, Quantity(0.0, "kg/s")
 
         # Get cached fluid properties at inlet conditions
-        fluid_props = self._get_fluid_properties(
+        fluid_props = self.get_fluid_properties(
             inlet_state.pressure, inlet_state.temperature
         )
 
@@ -351,7 +351,7 @@ class FlowSolver:
 
         return outlet_pressure, outlet_mass_flow
 
-    def _compute_connector_pressure_drop(
+    def compute_connector_pressure_drop(
         self,
         current_pipe: Pipe,
         next_pipe: Pipe,
@@ -373,7 +373,7 @@ class FlowSolver:
             return Quantity(0.0, "Pa")
 
         # Get fluid properties at connector inlet
-        fluid_props = self._get_fluid_properties(
+        fluid_props = self.get_fluid_properties(
             inlet_state.pressure, inlet_state.temperature
         )
 
@@ -472,7 +472,7 @@ class FlowSolver:
 
         return connector_pressure_drop
 
-    def _solve_pipe_flow(
+    def solve_pipe_flow(
         self, pipe: Pipe, inlet_state: FlowState, set_values: bool = False
     ) -> FlowState:
         """
@@ -522,7 +522,7 @@ class FlowSolver:
             return zero_state
 
         # Flow CAN enter the pipe - solve normally
-        segments = self._segment_pipe_with_leaks(pipe)
+        segments = self.segment_pipe_with_leaks(pipe)
         current_state = inlet_state
 
         # Set pipe inlet conditions if requested
@@ -531,7 +531,7 @@ class FlowSolver:
             pipe.set_upstream_temperature(inlet_state.temperature, sync=False)
 
         for segment in segments:
-            outlet_pressure, outlet_mass_flow = self._compute_segment_pressure_drop(
+            outlet_pressure, outlet_mass_flow = self.compute_segment_pressure_drop(
                 segment, pipe, current_state
             )
 
@@ -576,7 +576,7 @@ class FlowSolver:
             # Use INLET mass flow (what flows THROUGH the pipe), not outlet mass flow
             # This ensures correct display when end valve is closed (flow happens inside pipe)
             if pipe.fluid and inlet_state.mass_flow_rate.magnitude > 0:
-                fluid_props = self._get_fluid_properties(
+                fluid_props = self.get_fluid_properties(
                     inlet_state.pressure, inlet_state.temperature
                 )
                 if fluid_props:
@@ -599,7 +599,7 @@ class FlowSolver:
             )
         return current_state
 
-    def _estimate_initial_mass_flow(self) -> PlainQuantity[float]:
+    def estimate_initial_mass_flow(self) -> PlainQuantity[float]:
         """
         Estimate initial mass flow rate for solver initialization.
 
@@ -629,7 +629,7 @@ class FlowSolver:
             if upstream_temperature is not None
             else self.pipeline.fluid.temperature
         )
-        fluid_props = self._get_fluid_properties(
+        fluid_props = self.get_fluid_properties(
             self.pipeline.upstream_pressure, inlet_temperature
         )
         if fluid_props is None:
@@ -725,7 +725,7 @@ class FlowSolver:
                 # Solve flow through this pipe
                 # The pipe itself will handle its start valve (blocks entry)
                 # and end valve (blocks exit but allows internal flow)
-                current_state = self._solve_pipe_flow(
+                current_state = self.solve_pipe_flow(
                     pipe, current_state, set_values=False
                 )
 
@@ -746,7 +746,7 @@ class FlowSolver:
                     next_pipe = self.pipeline._pipes[i + 1]
 
                     # Calculate connector pressure drop
-                    connector_pressure_drop = self._compute_connector_pressure_drop(
+                    connector_pressure_drop = self.compute_connector_pressure_drop(
                         pipe, next_pipe, current_state
                     )
 
@@ -778,6 +778,7 @@ class FlowSolver:
                                 exc_info=True,
                             )
 
+                    new_temp = typing.cast(PlainQuantity[float], new_temp)
                     current_state = FlowState(
                         pressure=new_pressure,
                         temperature=new_temp,
@@ -790,7 +791,7 @@ class FlowSolver:
             return current_state.pressure.to("Pa").magnitude - target_outlet_p
 
         # Get intelligent initial guess
-        initial_guess = self._estimate_initial_mass_flow()
+        initial_guess = self.estimate_initial_mass_flow()
 
         # Establish bracketing interval
         lower_bound = 0.001
@@ -851,7 +852,7 @@ class FlowSolver:
             num_pipes = len(self.pipeline._pipes)
             for i, pipe in enumerate(self.pipeline._pipes):
                 # Solve this pipe with set_values=True
-                current_state = self._solve_pipe_flow(
+                current_state = self.solve_pipe_flow(
                     pipe, current_state, set_values=True
                 )
 
@@ -872,7 +873,7 @@ class FlowSolver:
                 # Apply connector effects if not last pipe
                 if i < num_pipes - 1:
                     next_pipe = self.pipeline._pipes[i + 1]
-                    connector_pressure_drop = self._compute_connector_pressure_drop(
+                    connector_pressure_drop = self.compute_connector_pressure_drop(
                         pipe, next_pipe, current_state
                     )
 
@@ -901,7 +902,7 @@ class FlowSolver:
                                 f"JT coefficient calculation failed: {exc}",
                                 exc_info=True,
                             )
-
+                    new_temp = typing.cast(PlainQuantity[float], new_temp)
                     current_state = FlowState(
                         pressure=new_pressure,
                         temperature=new_temp,
@@ -965,16 +966,20 @@ class FlowSolver:
             return pipe.upstream_pressure - (location * pressure_drop)
 
         # Get segments for this pipe
-        segments = self._segment_pipe_with_leaks(pipe)
+        segments = self.segment_pipe_with_leaks(pipe)
 
         # Find which segment contains the target location
         inlet_pressureressure = pipe.upstream_pressure
         fluid = pipe.fluid
+        if fluid is None:
+            logger.error(f"Pipe {pipe.name!r} has no fluid defined")
+            return Quantity(0.0, "Pa")
+
         upstream_temperature = pipe.upstream_temperature
         inlet_temperature = (
             upstream_temperature
             if upstream_temperature is not None
-            else (fluid.temperature if fluid else Quantity(298.15, "K"))
+            else (fluid.temperature or Quantity(298.15, "K"))
         )
         mass_flow = pipe._flow_rate.to("ft^3/s") * fluid.density.to("lb/ft^3")
 
@@ -998,7 +1003,7 @@ class FlowSolver:
                 )
 
                 # Calculate outlet state for this segment
-                outlet_pressure, outlet_mass_flow = self._compute_segment_pressure_drop(
+                outlet_pressure, outlet_mass_flow = self.compute_segment_pressure_drop(
                     segment, pipe, current_state
                 )
 
@@ -1015,7 +1020,7 @@ class FlowSolver:
                 )
 
             # Target is beyond this segment - compute full segment and continue
-            outlet_pressure, outlet_mass_flow = self._compute_segment_pressure_drop(
+            outlet_pressure, outlet_mass_flow = self.compute_segment_pressure_drop(
                 segment, pipe, current_state
             )
             # Update state for next segment

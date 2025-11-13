@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
 from dotenv import find_dotenv, load_dotenv
-from nicegui import Client, ui, native
+from nicegui import Client, ui, native as native_module
 
 from src.config import ConfigurationState, Configuration
 from src.storages import JSONFileStorage, RedisStorage
@@ -26,18 +26,21 @@ from src.pipeline.manage import (
     UpstreamStationFactory,
 )
 from src.units import Quantity
+from src.logging import setup_logging
 
 load_dotenv(
-    find_dotenv(Path.cwd() / ".env", raise_error_if_not_found=False), encoding="utf-8"
+    find_dotenv(str(Path.cwd() / ".env"), raise_error_if_not_found=False),
+    encoding="utf-8",
 )
 
-logging.basicConfig(
-    level=logging.INFO,
+setup_logging(
+    log_file=os.getenv("LOG_FILE", ".flowline-scada/logs/flowlinescada.log"),
+    base_level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s - [%(name)s:%(funcName)s:%(lineno)d] - %(levelname)s - %(message)s",
 )
 
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 
 redis_available = False
 if redis_url := os.getenv("REDIS_URL"):
@@ -57,10 +60,10 @@ if redis_url := os.getenv("REDIS_URL"):
 
 if not redis_available:
     config_storage = JSONFileStorage(
-        storage_dir=Path.cwd() / ".pipeline-scada/configs", namespace="config"
+        storage_dir=Path.cwd() / ".flowline-scada/configs", namespace="config"
     )
     state_storage = JSONFileStorage(
-        storage_dir=Path.cwd() / ".pipeline-scada/states", namespace="state"
+        storage_dir=Path.cwd() / ".flowline-scada/states", namespace="state"
     )
     logger.info("Using `JSONFileStorage` for config and state storage")
 
@@ -81,18 +84,30 @@ def root(client: Client) -> ui.element:
 
     # Load or create configuration for the session
     config = Configuration(session_id, storages=[config_storage], save_throttle=3.0)
+    logger.info(f"Configuration loaded for session {session_id!r}")
 
     # Get current configuration
     theme_color = config.state.global_.theme_color
+    logger.info(f"Initial theme color: {theme_color}")
     client_state_key = state_storage.get_key(session_id)
     saved_state = state_storage.read(client_state_key)
+    logger.info(
+        f"Loaded saved state for session {session_id!r}: "
+        f"{'found' if saved_state else 'not found'}"
+    )
 
     # Main layout container
     main_container = (
         ui.column()
         .classes("w-full h-auto bg-gray-50")
         .style(
-            "max-width: 1440px; min-width: minmax(800px, 100%); margin: auto; scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent;"
+            """
+            max-width: 1440px; 
+            min-width: minmax(800px, 100%); 
+            margin: auto; 
+            scrollbar-width: thin; 
+            scrollbar-color: #cbd5e1 transparent;
+            """
         )
     )
     with main_container:
@@ -144,6 +159,7 @@ def root(client: Client) -> ui.element:
             downstream_factory = DownstreamStationFactory(
                 name="Downstream Station", config=flow_station_config
             )
+            manager = None
 
             if saved_state:
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
@@ -157,7 +173,7 @@ def root(client: Client) -> ui.element:
                     logger.error(f"Failed to restore last state: {exc}", exc_info=True)
                     saved_state = None
 
-            if not saved_state:
+            if manager is None:
                 logger.info(f"Creating new pipeline for session {session_id!r}")
                 flow_type = FlowType(pipeline_config.flow_type)
                 pipeline = Pipeline(
@@ -197,11 +213,12 @@ def root(client: Client) -> ui.element:
 
             def pipeline_state_callback(_: str, __: typing.Any) -> None:
                 """Handle pipeline state changes."""
-                nonlocal has_stored_state
+                nonlocal has_stored_state, manager
 
                 logger.debug(
                     f"Pipeline state changed, updating storage for session {session_id!r}"
                 )
+                assert manager is not None
                 if not manager.is_valid():
                     logger.warning("Pipeline state is invalid, skipping state save")
                     return
@@ -245,25 +262,7 @@ def root(client: Client) -> ui.element:
     return main_container
 
 
-def main():
-    """Main application entry point."""
-    logger.info("Starting Pipeline Simulation System")
-    should_reload = sys.argv.count("--reload") > 0
-    ui.run(
-        title="Pipeline Simulation System",
-        port=native.find_open_port(8000),
-        host="0.0.0.0",
-        reload=should_reload,
-        show=True,
-        favicon="🌐",
-        dark=False,
-        storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
-        native=False,
-        tailwind=True,
-        prod_js=True,
-    )
-
-
+# Define fastapi app for usage with ASGI servers
 app = fastapi.FastAPI(
     openapi_url=None,
     docs_url=None,
@@ -271,17 +270,17 @@ app = fastapi.FastAPI(
     debug=os.getenv("DEBUG", "False").lower() in ("t", "true", "yes", "on", "1", "y"),
 )
 
-# Mount static files directory for audio and other assets
-fixtures_path = Path(__file__).parent / "fixtures"
-if fixtures_path.exists():
-    app.mount("/fixtures", StaticFiles(directory=fixtures_path), name="fixtures")
-    logger.info("Mounted fixtures directory at /fixtures")
+# Mount static files directory for static assets
+static_path = Path(__file__).parent / "static"
+if static_path.exists():
+    app.mount("/static", StaticFiles(directory=static_path), name="static")
+    logger.info("Mounted static directory at /static")
 
 ui.run_with(
     app,
-    title="Pipeline Simulation System",
+    title="Flowline SCADA Simulation",
     mount_path="/",
-    favicon="🌐",
+    favicon="assets/pipeline.ico",
     dark=False,
     language="en-US",
     storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
@@ -289,5 +288,35 @@ ui.run_with(
     prod_js=True,
 )
 
+
+def main(native: bool = False) -> None:
+    """Main application entry point."""
+    logger.info("Starting Flowline SCADA Simulation")
+    should_reload = sys.argv.count("--reload") > 0
+    run_as_native = native or sys.argv.count("--native") > 0
+    if run_as_native:
+        if should_reload:
+            logger.warning(
+                "Reload option is ignored when running as native application"
+            )
+            should_reload = False
+        logger.info("Running as native application")
+
+    ui.run(
+        title="Flowline SCADA Simulation",
+        port=native_module.find_open_port(8008),
+        host="0.0.0.0",
+        reload=should_reload,
+        show=True,
+        favicon="assets/pipeline.ico",
+        dark=False,
+        storage_secret=os.getenv("NICEGUI_STORAGE_SECRET", "42d56f76g78h91j94i124u"),
+        native=run_as_native,
+        tailwind=True,
+        prod_js=True,
+    )
+
+
 if __name__ in {"__main__", "__mp_main__"}:
-    main()
+    # Run in native mode on non-Linux platforms by default
+    main(native=sys.platform != "linux")

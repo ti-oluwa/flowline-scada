@@ -330,7 +330,7 @@ class RedisStorage(StorageBackend):
         data = self.client.get(key)
         if data is None:
             return None
-        return orjson.loads(data)
+        return orjson.loads(data)  # type: ignore[arg-type]
 
     def update(self, key: str, data: dict, overwrite: bool = False) -> None:
         logger.debug(f"Updating entry for key: {key} with data: {data}")

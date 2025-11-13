@@ -15,6 +15,7 @@ __all__ = ["ConfigurationUI"]
 
 
 THEMES = [
+    "zinc",
     "blue",
     "green",
     "red",
@@ -33,7 +34,6 @@ THEMES = [
     "sky",
     "slate",
     "gray",
-    "zinc",
     "neutral",
     "stone",
 ]
@@ -294,7 +294,7 @@ class ConfigurationUI:
                     ui.select(
                         label="Theme Color",
                         options=THEMES,
-                        value=config.theme_color or "sky",
+                        value=config.theme_color or "slate",
                         new_value_mode="add",
                         on_change=lambda e: self.config.update(
                             "global_", theme_color=e.value

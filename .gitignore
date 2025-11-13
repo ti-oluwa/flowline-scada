@@ -1,4 +1,4 @@
-.pipeline-scada/
+.*scada/
 .nicegui/
 .vscode/
 __pycache__/
@@ -18,3 +18,5 @@ flowline*.exe*
 build/
 dist/
 .venv/
+logs/
+*.log

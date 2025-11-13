@@ -849,7 +849,7 @@ def compute_darcy_weisbach_pressure_drop(
         * specific_gravity
         * flow_rate_bbl_per_day**2
     ) / (internal_diameter_inches**5)
-    return pressure_drop_psi * ureg.psi
+    return typing.cast(PlainQuantity[float], pressure_drop_psi * ureg.psi)
 
 
 def compute_weymouth_pressure_drop(
