@@ -16,7 +16,7 @@ from src.pipeline.core import Pipe, PipeLeak, Pipeline
 from src.types import FlowType
 from src.units import Quantity
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # type: ignore[attr-defined]
 
 
 @attrs.define(slots=True, frozen=True)
@@ -679,9 +679,25 @@ class FlowSolver:
                 pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
             return False
 
-        # Check if first pipe has closed start valve - no flow can enter pipeline
-        first_pipe = self.pipeline._pipes[0]
-        if first_pipe._start_valve is not None and first_pipe._start_valve.is_closed():
+        # Prepare inlet conditions used by solver
+        inlet_pressure = self.pipeline.upstream_pressure
+        upstream_temperature = self.pipeline.upstream_temperature
+        inlet_temperature = (
+            upstream_temperature
+            if upstream_temperature is not None
+            else self.pipeline.fluid.temperature
+        )
+
+        # Check for closed start valves in the pipeline
+        # Find the first pipe with a closed start valve (if any)
+        blocked_pipe_index = None
+        for i, pipe in enumerate(self.pipeline._pipes):
+            if pipe._start_valve is not None and pipe._start_valve.is_closed():
+                blocked_pipe_index = i
+                break
+
+        # If first pipe is blocked, no flow anywhere
+        if blocked_pipe_index == 0:
             logger.info(
                 f"Pipeline {self.pipeline.name!r}: First pipe has closed start valve - setting all pipes to zero flow"
             )
@@ -693,6 +709,161 @@ class FlowSolver:
                 pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
             return True
 
+        # If a middle/later pipe is blocked, solve upstream section and zero downstream section
+        if blocked_pipe_index is not None:
+            logger.info(
+                f"Pipeline {self.pipeline.name!r}: Pipe {blocked_pipe_index} "
+                f"'{self.pipeline._pipes[blocked_pipe_index].name}' has closed start valve - "
+                f"solving {blocked_pipe_index} upstream pipes, zeroing {len(self.pipeline._pipes) - blocked_pipe_index} downstream pipes"
+            )
+
+            # Zero out blocked pipe and all downstream pipes
+            for j in range(blocked_pipe_index, len(self.pipeline._pipes)):
+                blocked_pipe = self.pipeline._pipes[j]
+                blocked_pipe.set_upstream_pressure(
+                    Quantity(0.0, "Pa"), check=False, sync=False
+                )
+                blocked_pipe.set_downstream_pressure(
+                    Quantity(0.0, "Pa"), check=False, sync=False
+                )
+                blocked_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+
+            # Solve only the upstream pipes (0 to blocked_pipe_index - 1)
+            # Use atmospheric pressure as the "downstream" pressure for the last upstream pipe
+            upstream_pipes = self.pipeline._pipes[:blocked_pipe_index]
+            target_outlet_p = (
+                Quantity(14.7, "psi").to("Pa").magnitude
+            )  # Atmospheric pressure
+
+            def upstream_objective(mass_flow_rate_kg_s: float) -> float:
+                """Objective function for upstream section only."""
+                if mass_flow_rate_kg_s <= 0:
+                    return inlet_pressure.to("Pa").magnitude - target_outlet_p
+
+                current_state = FlowState(
+                    pressure=inlet_pressure,
+                    temperature=inlet_temperature,
+                    mass_flow_rate=Quantity(mass_flow_rate_kg_s, "kg/s"),
+                    position=0.0,
+                )
+
+                for i, pipe in enumerate(upstream_pipes):
+                    current_state = self.solve_pipe_flow(
+                        pipe, current_state, set_values=False
+                    )
+
+                    if current_state.mass_flow_rate.magnitude <= 0:
+                        return (
+                            current_state.pressure.to("Pa").magnitude - target_outlet_p
+                        )
+
+                    if current_state.pressure.magnitude <= 0:
+                        return -target_outlet_p
+
+                    # Add connector if not last upstream pipe
+                    if i < len(upstream_pipes) - 1:
+                        next_pipe = upstream_pipes[i + 1]
+                        connector_drop = self.compute_connector_pressure_drop(
+                            pipe, next_pipe, current_state
+                        )
+                        new_pressure = current_state.pressure - connector_drop
+                        new_pressure = Quantity(
+                            max(0.0, new_pressure.magnitude), new_pressure.units
+                        )
+                        current_state = FlowState(
+                            pressure=new_pressure,
+                            temperature=current_state.temperature,
+                            mass_flow_rate=current_state.mass_flow_rate,
+                            position=0.0,
+                        )
+
+                return current_state.pressure.to("Pa").magnitude - target_outlet_p
+
+            # Solve for upstream section
+            initial_guess = self.estimate_initial_mass_flow()
+            lower_bound = 0.001
+            upper_bound = max(initial_guess.magnitude * 10, 10.0)
+
+            bracket_found = False
+            for attempt in range(6):
+                try:
+                    f_lower = upstream_objective(lower_bound)
+                    f_upper = upstream_objective(upper_bound)
+
+                    if f_lower * f_upper < 0:
+                        bracket_found = True
+                        break
+
+                    if f_lower > 0 and f_upper > 0:
+                        lower_bound = upper_bound
+                        upper_bound *= 5
+                    elif f_lower < 0 and f_upper < 0:
+                        upper_bound = lower_bound
+                        lower_bound = max(0.001, lower_bound / 5)
+                    else:
+                        if abs(f_lower) < 10:
+                            lower_bound *= 0.9
+                        if abs(f_upper) < 10:
+                            upper_bound *= 1.1
+                except Exception:
+                    break
+
+            if not bracket_found:
+                logger.warning(
+                    f"Could not establish bracket for upstream section of {self.pipeline.name!r}"
+                )
+                return False
+
+            try:
+                solution = brentq(
+                    upstream_objective,
+                    lower_bound,
+                    upper_bound,
+                    xtol=tolerance / inlet_pressure.to("Pa").magnitude,
+                    maxiter=max_iterations,
+                )
+
+                # Apply solution to upstream pipes
+                current_state = FlowState(
+                    pressure=inlet_pressure,
+                    temperature=inlet_temperature,
+                    mass_flow_rate=Quantity(solution, "kg/s"),
+                    position=0.0,
+                )
+
+                for i, pipe in enumerate(upstream_pipes):
+                    current_state = self.solve_pipe_flow(
+                        pipe, current_state, set_values=True
+                    )
+
+                    if i < len(upstream_pipes) - 1:
+                        next_pipe = upstream_pipes[i + 1]
+                        connector_drop = self.compute_connector_pressure_drop(
+                            pipe, next_pipe, current_state
+                        )
+                        new_pressure = current_state.pressure - connector_drop
+                        new_pressure = Quantity(
+                            max(0.0, new_pressure.magnitude), new_pressure.units
+                        )
+                        current_state = FlowState(
+                            pressure=new_pressure,
+                            temperature=current_state.temperature,
+                            mass_flow_rate=current_state.mass_flow_rate,
+                            position=0.0,
+                        )
+
+                logger.info(
+                    f"Pipeline {self.pipeline.name!r} upstream section converged: "
+                    f"mass_flow={solution:.6f} kg/s"
+                )
+                return True
+            except Exception as exc:
+                logger.error(
+                    f"Solver failed for upstream section: {exc}", exc_info=True
+                )
+                return False
+
+        # No blocked pipes - solve normally
         target_outlet_p = self.pipeline.downstream_pressure.to("Pa").magnitude
         inlet_pressure = self.pipeline.upstream_pressure
         upstream_temperature = self.pipeline.upstream_temperature
@@ -858,6 +1029,10 @@ class FlowSolver:
 
                 # If no flow exits this pipe, all downstream pipes get zero
                 if current_state.mass_flow_rate.magnitude <= 0:
+                    logger.info(
+                        f"Pipeline {self.pipeline.name!r}: Pipe {i} '{pipe.name}' has zero outlet flow - "
+                        f"setting {num_pipes - i - 1} downstream pipes to zero"
+                    )
                     # Set all remaining downstream pipes to zero
                     for j in range(i + 1, num_pipes):
                         downstream_pipe = self.pipeline._pipes[j]
@@ -868,6 +1043,9 @@ class FlowSolver:
                             Quantity(0.0, "Pa"), check=False, sync=False
                         )
                         downstream_pipe.set_flow_rate(Quantity(0.0, "ft^3/s"))
+                        logger.debug(
+                            f"  Set pipe {j} '{downstream_pipe.name}' to zero flow"
+                        )
                     break
 
                 # Apply connector effects if not last pipe

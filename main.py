@@ -5,19 +5,19 @@ Main entry point for the application.
 import hashlib
 import logging
 import os
+from pathlib import Path
 import sys
 import typing
-import redis
-import fastapi
-from pathlib import Path
-from fastapi.staticfiles import StaticFiles
 
 from dotenv import find_dotenv, load_dotenv
-from nicegui import Client, ui, native as native_module
+import fastapi
+from fastapi.staticfiles import StaticFiles
+from nicegui import Client, native as native_module, ui
+import redis
 
-from src.config import ConfigurationState, Configuration
-from src.storages import JSONFileStorage, RedisStorage
+from src.config import Configuration, ConfigurationState
 from src.flow import FlowType, Fluid
+from src.logging import setup_logging
 from src.pipeline.core import Pipeline
 from src.pipeline.manage import (
     DownstreamStationFactory,
@@ -25,8 +25,8 @@ from src.pipeline.manage import (
     PipelineManagerUI,
     UpstreamStationFactory,
 )
+from src.storages import JSONFileStorage, RedisStorage
 from src.units import Quantity
-from src.logging import setup_logging
 
 load_dotenv(
     find_dotenv(str(Path.cwd() / ".env"), raise_error_if_not_found=False),
@@ -40,7 +40,7 @@ setup_logging(
 )
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # type: ignore[attr-defined]
 
 redis_available = False
 if redis_url := os.getenv("REDIS_URL"):
@@ -302,9 +302,11 @@ def main(native: bool = False) -> None:
             should_reload = False
         logger.info("Running as native application")
 
+    open_port = native_module.find_open_port(8008)
+    logger.info(f"Application will run on port: {open_port}")
     ui.run(
         title="Flowline SCADA Simulation",
-        port=native_module.find_open_port(8008),
+        port=open_port,
         host="0.0.0.0",
         reload=should_reload,
         show=True,
@@ -319,4 +321,7 @@ def main(native: bool = False) -> None:
 
 if __name__ in {"__main__", "__mp_main__"}:
     # Run in native mode on non-Linux platforms by default
-    main(native=sys.platform != "linux")
+    try:
+        main(native=sys.platform != "linux")
+    except Exception as exc:
+        logger.error(f"Application startup failed: {exc}", exc_info=True)

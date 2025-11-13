@@ -1,6 +1,6 @@
 #!/bin/bash
 
-NAME="FlowlineSCADA-Windows.exe"
+NAME="FlowlineSCADA.exe"
 if [ -f "$NAME" ]; then
     rm "$NAME"
 fi

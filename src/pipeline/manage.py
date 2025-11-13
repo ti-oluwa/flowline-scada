@@ -47,7 +47,7 @@ from src.types import (
 )
 from src.units import Quantity, UnitSystem
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # type: ignore[attr-defined]
 
 __all__ = [
     "PipelineManager",
@@ -3628,8 +3628,6 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             "px-4 py-2 flex-1 sm:flex-none"
                         )
                     )
-                    direction = direction_select.value or "east"
-                    position = position_select.value or "end"
                     ui.button(
                         "Add Pipe",
                         on_click=lambda: self.save_pipe_add_form(
@@ -3639,12 +3637,12 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
                             diameter=diameter_input.value,
                             upstream_pressure=upstream_pressure_input.value,
                             downstream_pressure=downstream_pressure_input.value,
-                            direction=direction,
+                            direction=direction_select.value or "east",
                             material=material_input.value,
                             roughness=roughness_input.value,
                             elevation=elevation_input.value,
                             efficiency=efficiency_input.value,
-                            position=position,
+                            position=position_select.value or "end",
                             length_unit=length_unit.unit,
                             diameter_unit=diameter_unit.unit,
                             pressure_unit=pressure_unit.unit,
@@ -3850,14 +3848,13 @@ class PipelineManagerUI(typing.Generic[PipelineT]):
             # Action buttons - responsive
             buttons_row = ui.row().classes("w-full gap-2 mt-3 flex-wrap")
             with buttons_row:
-                direction = direction_select.value or "east"
                 ui.button(
                     "Update Pipe",
                     on_click=lambda: self.save_pipe_form(
                         name=name_input.value,
                         length=length_input.value,
                         diameter=diameter_input.value,
-                        direction=direction,
+                        direction=direction_select.value or "east",
                         material=material_input.value,
                         efficiency=efficiency_input.value,
                         roughness=roughness_input.value,

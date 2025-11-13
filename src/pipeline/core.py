@@ -7,7 +7,6 @@ import functools
 from nicegui import ui
 from nicegui.elements.column import Column
 from nicegui.elements.html import Html
-from nicegui.elements.row import Row
 from pint.facets.plain import PlainQuantity
 from typing_extensions import Self
 
@@ -33,7 +32,7 @@ from src.pipeline.ui import (
 from src.types import FlowEquation, FlowType, P, R
 from src.units import Quantity, ureg
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # type: ignore[attr-defined]
 
 
 __all__ = [
@@ -2830,8 +2829,8 @@ class Pipe:
         return new_pipe
 
 
-def _invalidates_solver_cache(func: typing.Callable[P, R]) -> typing.Callable[P, R]:
-    """Wrapper to invalidate the solver cache after mutating Pipeline methods."""
+def _invalidates_solver_cache(func: typing.Callable[P, R]) -> typing.Callable[P, R]:  # type: ignore[misc]
+    """Wrapper to invalidate the pipeline flow solver cache after using specific 'mutating' Pipeline methods."""
 
     def _wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         pipeline = args[0]
@@ -2842,7 +2841,7 @@ def _invalidates_solver_cache(func: typing.Callable[P, R]) -> typing.Callable[P,
 
         result = func(*args, **kwargs)
         # Invalidate solver cache only after initialization
-        if pipeline._solver is not None and getattr(pipeline, "_initialized", False):
+        if getattr(pipeline, "_initialized", False) and pipeline._solver is not None:
             pipeline._solver.clear_cache()
         return result
 

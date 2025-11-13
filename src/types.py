@@ -374,7 +374,7 @@ class PipelineConfig:
     """Default flow type: 'compressible' or 'incompressible'"""
     connector_length: Quantity = attrs.field(factory=lambda: Quantity(0.1, "m"))  # type: ignore
     """Length of connectors between pipes in meters"""
-    scale_factor: float = 0.1
+    scale_factor: float = 0.05
     """Scale factor for visualization"""
     alert_errors: bool = True
     """Whether to show error alerts"""
@@ -430,7 +430,7 @@ class EventSubscription:
         if self._is_regex:
             return bool(self._regex.match(event))
         if self._is_prefix:
-            return event.startswith(self._prefix)
+            return event.startswith(self._prefix)  # type: ignore[arg-type]
         return event == self.event
 
 

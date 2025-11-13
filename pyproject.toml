@@ -15,7 +15,7 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "redis>=6.4.0",
     "scipy>=1.16.2",
-    "pywebview[qt]>=4.0.8",
+    "pywebview[qt]>=4.0.8; sys_platform != 'linux'",
 ]
 
 [project.optional-dependencies]
