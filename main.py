@@ -2,6 +2,7 @@
 Main entry point for the application.
 """
 
+from collections import deque
 import hashlib
 import logging
 import os
@@ -25,6 +26,7 @@ from src.pipeline.manage import (
     PipelineManagerUI,
     UpstreamStationFactory,
 )
+from src.pipeline.monitor import monitor_pipeline, JsonFileStreamer
 from src.storages import JSONFileStorage, RedisStorage
 from src.units import Quantity
 
@@ -66,6 +68,9 @@ if not redis_available:
         storage_dir=Path.cwd() / ".flowline-scada/states", namespace="state"
     )
     logger.info("Using `JSONFileStorage` for config and state storage")
+
+
+monitor_streamers = deque()
 
 
 @ui.page("/", title="Flowline SCADA Simulation")
@@ -202,10 +207,7 @@ def root(client: Client) -> ui.element:
                 manager = PipelineManager(
                     pipeline,
                     config=config,
-                    flow_station_factories=[
-                        upstream_factory,
-                        downstream_factory,
-                    ],
+                    flow_station_factories=[upstream_factory, downstream_factory],
                 )
 
             has_stored_state = state_storage.read(client_state_key) is not None
@@ -252,9 +254,24 @@ def root(client: Client) -> ui.element:
                 downstream_factory.on_config_change(config_state)
                 manager_ui.refresh_flow_stations()
 
+            # Monitor pipeline status and log it
+            streamer = JsonFileStreamer(
+                filepath=Path.cwd()
+                / ".flowline-scada/logs"
+                / f"pipeline_status_{session_id}.json",
+                batch_size=None,
+            )
+            monitor_pipeline(
+                manager,
+                streamer=streamer,
+                ratelimitter=None,
+            )
+            # Track active monitor streamers
+            monitor_streamers.append(streamer)
+
             manager_ui.show(
-                ui_label="Flowline Build Toolkit",
-                pipeline_label="Piping Configuration Preview",
+                ui_label="Flowline Builder Interface",
+                pipeline_label="Pipeline Configuration Preview",
                 flow_station_label="Flow Stations (Meters and Regulators)",
                 max_width="97%",
             )
@@ -319,9 +336,21 @@ def main(native: bool = False) -> None:
     )
 
 
+def shutdown_monitors() -> None:
+    """Shutdown all active monitors and streamers."""
+    logger.info("Shutting down monitor streamers")
+    while monitor_streamers:
+        streamer = monitor_streamers.popleft()
+        if hasattr(streamer, "shutdown"):
+            streamer.shutdown()
+    logger.info("All monitor streamers have been shut down")
+
+
 if __name__ in {"__main__", "__mp_main__"}:
     # Run in native mode on non-Linux platforms by default
     try:
         main(native=sys.platform != "linux")
     except Exception as exc:
         logger.error(f"Application startup failed: {exc}", exc_info=True)
+    finally:
+        shutdown_monitors()

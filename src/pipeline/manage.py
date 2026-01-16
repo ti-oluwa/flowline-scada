@@ -605,7 +605,7 @@ class DownstreamStationFactory(typing.Generic[PipelineT]):
 
 
 class PipelineManager(typing.Generic[PipelineT]):
-    """Manages a Pipeline instance."""
+    """Manages a `Pipeline` instance."""
 
     def __init__(
         self,
@@ -1008,8 +1008,9 @@ class PipelineManager(typing.Generic[PipelineT]):
             removed = False
             removed_pipe = None
             try:
-                # Remove old pipe and add updated one
-                removed_pipe = self._pipeline.remove_pipe(index, sync=True)
+                # Remove old pipe and add updated one. Do not sync now to avoid triggering errors 
+                # that would have been resolved after the update is completed.
+                removed_pipe = self._pipeline.remove_pipe(index, sync=False)
                 removed = True
                 # Create new pipe with updated config
                 pipe = self.build_pipe(pipe_config)

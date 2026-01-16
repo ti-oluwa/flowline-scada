@@ -1,7 +1,7 @@
 [project]
 name = "flowline-scada"
 version = "0.1.0"
-description = "Hydrocarbon Flowline SCADA - Simulation and Leak detection."
+description = "Hydrocarbon Flowline SCADA - Pipeline Flow Simulation and Leak detection."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,10 +16,8 @@ dependencies = [
     "redis>=6.4.0",
     "scipy>=1.16.2",
     "pywebview[qt]>=4.0.8; sys_platform != 'linux'",
-]
-
-[project.optional-dependencies]
-dev = [
+    "h5py>=3.15.1",
+    "zarr>=3.1.5",
     "pyinstaller>=6.16.0",
 ]
 

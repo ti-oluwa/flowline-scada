@@ -2,8 +2,10 @@
 Application storage backends.
 """
 
+from abc import ABC, abstractmethod
 import hashlib
 import logging
+from os import PathLike
 from pathlib import Path
 import typing
 
@@ -24,7 +26,7 @@ __all__ = [
 ]
 
 
-class StorageBackend:
+class StorageBackend(ABC):
     """Base storage backend interface"""
 
     def __init__(self, namespace: str):
@@ -38,15 +40,19 @@ class StorageBackend:
             return f"{base_key}:{hash_suffix}"
         return base_key
 
+    @abstractmethod
     def read(self, key: str) -> typing.Optional[dict]:
         raise NotImplementedError
 
+    @abstractmethod
     def update(self, key: str, data: dict, overwrite: bool = False) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def create(self, key: str, data: dict) -> None:
         raise NotImplementedError
 
+    @abstractmethod
     def delete(self, key: str) -> None:
         raise NotImplementedError
 
@@ -182,10 +188,10 @@ class BrowserLocalStorage(StorageBackend):
 class JSONFileStorage(StorageBackend):
     """JSON file storage backend"""
 
-    def __init__(self, storage_dir: typing.Union[str, Path], namespace: str):
+    def __init__(self, storage_dir: typing.Union[str, PathLike], namespace: str):
         super().__init__(namespace)
         self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(parents=True, exist_ok=True, mode=0o777)
+        self.storage_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
         logger.debug(
             f"Initialized {self.__class__.__name__} with storage directory: {storage_dir}"
         )

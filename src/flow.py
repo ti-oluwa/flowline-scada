@@ -44,15 +44,15 @@ class Fluid:
     """Name of the fluid"""
     phase: typing.Literal["liquid", "gas"] = attrs.field()
     """Phase of the fluid: 'liquid' or 'gas'"""
-    density: PlainQuantity[float] = attrs.field()
+    density: Quantity = attrs.field()
     """Density of the fluid"""
-    viscosity: PlainQuantity[float] = attrs.field()
+    viscosity: Quantity = attrs.field()
     """Dynamic viscosity of the fluid"""
-    pressure: PlainQuantity[float] = attrs.field()
+    pressure: Quantity = attrs.field()
     """Pressure of the fluid"""
-    temperature: PlainQuantity[float] = attrs.field()
+    temperature: Quantity = attrs.field()
     """Temperature of the fluid"""
-    molecular_weight: PlainQuantity[float] = attrs.field()
+    molecular_weight: Quantity = attrs.field()
     """Molecular weight of the fluid"""
     compressibility_factor: float = attrs.field(default=0.0)
     """Compressibility factor of the fluid (if applicable) e.g., for gases"""
@@ -124,11 +124,11 @@ class Fluid:
         return cls(
             name=fluid_name,
             phase=phase,
-            density=density,
-            viscosity=viscosity,
-            pressure=pressure,
-            temperature=temperature,
-            molecular_weight=molecular_weight,
+            density=density,  # type: ignore
+            viscosity=viscosity,  # type: ignore
+            pressure=pressure,  # type: ignore
+            temperature=temperature,  # type: ignore
+            molecular_weight=molecular_weight,  # type: ignore
             compressibility_factor=compressibility_factor,
         )
 

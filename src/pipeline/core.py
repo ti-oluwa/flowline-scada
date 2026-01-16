@@ -3,6 +3,7 @@ import logging
 import math
 import typing
 import functools
+import base64
 
 from nicegui import ui
 from nicegui.elements.column import Column
@@ -2475,7 +2476,7 @@ class Pipe:
         else:
             flow_rate_q = Quantity(flow_rate, "ft^3/s")
 
-        flow_rate_q = Quantity(max(0, flow_rate_q.magnitude), flow_rate_q.units).to(
+        flow_rate_q = Quantity(max(0, float(flow_rate_q.magnitude)), flow_rate_q.units).to(
             "ft^3/s"
         )
         if flow_rate_q.magnitude > 0 and self.fluid is None:
@@ -2795,7 +2796,7 @@ class Pipe:
                 new_pipe._leaks.append(new_leak)
 
         # Explicitly DO NOT copy visualization elements
-        # These should be recreated when show() is called
+        # These should be recreated when `show()` is called
         new_pipe.pipe_viz = None
         return new_pipe
 
@@ -3366,7 +3367,7 @@ class Pipeline:
                     "text-lg sm:text-xl font-bold text-gray-800 text-center flex-shrink-0"
                 )
 
-            # Get the SVG content and check if it's valid
+            # Get the SVG content
             svg_content = str(self.get_svg())
             self.pipeline_viz = ui.html(svg_content, sanitize=False).style(
                 """

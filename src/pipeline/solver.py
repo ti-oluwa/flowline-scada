@@ -1135,9 +1135,9 @@ class FlowSolver:
 
         # Check if pipe has been solved (has flow rate set)
         if pipe._flow_rate.magnitude == 0:
-            logger.warning(
+            logger.debug(
                 f"Attempting to estimate pressure before pipe {pipe.name!r} has been solved. "
-                f"Call pipeline.sync() first. Using linear interpolation as fallback."
+                f"Call `pipeline.sync()` first. Using linear interpolation as fallback."
             )
             # No flow - assume linear pressure gradient
             pressure_drop = pipe.upstream_pressure - pipe.downstream_pressure
