@@ -9,7 +9,7 @@ from nicegui import ui
 from src.config.core import Configuration
 from src.units import Quantity
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__) # type: ignore[attr-defined]
 
 __all__ = ["ConfigurationUI"]
 

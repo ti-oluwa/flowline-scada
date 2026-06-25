@@ -4,7 +4,7 @@ import math
 import functools
 import logging
 from pint.facets.plain import PlainQuantity
-from CoolProp.CoolProp import PropsSI, get_global_param_string
+from CoolProp.CoolProp import PropsSI, get_global_param_string  # type: ignore[import]
 
 from src.units import ureg, Quantity
 from src.types import FlowEquation, FlowType
@@ -18,7 +18,7 @@ AIR_DENSITY = Quantity(
 SUPPORTED_FLUIDS = get_global_param_string("FluidsList").split(",")
 """List of CoolProp supported fluids."""
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # type: ignore[attr-defined]
 
 
 def is_supported_fluid(fluid_name: str) -> bool:
@@ -259,7 +259,7 @@ def compute_joule_thomson_coefficient(
     pressure: PlainQuantity[float],
     temperature: PlainQuantity[float],
     fluid_name: str,
-    pressure_step: PlainQuantity[float] = PlainQuantity(1000, "Pa"),
+    pressure_step: PlainQuantity[float] = PlainQuantity(1000.0, "Pa"),
 ) -> PlainQuantity[float]:
     """
     Compute the Joule-Thomson coefficient (μ_JT) of a fluid using CoolProp.
@@ -317,12 +317,12 @@ def compute_joule_thomson_coefficient(
             f"P={pressure_pa:.0f} Pa, T={temperature_k:.1f} K: {exc}"
         )
         # Return zero coefficient as fallback (isothermal assumption)
-        return 0.0 * ureg.K / ureg.Pa
+        return typing.cast(PlainQuantity[float], 0.0 * ureg.K / ureg.Pa)
     except Exception as exc:
         logger.error(
             f"Unexpected error calculating JT coefficient for {fluid_name}: {exc}"
         )
-        return 0.0 * ureg.K / ureg.Pa
+        return typing.cast(PlainQuantity[float], 0.0 * ureg.K / ureg.Pa)
 
 
 def compute_reynolds_number(

@@ -111,7 +111,6 @@ def root(client: Client) -> ui.element:
         )
     )
     with main_container:
-        # Header with dynamic theme color
         header = (
             ui.row()
             .classes(
@@ -164,10 +163,11 @@ def root(client: Client) -> ui.element:
             if saved_state:
                 logger.info(f"Restoring last pipeline state for session {session_id!r}")
                 try:
-                    manager = PipelineManager.load_state(
+                    manager = PipelineManager[Pipeline].load_state(
                         saved_state,
                         config=config,
                         flow_station_factories=[upstream_factory, downstream_factory],
+                        pipeline_type=Pipeline,
                     )
                 except Exception as exc:
                     logger.error(f"Failed to restore last state: {exc}", exc_info=True)

@@ -18,7 +18,7 @@ from src.types import (
 )
 from src.storages import StorageBackend
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)  # type: ignore[attr-defined]
 
 __all__ = ["Configuration", "ConfigurationState"]
 

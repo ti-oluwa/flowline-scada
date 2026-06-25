@@ -918,7 +918,9 @@ class FlowSolver:
 
                     # Calculate connector pressure drop
                     connector_pressure_drop = self.compute_connector_pressure_drop(
-                        pipe, next_pipe, current_state
+                        current_pipe=pipe,
+                        next_pipe=next_pipe,
+                        inlet_state=current_state,
                     )
 
                     # Update state after connector
