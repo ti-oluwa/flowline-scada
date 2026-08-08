@@ -26,43 +26,25 @@ __all__ = [
     "ureg",
 ]
 
-ureg: UnitRegistry[float] = UnitRegistry()
+# pint's UnitRegistry doesn't expose a statically-inferable type for its
+# own constructor, so mypy can't infer one here without help.
+ureg = UnitRegistry()  # type: ignore[var-annotated]
 ureg.define("scf = 0.0283168 * meter**3 = SCF")  # 1 scf ~= 0.0283168 m^3
 ureg.define("Mscf = 1000 * scf = MSCf")  # 1 Mscf = 1000 scf
 ureg.define("MMscf = 1000 * Mscf = MMSCF")  # 1 MMscf = 1,000,000 scf
 ureg.define("MMMscf = 1000 * MMscf = MMMSCF")  # 1 MMMscf = 1,000,000,000 scf
 
-# `ureg.Quantity`/`ureg.Unit` are registry-bound constructors — the ones
-# actually used everywhere at runtime, since only quantities built through
-# *this* registry know about scf/Mscf/MMscf/MMMscf. They're dynamically
-# generated per-registry, though, so mypy can't resolve them as static
-# types. `pint.Quantity`/`pint.Unit` (imported as `pint` above) are the
-# statically-typeable base classes pint ships specifically for annotation
-# purposes — registry-bound instances are real subclasses of these at
-# runtime, so annotating with `pint.Unit`/`pint.Quantity` while
-# constructing with `Unit(...)`/`Quantity(...)` is correct both ways.
 Quantity = ureg.Quantity
 Unit = ureg.Unit
-
-
-def _to_unit(value: "str | pint.Unit") -> pint.Unit:
-    """Named wrapper around the registry-bound `Unit` constructor.
-
-    attrs' mypy plugin needs a converter it can statically resolve as a
-    named function, type, or lambda — `attrs.field(converter=Unit)` alone
-    doesn't qualify, since `Unit` is a dynamically-generated per-registry
-    class reached through an attribute access (`ureg.Unit`), not something
-    mypy can pin down as a class reference at that point. This wrapper is
-    just a plain function around the same constructor.
-    """
-    return Unit(value)
 
 
 @attrs.define(frozen=True, slots=True)
 class QuantityUnit:
     """Unit for a specific physical quantity."""
 
-    unit: pint.Unit = attrs.field(converter=_to_unit)
+    # ureg.Unit is a dynamically-generated per-registry class; attrs' mypy
+    # plugin can't statically resolve it as a converter.
+    unit: pint.Unit = attrs.field(converter=Unit)  # type: ignore[misc]
     """Pint-supported unit, e.g. 'psi', 'degF', 'm^3/s'."""
 
     display: str | None = attrs.field(default=None)
