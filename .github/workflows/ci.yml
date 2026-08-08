@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v2-rewrite]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff — formatting check
+        run: ruff format --check .
+
+      - name: Ruff — lint
+        run: ruff check .
+
+      - name: mypy — strict type check
+        run: mypy flowline_scada tests
+
+      - name: pytest
+        # pytest-xvfb handles the virtual display transparently on Linux
+        # and is a no-op on Windows/macOS, which already have one — no
+        # platform-specific branching needed here.
+        run: pytest --cov=flowline_scada --cov-report=term-missing

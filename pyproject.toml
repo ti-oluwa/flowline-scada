@@ -1,32 +1,93 @@
 [project]
 name = "flowline-scada"
-version = "0.1.0"
-description = "Hydrocarbon Flowline SCADA - Simulation and Leak detection."
+version = "2.0.0.dev0"
+description = "Multiphase pipeline network simulator with a P&ID-driven desktop interface."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "attrs>=25.3.0",
-    "cachetools>=6.2.1",
     "cattrs>=25.2.0",
     "coolprop>=7.0.0",
-    "nicegui>=2.22.2",
-    "orjson>=3.11.2",
     "pint>=0.25",
-    "python-dotenv>=1.1.1",
-    "redis>=6.4.0",
-    "scipy>=1.16.2",
-    "pywebview[qt]>=4.0.8; sys_platform != 'linux'",
+    "pyside6>=6.8.0",
+    "thermo>=0.4.2",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "mypy>=1.13.0",
     "pyinstaller>=6.16.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "pytest-qt>=4.4.0",
+    "pytest-xvfb>=3.0.0",
+    "ruff>=0.8.0",
+]
+# Development-time correctness oracle for the multiphase correlations
+# (arrives in Phase 2) — cross-checks our own Beggs & Brill / Mukherjee &
+# Brill implementations against NeqSim's. Requires a JVM (NeqSim is a Java
+# library with a Python bridge). Never a runtime dependency of the shipped
+# app, never installed by the default dev/CI setup — only pulled in for the
+# dedicated validation test run.
+validate = [
+    "neqsim>=3.0.0",
 ]
 
-[tool.nicegui-pack.app]
-entry = "main.py"
-name = "FlowlineSCADA.exe"
-onefile = true
-icon = "assets/pipeline.ico"
-windowed = true
-include_data = true
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["flowline_scada"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+qt_api = "pyside6"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # import sorting
+    "UP",  # pyupgrade — modern syntax
+    "B",   # bugbear — common correctness pitfalls
+]
+ignore = [
+    "E501",  # line length handled by the formatter
+]
+
+[tool.mypy]
+# NOTE: set to 3.12 rather than this project's actual minimum (3.11, see
+# [project] requires-python) as a deliberate, tested workaround, not an
+# oversight: numpy 2.5's shipped stubs (pulled in transitively via pint's
+# optional array support) use PEP 695 `type` statement syntax
+# unconditionally, which mypy hard-rejects as a syntax error while parsing
+# under python_version = "3.11" — and that failure happens at parse time,
+# before the per-module `follow_imports = "skip"` override below can take
+# effect (verified: adding one for numpy did not prevent the parse
+# error). This project's own code doesn't use any 3.12-only syntax, so
+# checking under 3.12 doesn't weaken what actually gets verified for it —
+# real 3.11 runtime compatibility is still enforced by the CI matrix,
+# which runs the full test suite under both 3.11 and 3.12 interpreters.
+# mypy's python_version here only controls which syntax mypy itself
+# treats as valid while checking, not which interpreter tests run on.
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+show_error_codes = true
+
+# Kept even though it didn't resolve the parse-time issue above: it still
+# prevents mypy from semantically deep-diving into numpy's own stub
+# internals for anything checked under python_version = "3.12", which is
+# the correct behavior going forward — this project has no direct numpy
+# dependency and shouldn't be affected by numpy's internal type changes.
+[[tool.mypy.overrides]]
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
