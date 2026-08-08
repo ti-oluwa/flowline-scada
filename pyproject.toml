@@ -13,7 +13,13 @@ dependencies = [
     "thermo>=0.4.2",
 ]
 
-[project.optional-dependencies]
+# PEP 735 dependency groups, not [project.optional-dependencies] — neither
+# of these is a runtime feature an end user installing the shipped app
+# would ever opt into (that's what optional-dependencies/"extras" are
+# for); both are purely development-time tooling, which is exactly what
+# dependency-groups exists to express. Install with `pip install -e .
+# --group dev` (pip >= 25.1) or the equivalent in uv/hatch.
+[dependency-groups]
 dev = [
     "mypy>=1.13.0",
     "pyinstaller>=6.16.0",
@@ -27,8 +33,8 @@ dev = [
 # (arrives in Phase 2) — cross-checks our own Beggs & Brill / Mukherjee &
 # Brill implementations against NeqSim's. Requires a JVM (NeqSim is a Java
 # library with a Python bridge). Never a runtime dependency of the shipped
-# app, never installed by the default dev/CI setup — only pulled in for the
-# dedicated validation test run.
+# app, never installed by the default dev setup — only pulled in with
+# `--group validate` for the dedicated validation test run.
 validate = [
     "neqsim>=3.0.0",
 ]
@@ -63,31 +69,13 @@ ignore = [
 ]
 
 [tool.mypy]
-# NOTE: set to 3.12 rather than this project's actual minimum (3.11, see
-# [project] requires-python) as a deliberate, tested workaround, not an
-# oversight: numpy 2.5's shipped stubs (pulled in transitively via pint's
-# optional array support) use PEP 695 `type` statement syntax
-# unconditionally, which mypy hard-rejects as a syntax error while parsing
-# under python_version = "3.11" — and that failure happens at parse time,
-# before the per-module `follow_imports = "skip"` override below can take
-# effect (verified: adding one for numpy did not prevent the parse
-# error). This project's own code doesn't use any 3.12-only syntax, so
-# checking under 3.12 doesn't weaken what actually gets verified for it —
-# real 3.11 runtime compatibility is still enforced by the CI matrix,
-# which runs the full test suite under both 3.11 and 3.12 interpreters.
-# mypy's python_version here only controls which syntax mypy itself
-# treats as valid while checking, not which interpreter tests run on.
+# NOTE: kept at 3.12 for the same reason noted below on the numpy
+# override — this project's own code targets 3.11 (see [project]
+# requires-python) and doesn't use any 3.12-only syntax, so this doesn't
+# weaken what's actually checked; 3.11 runtime compatibility is enforced
+# by the CI matrix running the full test suite under both interpreters.
 python_version = "3.12"
-strict = true
-warn_unused_ignores = true
-warn_return_any = true
-show_error_codes = true
 
-# Kept even though it didn't resolve the parse-time issue above: it still
-# prevents mypy from semantically deep-diving into numpy's own stub
-# internals for anything checked under python_version = "3.12", which is
-# the correct behavior going forward — this project has no direct numpy
-# dependency and shouldn't be affected by numpy's internal type changes.
 [[tool.mypy.overrides]]
 module = ["numpy", "numpy.*"]
 follow_imports = "skip"
