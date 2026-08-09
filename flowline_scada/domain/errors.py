@@ -48,3 +48,16 @@ class DisconnectedNetworkError(NetworkError):
     reached from the rest of the network — almost always a modeling
     mistake (a pipe that was never actually connected) rather than an
     intentional configuration."""
+
+
+class ComponentError(FlowlineError):
+    """Base class for errors involving a single physical component
+    (a pipe, valve, leak, etc.) rather than overall network topology."""
+
+
+class DuplicateLeakError(ComponentError):
+    """Raised when adding a leak whose name already exists on a pipe."""
+
+
+class UnknownLeakError(ComponentError):
+    """Raised when referencing a leak name a pipe doesn't have."""
