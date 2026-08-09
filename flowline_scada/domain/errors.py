@@ -21,3 +21,30 @@ class PropertyEvaluationError(FlowlineError):
     """Raised when a fluid property can't be evaluated at the requested
     conditions — out-of-range inputs, a state outside the equation of
     state's validity envelope, non-convergence, etc."""
+
+
+class NetworkError(FlowlineError):
+    """Base class for pipeline-network topology errors."""
+
+
+class DuplicateNodeError(NetworkError):
+    """Raised when adding a node whose name is already in the network."""
+
+
+class DuplicateEdgeError(NetworkError):
+    """Raised when adding an edge whose name is already in the network."""
+
+
+class UnknownNodeError(NetworkError):
+    """Raised when referencing a node name the network doesn't contain."""
+
+
+class UnknownEdgeError(NetworkError):
+    """Raised when referencing an edge name the network doesn't contain."""
+
+
+class DisconnectedNetworkError(NetworkError):
+    """Raised when a network validity check finds nodes that can't be
+    reached from the rest of the network — almost always a modeling
+    mistake (a pipe that was never actually connected) rather than an
+    intentional configuration."""
