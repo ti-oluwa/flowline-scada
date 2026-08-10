@@ -1,11 +1,34 @@
 """
-Units and unit-system definitions.
+Physical units, built on `pint <https://pint.readthedocs.io>`_.
 
-Built on `pint` for dimensional quantities. `UnitSystem` is a small,
-generic mapping from a physical-quantity name (e.g. "pressure") to its
-preferred unit for a given display context (Imperial, SI, oil-field), with
-a display string and an optional default value. Carried over from the v1
-NiceGUI app's src/units.py, cleaned up and fully typed.
+Every quantity in this package (a pipe's length, a fluid's pressure, a
+flow rate) is a :class:`pint.Quantity` built through :data:`Quantity`
+below — not a plain float — so unit mistakes (mixing psi and Pa, feet and
+meters) are caught immediately rather than silently producing a wrong
+answer.
+
+Example:
+
+```python
+from flowline_scada.domain.units import Quantity
+
+length = Quantity(1000, "ft")
+length_in_meters = length.to("m")
+print(length_in_meters)  # 304.8 meter
+```
+
+This module also registers a handful of oilfield-standard units pint
+doesn't define natively — gas volumes (``scf``, ``Mscf``, ``MMscf``,
+``MMMscf``) and heat duty (``MMBtu``) — usable anywhere any other pint
+unit is, once this module has been imported.
+
+:class:`UnitSystem` is a separate, optional convenience on top of this:
+a named collection of "preferred unit for each kind of quantity",
+for a UI that wants to show pressures in psi vs. Pa depending on which
+system the user picked. Three are built in — :data:`IMPERIAL`,
+:data:`SI`, :data:`OIL_FIELD` — covering the common quantity names used
+throughout this package (``"pressure"``, ``"temperature"``,
+``"flow_rate"``, etc).
 """
 
 import typing
@@ -29,29 +52,63 @@ __all__ = [
 # pint's UnitRegistry doesn't expose a statically-inferable type for its
 # own constructor, so mypy can't infer one here without help.
 ureg = UnitRegistry()  # type: ignore[var-annotated]
+"""The single :class:`pint.UnitRegistry` this whole package builds
+quantities through. You generally don't need to touch this directly —
+use :data:`Quantity` to build values and :data:`Unit` to build bare
+units instead."""
+
 ureg.define("scf = 0.0283168 * meter**3 = SCF")  # 1 scf ~= 0.0283168 m^3
 ureg.define("Mscf = 1000 * scf = MSCf")  # 1 Mscf = 1000 scf
 ureg.define("MMscf = 1000 * Mscf = MMSCF")  # 1 MMscf = 1,000,000 scf
 ureg.define("MMMscf = 1000 * MMscf = MMMSCF")  # 1 MMMscf = 1,000,000,000 scf
+ureg.define("MMBtu = 1e6 * Btu = MMBTU")  # 1 MMBtu = 1,000,000 Btu — standard US heat-duty unit
 
 Quantity = ureg.Quantity
+"""Build a physical quantity: ``Quantity(value, unit_string)``. Also
+recognizes the oilfield gas-volume units this module adds on top of
+pint's own (``scf``, ``Mscf``, ``MMscf``, ``MMMscf``), in addition to
+everything pint supports natively (``psi``, ``degF``, ``ft^3/s``, ...).
+
+Example:
+
+```python
+pressure = Quantity(800, "psi")
+gas_volume = Quantity(5, "MMscf")
+```
+"""
+
 Unit = ureg.Unit
+"""Build a bare unit (no value attached) — mostly useful for comparisons
+and conversions, e.g. ``some_quantity.to(Unit("Pa"))``."""
 
 
 @attrs.define(frozen=True, slots=True)
 class QuantityUnit:
-    """Unit for a specific physical quantity."""
+    """A single "preferred unit" entry within a :class:`UnitSystem` — the
+    unit itself, how to display it, and an optional default value.
 
-    # ureg.Unit is a dynamically-generated per-registry class; attrs' mypy
-    # plugin can't statically resolve it as a converter.
+    :param unit: the unit, as anything :data:`Unit` accepts — e.g.
+        ``"psi"``, ``"degF"``, ``"m^3/s"``.
+    :param display: how to show this unit in a UI, if different from its
+        plain string form — e.g. ``"°F"`` instead of ``"degF"``. Falls
+        back to ``str(unit)`` if not given.
+    :param default: a default value for this quantity, in this unit, if
+        one makes sense (e.g. 60.0 for a default ambient temperature in
+        °F). Leave unset if there's no sensible default.
+
+    Example:
+
+    ```python
+    pressure_unit = QuantityUnit(unit="psi", display="psi", default=14.7)
+    print(str(pressure_unit))  # "psi"
+    ```
+    """
+
     unit: pint.Unit = attrs.field(converter=Unit)  # type: ignore[misc]
-    """Pint-supported unit, e.g. 'psi', 'degF', 'm^3/s'."""
 
     display: str | None = attrs.field(default=None)
-    """Optional display string for UI, e.g. '°F'."""
 
     default: float | None = attrs.field(default=None)
-    """Default value for the quantity in the specified unit, if applicable."""
 
     def __str__(self) -> str:
         return self.display or str(self.unit)
@@ -62,21 +119,35 @@ QuantityUnitT = typing.TypeVar("QuantityUnitT", bound=QuantityUnit)
 
 class UnitSystem(defaultdict[str, QuantityUnitT]):
     """
-    A unit system mapping quantity names to their `QuantityUnit` definitions.
+    A named set of preferred units — one :class:`QuantityUnit` per kind
+    of physical quantity (``"pressure"``, ``"temperature"``, and so on).
 
-    Subclasses `defaultdict` so unrecognized quantity names fall back to a
-    dimensionless default instead of raising `KeyError`, which keeps UI code
-    that looks up units by name simple even for quantities a given system
-    hasn't defined.
+    Looking up a quantity name this system hasn't defined doesn't raise
+    :class:`KeyError` — it returns a dimensionless default instead, so UI
+    code that looks up units by name doesn't need to special-case
+    quantities a particular system left undefined.
+
+    :param name: a label for this unit system, e.g. ``"imperial"``.
+    :param __map: an optional starting mapping of quantity name to
+        :class:`QuantityUnit` (positional-only — pass it as the second
+        positional argument, or just use keyword arguments instead, as
+        in the example below).
+    :param default_factory: what to return for a quantity name this
+        system doesn't define. Defaults to a dimensionless
+        :class:`QuantityUnit` with no default value.
+    :param kwargs: additional ``quantity_name=QuantityUnit(...)`` entries,
+        merged with ``__map``.
 
     Example:
 
     ```python
-    imperial: UnitSystem[QuantityUnit] = UnitSystem("imperial")
-    imperial["pressure"] = QuantityUnit(unit="psi", default=14.7)
+    imperial: UnitSystem[QuantityUnit] = UnitSystem(
+        "imperial", pressure=QuantityUnit(unit="psi", default=14.7)
+    )
 
-    pressure_unit = imperial["pressure"].unit  # psi
+    pressure_unit = imperial["pressure"].unit       # psi
     default_pressure = imperial["pressure"].default  # 14.7
+    imperial["nonexistent_quantity"]                 # dimensionless default, not KeyError
     ```
     """
 
@@ -89,7 +160,6 @@ class UnitSystem(defaultdict[str, QuantityUnitT]):
         default_factory: typing.Callable[[], QuantityUnitT] | None = None,
         **kwargs: QuantityUnitT,
     ) -> None:
-        """Initialize a named `UnitSystem` with an optional starting mapping."""
         self.name = name
         if default_factory is None:
 
@@ -102,7 +172,6 @@ class UnitSystem(defaultdict[str, QuantityUnitT]):
         super().__init__(default_factory, merged)
 
     def __missing__(self, key: str) -> QuantityUnitT:
-        """Return the default `QuantityUnit` for a name this system hasn't defined."""
         assert self.default_factory is not None
         return self.default_factory()
 
