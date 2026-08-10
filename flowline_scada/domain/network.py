@@ -1,24 +1,42 @@
 """
-Pipeline network topology: nodes and edges as a real graph.
+Pipeline network topology: connect nodes and edges into a real graph.
 
-This directly addresses the single biggest structural limitation found in
-the v1 review: the old solver only ever walked a linear list of pipes
-(`solve_pipeline()`), which meant it could represent a series string and
-nothing else — no branching manifold feeding two downstream lines, no
-looped gathering system with redundant paths. `PipelineNetwork` here is a
-real graph from the start; whether a given network happens to be a simple
-series string or a multi-branch system with loops is just a property of
-which nodes and edges got added, not a constraint baked into the data
-structure.
+Use this when your pipeline isn't just one straight run of pipe — a
+manifold feeding two downstream lines, a looped gathering system with
+redundant paths, anything with real branching or loops. If you only ever
+need a simple series of pipes, this still works fine; it just means your
+network happens to have every node with at most two connections.
 
-The underlying graph is directed (`networkx.MultiDiGraph`), but that
-direction is a *sign convention* for the eventually-solved flow rate, not
-a physical constraint — a real pipe carries flow in whichever direction
-the pressures actually drive it, which the solver (arriving in Phase 2)
-determines. `add_edge(edge, from_node, to_node)` just fixes which
-direction counts as positive for that edge's solved flow. Parallel edges
-(more than one pipe between the same two nodes — a looped or redundant
-run) are supported directly via the multigraph, not worked around.
+Example — a simple branching gathering system, two wells feeding one
+manifold, one outlet downstream:
+
+```python
+from flowline_scada.domain.network import PipelineNetwork
+from flowline_scada.domain.components import Boundary, Manifold, Pipe
+from flowline_scada.domain.units import Quantity
+
+network = PipelineNetwork(name="gathering-system")
+network.add_node(Boundary(name="well_1", pressure=Quantity(900, "psi")))
+network.add_node(Boundary(name="well_2", pressure=Quantity(850, "psi")))
+network.add_node(Manifold(name="manifold_1"))
+network.add_node(Boundary(name="outlet", flow_rate=Quantity(1000, "ft^3/s")))
+
+network.add_edge(
+    Pipe(name="fl_1", length=Quantity(2000, "ft"), internal_diameter=Quantity(6, "inch")),
+    from_node="well_1", to_node="manifold_1",
+)
+network.add_edge(
+    Pipe(name="fl_2", length=Quantity(1800, "ft"), internal_diameter=Quantity(6, "inch")),
+    from_node="well_2", to_node="manifold_1",
+)
+network.add_edge(
+    Pipe(name="trunk", length=Quantity(5000, "ft"), internal_diameter=Quantity(10, "inch")),
+    from_node="manifold_1", to_node="outlet",
+)
+
+network.validate()  # raises if anything isn't connected up correctly
+print(network.circuit_rank)  # 0 — this is a branching network, but not a looped one
+```
 """
 
 import typing
@@ -36,16 +54,12 @@ from flowline_scada.domain.errors import (
 
 @typing.runtime_checkable
 class Node(typing.Protocol):
-    """Structural protocol any node type must satisfy. See
-    `domain.components` for concrete node types (Junction, Boundary,
-    Manifold, Separator) — this module only needs a name.
-
-    `name` is declared as a read-only property, not a plain attribute:
-    with a plain `name: str`, mypy treats it as a read-write protocol
-    member, which every frozen attrs class in this codebase (immutable by
-    design) would then fail to satisfy structurally, since a frozen
-    attribute isn't settable. Declaring it as a property fixes that
-    without weakening the protocol for anything that actually needs it.
+    """What any node type needs to provide to be usable in a
+    :class:`PipelineNetwork` — just a name. You don't need to inherit
+    from this; any object with a ``name`` works, including everything in
+    :mod:`flowline_scada.domain.components` (:class:`~flowline_scada.domain.components.Junction`,
+    :class:`~flowline_scada.domain.components.Boundary`, etc.) and any
+    custom node type you define yourself.
     """
 
     @property
@@ -54,10 +68,13 @@ class Node(typing.Protocol):
 
 @typing.runtime_checkable
 class Edge(typing.Protocol):
-    """Structural protocol any edge type must satisfy. See
-    `domain.components` for concrete edge types (Pipe, Valve, Pump,
-    Regulator) — this module only needs a name. See `Node` above for why
-    this is a property rather than a plain attribute."""
+    """What any edge type needs to provide to be usable in a
+    :class:`PipelineNetwork` — just a name, same idea as :class:`Node`.
+    Everything in :mod:`flowline_scada.domain.components` that connects
+    two nodes (:class:`~flowline_scada.domain.components.Pipe`,
+    :class:`~flowline_scada.domain.components.Valve`, etc.) satisfies
+    this automatically.
+    """
 
     @property
     def name(self) -> str: ...
@@ -68,26 +85,34 @@ EdgeT = typing.TypeVar("EdgeT", bound=Edge)
 
 
 class PipelineNetwork(typing.Generic[NodeT, EdgeT]):
-    """A pipeline network: nodes connected by edges, as an actual graph."""
+    """A pipeline network: nodes connected by edges, as an actual graph
+    rather than a fixed list.
+
+    Every edge is added with a direction (``from_node`` to ``to_node``),
+    but that's just a sign-convention reference for whichever way the
+    flow ends up solved, not a rule about which way flow is allowed to
+    go — a real pipe carries flow whichever way the pressures actually
+    drive it. Two nodes can also be connected by more than one edge (a
+    looped or redundant pipe run) — that's supported directly, not
+    something you need to work around.
+
+    :param name: a label for this network, used in error messages and ``repr()``.
+    """
 
     def __init__(self, name: str) -> None:
         self.name = name
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._nodes: dict[str, NodeT] = {}
         self._edges: dict[str, EdgeT] = {}
-        # (from_node, to_node, multigraph_key) per edge name, tracked
-        # directly here rather than round-tripped through networkx's own
-        # edge-data attribute lookups — this is all simple bookkeeping,
-        # and keeping it in a plain dict means the handful of lookups
-        # below (incident_edges, neighbors, edge_endpoints) don't depend
-        # on getting networkx's data-attribute API exactly right.
-        # networkx itself is doing real work elsewhere: connectivity and
-        # circuit-rank (independent loop count) below are genuine
-        # graph-theoretic questions worth a real library, not
-        # hand-rolled bookkeeping.
         self._edge_keys: dict[str, tuple[str, str, int]] = {}
 
     def add_node(self, node: NodeT) -> None:
+        """Add a node to the network.
+
+        :param node: any object with a unique ``name`` — see :class:`Node`.
+        :raises ~flowline_scada.domain.errors.DuplicateNodeError: if a
+            node with this name is already in the network.
+        """
         if node.name in self._nodes:
             raise DuplicateNodeError(
                 f"Network {self.name!r} already has a node named {node.name!r}."
@@ -96,9 +121,27 @@ class PipelineNetwork(typing.Generic[NodeT, EdgeT]):
         self._graph.add_node(node.name)
 
     def add_edge(self, edge: EdgeT, from_node: str, to_node: str) -> None:
-        """Connect `from_node` to `to_node` via `edge`. This direction is
-        the sign-convention reference for the edge's eventual solved flow
-        rate, not a constraint on which way flow can actually go."""
+        """Connect two existing nodes with an edge.
+
+        :param edge: any object with a unique ``name`` — see :class:`Edge`.
+        :param from_node: name of an existing node — the edge's reference
+            "start" (see the class docstring for what this direction
+            actually means).
+        :param to_node: name of an existing node — the edge's reference "end".
+        :raises ~flowline_scada.domain.errors.DuplicateEdgeError: if an
+            edge with this name already exists.
+        :raises ~flowline_scada.domain.errors.UnknownNodeError: if
+            ``from_node`` or ``to_node`` isn't in the network yet — add
+            both nodes first with :meth:`add_node`.
+
+        Example:
+
+        ```python
+        network.add_node(Junction(name="A"))
+        network.add_node(Junction(name="B"))
+        network.add_edge(Pipe(name="P1", ...), from_node="A", to_node="B")
+        ```
+        """
         if edge.name in self._edges:
             raise DuplicateEdgeError(
                 f"Network {self.name!r} already has an edge named {edge.name!r}."
@@ -115,33 +158,61 @@ class PipelineNetwork(typing.Generic[NodeT, EdgeT]):
 
     @property
     def nodes(self) -> tuple[NodeT, ...]:
+        """Every node currently in the network, in the order they were added."""
         return tuple(self._nodes.values())
 
     @property
     def edges(self) -> tuple[EdgeT, ...]:
+        """Every edge currently in the network, in the order they were added."""
         return tuple(self._edges.values())
 
     def get_node(self, name: str) -> NodeT:
+        """Look up a node by name.
+
+        :param name: the node's name.
+        :return: the node.
+        :raises ~flowline_scada.domain.errors.UnknownNodeError: if no
+            node with that name exists.
+        """
         try:
             return self._nodes[name]
         except KeyError:
             raise UnknownNodeError(f"Network {self.name!r} has no node named {name!r}.") from None
 
     def get_edge(self, name: str) -> EdgeT:
+        """Look up an edge by name.
+
+        :param name: the edge's name.
+        :return: the edge.
+        :raises ~flowline_scada.domain.errors.UnknownEdgeError: if no
+            edge with that name exists.
+        """
         try:
             return self._edges[name]
         except KeyError:
             raise UnknownEdgeError(f"Network {self.name!r} has no edge named {name!r}.") from None
 
     def edge_endpoints(self, edge_name: str) -> tuple[str, str]:
-        """(from_node, to_node) in the edge's reference direction."""
+        """Look up which nodes an edge connects.
+
+        :param edge_name: the edge's name.
+        :return: a ``(from_node, to_node)`` tuple, in the edge's reference direction.
+        :raises ~flowline_scada.domain.errors.UnknownEdgeError: if no
+            edge with that name exists.
+        """
         if edge_name not in self._edge_keys:
             raise UnknownEdgeError(f"Network {self.name!r} has no edge named {edge_name!r}.")
         from_node, to_node, _key = self._edge_keys[edge_name]
         return from_node, to_node
 
     def incident_edges(self, node_name: str) -> tuple[EdgeT, ...]:
-        """Every edge touching this node, in either reference direction."""
+        """Find every edge touching a node.
+
+        :param node_name: the node's name.
+        :return: every edge connected to this node, in either reference direction.
+        :raises ~flowline_scada.domain.errors.UnknownNodeError: if no
+            node with that name exists.
+        """
         if node_name not in self._nodes:
             raise UnknownNodeError(f"Network {self.name!r} has no node named {node_name!r}.")
         names = [
@@ -152,9 +223,14 @@ class PipelineNetwork(typing.Generic[NodeT, EdgeT]):
         return tuple(self._edges[name] for name in names)
 
     def neighbors(self, node_name: str) -> tuple[str, ...]:
-        """Every node directly connected to this one, in either reference
-        direction — a pipe's reference direction doesn't limit which way
-        it can be traversed when just asking "what's connected to what\"."""
+        """Find every node directly connected to a given node.
+
+        :param node_name: the node's name.
+        :return: the names of every directly-connected node, in either
+            reference direction.
+        :raises ~flowline_scada.domain.errors.UnknownNodeError: if no
+            node with that name exists.
+        """
         if node_name not in self._nodes:
             raise UnknownNodeError(f"Network {self.name!r} has no node named {node_name!r}.")
         result: set[str] = set()
@@ -166,24 +242,29 @@ class PipelineNetwork(typing.Generic[NodeT, EdgeT]):
         return tuple(sorted(result))
 
     def is_connected(self) -> bool:
-        """Whether every node can reach every other, ignoring edge
-        direction (a real pipe network's connectivity doesn't care which
-        way is "reference forward\")."""
+        """Check whether every node can reach every other node, ignoring
+        which way each edge's reference direction points.
+
+        :return: ``True`` if the whole network is one connected group of
+            nodes, ``False`` if any node is unreachable from the rest.
+        """
         if not self._nodes:
             return True
         return bool(nx.is_weakly_connected(self._graph))
 
     @property
     def circuit_rank(self) -> int:
-        """Number of independent loops in the topology — the cyclomatic
-        number / circuit rank, |E| - |V| + (number of connected
-        components). 0 for a tree (which includes the degenerate case of
-        a plain series string, the only shape the v1 solver could
-        represent); >=1 for anything with a redundant path between two
-        points, whether that's a pair of parallel pipes or a longer cycle
-        through several nodes. This is the same quantity a Hardy-Cross-style
-        loop-flow solver needs to know how many loop-correction equations
-        it has to solve — not just a connectivity nicety."""
+        """How many independent loops the network's topology contains.
+
+        This is 0 for anything tree-shaped — including the simplest case,
+        a single series string of pipes — and 1 or more for a network
+        with a redundant path between two points, whether that's a pair
+        of parallel pipes or a longer loop through several nodes.
+
+        If you're building a loop-flow solver later, this is the number
+        of independent loop-correction equations it needs to set up —
+        not just a "does this have a loop" nicety.
+        """
         if not self._nodes:
             return 0
         return (
@@ -193,8 +274,13 @@ class PipelineNetwork(typing.Generic[NodeT, EdgeT]):
         )
 
     def validate(self) -> None:
-        """Raise if the network isn't in a solvable shape: at least one
-        node, and every node reachable from every other."""
+        """Check that the network is in a solvable shape: at least one
+        node, and every node reachable from every other.
+
+        :raises ~flowline_scada.domain.errors.DisconnectedNetworkError:
+            if the network is empty, or if it has more than one
+            disconnected group of nodes.
+        """
         if not self._nodes:
             raise DisconnectedNetworkError(f"Network {self.name!r} has no nodes.")
         if not self.is_connected():
