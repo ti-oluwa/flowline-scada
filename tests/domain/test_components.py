@@ -6,12 +6,29 @@ import attrs
 import pytest
 
 from flowline_scada.domain.components import (
+    ArtificialLiftType,
     Boundary,
+    Choke,
+    ChokeType,
+    Compressor,
+    ControlLoop,
+    HeatExchanger,
+    Instrument,
     Junction,
+    Manifold,
+    MeasuredVariable,
     Pipe,
     PipeLeak,
+    Pump,
+    Regulator,
+    RegulatorType,
+    Separator,
+    SeparatorType,
+    Tank,
+    TankType,
     Valve,
     ValveType,
+    Well,
 )
 from flowline_scada.domain.errors import DuplicateLeakError, UnknownLeakError
 from flowline_scada.domain.network import Edge, Node, PipelineNetwork
@@ -341,3 +358,372 @@ class TestNetworkIntegration:
         )
         network.validate()
         assert network.circuit_rank == 0
+
+
+class TestPump:
+    def test_construction(self) -> None:
+        pump = Pump(
+            name="PUMP-1",
+            rated_flow_rate=Quantity(500, "ft^3/s"),
+            rated_pressure_boost=Quantity(200, "psi"),
+        )
+        assert pump.efficiency == 0.75
+
+    def test_zero_rated_flow_rate_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Pump(
+                name="PUMP-1",
+                rated_flow_rate=Quantity(0, "ft^3/s"),
+                rated_pressure_boost=Quantity(200, "psi"),
+            )
+
+    def test_zero_rated_pressure_boost_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Pump(
+                name="PUMP-1",
+                rated_flow_rate=Quantity(500, "ft^3/s"),
+                rated_pressure_boost=Quantity(0, "psi"),
+            )
+
+    def test_efficiency_of_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\(0, 1\]"):
+            Pump(
+                name="PUMP-1",
+                rated_flow_rate=Quantity(500, "ft^3/s"),
+                rated_pressure_boost=Quantity(200, "psi"),
+                efficiency=0.0,
+            )
+
+    def test_efficiency_above_one_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\(0, 1\]"):
+            Pump(
+                name="PUMP-1",
+                rated_flow_rate=Quantity(500, "ft^3/s"),
+                rated_pressure_boost=Quantity(200, "psi"),
+                efficiency=1.5,
+            )
+
+    def test_satisfies_edge_protocol(self) -> None:
+        pump = Pump(
+            name="PUMP-1",
+            rated_flow_rate=Quantity(500, "ft^3/s"),
+            rated_pressure_boost=Quantity(200, "psi"),
+        )
+        assert isinstance(pump, Edge)
+
+
+class TestRegulator:
+    def test_construction_defaults_to_pressure_reducing(self) -> None:
+        regulator = Regulator(name="PRV-1", setpoint_pressure=Quantity(500, "psi"))
+        assert regulator.regulator_type == RegulatorType.PRESSURE_REDUCING
+
+    def test_back_pressure_type(self) -> None:
+        regulator = Regulator(
+            name="BPR-1",
+            setpoint_pressure=Quantity(500, "psi"),
+            regulator_type=RegulatorType.BACK_PRESSURE,
+        )
+        assert regulator.regulator_type == RegulatorType.BACK_PRESSURE
+
+    def test_zero_setpoint_pressure_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Regulator(name="PRV-1", setpoint_pressure=Quantity(0, "psi"))
+
+    def test_satisfies_edge_protocol(self) -> None:
+        assert isinstance(Regulator(name="PRV-1", setpoint_pressure=Quantity(500, "psi")), Edge)
+
+
+class TestManifold:
+    def test_construction_without_capacity(self) -> None:
+        manifold = Manifold(name="MAN-1")
+        assert manifold.design_capacity is None
+
+    def test_construction_with_capacity(self) -> None:
+        manifold = Manifold(name="MAN-1", design_capacity=Quantity(10000, "ft^3/s"))
+        assert manifold.design_capacity == Quantity(10000, "ft^3/s")
+
+    def test_zero_capacity_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Manifold(name="MAN-1", design_capacity=Quantity(0, "ft^3/s"))
+
+    def test_wrong_capacity_dimensionality_raises(self) -> None:
+        with pytest.raises(ValueError, match="dimensionality"):
+            Manifold(name="MAN-1", design_capacity=Quantity(100, "psi"))
+
+    def test_is_frozen(self) -> None:
+        manifold = Manifold(name="MAN-1")
+        with pytest.raises(attrs.exceptions.FrozenInstanceError):
+            manifold.name = "MAN-2"  # type: ignore[misc]
+
+    def test_satisfies_node_protocol(self) -> None:
+        assert isinstance(Manifold(name="MAN-1"), Node)
+
+
+class TestSeparator:
+    def test_construction_defaults_to_three_phase(self) -> None:
+        separator = Separator(
+            name="SEP-1",
+            operating_pressure=Quantity(300, "psi"),
+            operating_temperature=Quantity(100, "degF"),
+        )
+        assert separator.separator_type == SeparatorType.THREE_PHASE
+
+    def test_two_phase_type(self) -> None:
+        separator = Separator(
+            name="SEP-1",
+            operating_pressure=Quantity(300, "psi"),
+            operating_temperature=Quantity(100, "degF"),
+            separator_type=SeparatorType.TWO_PHASE,
+        )
+        assert separator.separator_type == SeparatorType.TWO_PHASE
+
+    def test_zero_operating_pressure_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Separator(
+                name="SEP-1",
+                operating_pressure=Quantity(0, "psi"),
+                operating_temperature=Quantity(100, "degF"),
+            )
+
+    def test_wrong_temperature_dimensionality_raises(self) -> None:
+        with pytest.raises(ValueError, match="dimensionality"):
+            Separator(
+                name="SEP-1",
+                operating_pressure=Quantity(300, "psi"),
+                operating_temperature=Quantity(100, "psi"),
+            )
+
+    def test_satisfies_node_protocol(self) -> None:
+        separator = Separator(
+            name="SEP-1",
+            operating_pressure=Quantity(300, "psi"),
+            operating_temperature=Quantity(100, "degF"),
+        )
+        assert isinstance(separator, Node)
+
+
+class TestWell:
+    def test_pressure_only_construction(self) -> None:
+        well = Well(name="WELL-1", pressure=Quantity(1200, "psi"))
+        assert well.is_pressure_boundary
+        assert well.artificial_lift == ArtificialLiftType.NATURAL_FLOW
+        assert well.api_number is None
+
+    def test_flow_rate_only_construction(self) -> None:
+        well = Well(name="WELL-1", flow_rate=Quantity(3500, "bbl/day"))
+        assert well.is_flow_boundary
+
+    def test_both_specified_raises(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            Well(name="WELL-1", pressure=Quantity(1200, "psi"), flow_rate=Quantity(3500, "bbl/day"))
+
+    def test_neither_specified_raises(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            Well(name="WELL-1")
+
+    def test_wrong_dimensionality_for_pressure_raises(self) -> None:
+        with pytest.raises(ValueError, match="dimensionality"):
+            Well(name="WELL-1", pressure=Quantity(10, "ft"))
+
+    def test_api_number_and_lift_type_are_stored(self) -> None:
+        well = Well(
+            name="WELL-1",
+            pressure=Quantity(1200, "psi"),
+            api_number="42-123-45678",
+            artificial_lift=ArtificialLiftType.GAS_LIFT,
+        )
+        assert well.api_number == "42-123-45678"
+        assert well.artificial_lift == ArtificialLiftType.GAS_LIFT
+
+    def test_set_flow_rate_switches_from_pressure_control(self) -> None:
+        well = Well(name="WELL-1", pressure=Quantity(1200, "psi"))
+        well.set_flow_rate(Quantity(3500, "bbl/day"))
+        assert well.is_flow_boundary
+        assert not well.is_pressure_boundary
+        assert well.pressure is None
+
+    def test_set_pressure_switches_from_flow_control(self) -> None:
+        well = Well(name="WELL-1", flow_rate=Quantity(3500, "bbl/day"))
+        well.set_pressure(Quantity(1200, "psi"))
+        assert well.is_pressure_boundary
+        assert well.flow_rate is None
+
+    def test_satisfies_node_protocol(self) -> None:
+        assert isinstance(Well(name="WELL-1", pressure=Quantity(1200, "psi")), Node)
+
+
+class TestTank:
+    def test_construction_with_defaults(self) -> None:
+        tank = Tank(name="TK-201", capacity=Quantity(500, "bbl"))
+        assert tank.operating_pressure == Quantity(14.7, "psi")
+        assert tank.tank_type == TankType.STORAGE
+
+    def test_knockout_type(self) -> None:
+        tank = Tank(name="KO-1", capacity=Quantity(50, "bbl"), tank_type=TankType.KNOCKOUT)
+        assert tank.tank_type == TankType.KNOCKOUT
+
+    def test_zero_capacity_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Tank(name="TK-201", capacity=Quantity(0, "bbl"))
+
+    def test_zero_operating_pressure_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Tank(
+                name="TK-201", capacity=Quantity(500, "bbl"), operating_pressure=Quantity(0, "psi")
+            )
+
+    def test_satisfies_node_protocol(self) -> None:
+        assert isinstance(Tank(name="TK-201", capacity=Quantity(500, "bbl")), Node)
+
+
+class TestCompressor:
+    def test_construction_with_defaults(self) -> None:
+        compressor = Compressor(name="COMP-1", rated_flow_rate=Quantity(5, "MMscf/day"))
+        assert compressor.compression_ratio == 2.0
+        assert compressor.polytropic_efficiency == 0.75
+
+    def test_zero_rated_flow_rate_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Compressor(name="COMP-1", rated_flow_rate=Quantity(0, "MMscf/day"))
+
+    def test_compression_ratio_of_one_raises(self) -> None:
+        with pytest.raises(ValueError, match="greater than 1.0"):
+            Compressor(
+                name="COMP-1", rated_flow_rate=Quantity(5, "MMscf/day"), compression_ratio=1.0
+            )
+
+    def test_compression_ratio_below_one_raises(self) -> None:
+        with pytest.raises(ValueError, match="greater than 1.0"):
+            Compressor(
+                name="COMP-1", rated_flow_rate=Quantity(5, "MMscf/day"), compression_ratio=0.5
+            )
+
+    def test_polytropic_efficiency_of_zero_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\(0, 1\]"):
+            Compressor(
+                name="COMP-1",
+                rated_flow_rate=Quantity(5, "MMscf/day"),
+                polytropic_efficiency=0.0,
+            )
+
+    def test_satisfies_edge_protocol(self) -> None:
+        compressor = Compressor(name="COMP-1", rated_flow_rate=Quantity(5, "MMscf/day"))
+        assert isinstance(compressor, Edge)
+
+
+class TestHeatExchanger:
+    def test_outlet_temperature_only_construction(self) -> None:
+        heater = HeatExchanger(name="E-101", outlet_temperature=Quantity(100, "degF"))
+        assert heater.is_temperature_controlled
+        assert not heater.is_duty_controlled
+        assert heater.duty is None
+
+    def test_duty_only_construction(self) -> None:
+        cooler = HeatExchanger(name="E-102", duty=Quantity(-2, "MMBtu/hr"))
+        assert cooler.is_duty_controlled
+        assert not cooler.is_temperature_controlled
+        assert cooler.outlet_temperature is None
+
+    def test_both_specified_raises(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            HeatExchanger(
+                name="E-101", outlet_temperature=Quantity(100, "degF"), duty=Quantity(2, "MMBtu/hr")
+            )
+
+    def test_neither_specified_raises(self) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            HeatExchanger(name="E-101")
+
+    def test_wrong_dimensionality_for_outlet_temperature_raises(self) -> None:
+        with pytest.raises(ValueError, match="dimensionality"):
+            HeatExchanger(name="E-101", outlet_temperature=Quantity(100, "psi"))
+
+    def test_wrong_dimensionality_for_duty_raises(self) -> None:
+        with pytest.raises(ValueError, match="dimensionality"):
+            HeatExchanger(name="E-101", duty=Quantity(100, "psi"))
+
+    def test_set_duty_switches_from_temperature_controlled(self) -> None:
+        heater = HeatExchanger(name="E-101", outlet_temperature=Quantity(100, "degF"))
+        heater.set_duty(Quantity(2, "MMBtu/hr"))
+        assert heater.is_duty_controlled
+        assert heater.outlet_temperature is None
+
+    def test_set_outlet_temperature_switches_from_duty_controlled(self) -> None:
+        heater = HeatExchanger(name="E-101", duty=Quantity(2, "MMBtu/hr"))
+        heater.set_outlet_temperature(Quantity(100, "degF"))
+        assert heater.is_temperature_controlled
+        assert heater.duty is None
+
+    def test_satisfies_edge_protocol(self) -> None:
+        assert isinstance(
+            HeatExchanger(name="E-101", outlet_temperature=Quantity(100, "degF")), Edge
+        )
+
+
+class TestChoke:
+    def test_construction_with_defaults(self) -> None:
+        choke = Choke(name="CHK-1", bean_size=Quantity(0.5, "inch"))
+        assert choke.choke_type == ChokeType.ADJUSTABLE
+
+    def test_positive_choke_type(self) -> None:
+        choke = Choke(name="CHK-1", bean_size=Quantity(0.25, "inch"), choke_type=ChokeType.POSITIVE)
+        assert choke.choke_type == ChokeType.POSITIVE
+
+    def test_zero_bean_size_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            Choke(name="CHK-1", bean_size=Quantity(0, "inch"))
+
+    def test_satisfies_edge_protocol(self) -> None:
+        assert isinstance(Choke(name="CHK-1", bean_size=Quantity(0.5, "inch")), Edge)
+
+
+class TestInstrument:
+    def test_construction(self) -> None:
+        instrument = Instrument(name="PT-101", measured_variable=MeasuredVariable.PRESSURE)
+        assert instrument.low_alarm is None
+        assert instrument.high_alarm is None
+
+    def test_is_in_alarm_below_low_alarm(self) -> None:
+        instrument = Instrument(
+            name="PT-101",
+            measured_variable=MeasuredVariable.PRESSURE,
+            low_alarm=Quantity(50, "psi"),
+        )
+        assert instrument.is_in_alarm(Quantity(40, "psi"))
+        assert not instrument.is_in_alarm(Quantity(100, "psi"))
+
+    def test_is_in_alarm_above_high_alarm(self) -> None:
+        instrument = Instrument(
+            name="PT-101",
+            measured_variable=MeasuredVariable.PRESSURE,
+            high_alarm=Quantity(1200, "psi"),
+        )
+        assert instrument.is_in_alarm(Quantity(1250, "psi"))
+        assert not instrument.is_in_alarm(Quantity(800, "psi"))
+
+    def test_is_in_alarm_within_bounds(self) -> None:
+        instrument = Instrument(
+            name="PT-101",
+            measured_variable=MeasuredVariable.PRESSURE,
+            low_alarm=Quantity(50, "psi"),
+            high_alarm=Quantity(1200, "psi"),
+        )
+        assert not instrument.is_in_alarm(Quantity(800, "psi"))
+
+    def test_no_alarms_configured_never_alarms(self) -> None:
+        instrument = Instrument(name="PT-101", measured_variable=MeasuredVariable.PRESSURE)
+        assert not instrument.is_in_alarm(Quantity(999999, "psi"))
+
+
+class TestControlLoop:
+    def test_construction(self) -> None:
+        sensor = Instrument(name="PT-101", measured_variable=MeasuredVariable.PRESSURE)
+        loop = ControlLoop(
+            name="PIC-101",
+            sensor=sensor,
+            setpoint=Quantity(800, "psi"),
+            final_control_element_name="PCV-101",
+        )
+        assert loop.sensor is sensor
+        assert loop.setpoint == Quantity(800, "psi")
+        assert loop.final_control_element_name == "PCV-101"

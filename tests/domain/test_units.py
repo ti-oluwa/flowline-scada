@@ -75,6 +75,10 @@ class TestCustomUnitDefinitions:
         one_mmmscf = Quantity(1, "MMMscf")
         assert one_mmmscf.to("scf").magnitude == pytest.approx(1_000_000_000.0, rel=1e-9)
 
+    def test_mmbtu_is_one_million_btu(self) -> None:
+        one_mmbtu = Quantity(1, "MMBtu")
+        assert one_mmbtu.to("Btu").magnitude == pytest.approx(1_000_000.0, rel=1e-9)
+
     def test_quantity_and_unit_are_bound_to_the_shared_registry(self) -> None:
         # Quantity/Unit must come from the same UnitRegistry instance that
         # scf/Mscf/etc were defined on, or a Quantity built via Quantity(...)

@@ -8,6 +8,7 @@ dependencies = [
     "attrs>=25.3.0",
     "cattrs>=25.2.0",
     "coolprop>=7.0.0",
+    "networkx>=3.4.0",
     "pint>=0.25",
     "pyside6>=6.8.0",
     "thermo>=0.4.2",
@@ -28,6 +29,10 @@ dev = [
     "pytest-qt>=4.4.0",
     "pytest-xvfb>=3.0.0",
     "ruff>=0.8.0",
+    # networkx itself doesn't ship inline type hints (no py.typed
+    # marker) — this is the actively-maintained typeshed-style stub
+    # package for it, checked against the pinned networkx version above.
+    "types-networkx>=3.4.0",
 ]
 # Development-time correctness oracle for the multiphase correlations
 # (arrives in Phase 2) — cross-checks our own Beggs & Brill / Mukherjee &
@@ -79,3 +84,12 @@ python_version = "3.12"
 [[tool.mypy.overrides]]
 module = ["numpy", "numpy.*"]
 follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# thermo doesn't ship a py.typed marker or stub package, so mypy can't
+# resolve its types at all — this is a library-typing gap, not something
+# fixable on our end. Silencing the missing-stubs warning specifically
+# (not disabling checking of code that *uses* thermo) is the appropriate
+# scope here.
+module = "thermo.*"
+ignore_missing_imports = true
