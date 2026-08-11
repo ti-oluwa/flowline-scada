@@ -65,5 +65,5 @@ class TestErrorHandling:
 
     def test_error_message_includes_salinity(self) -> None:
         brine = Brine(salinity=0.035)
-        with pytest.raises(PropertyEvaluationError, match="0.035")
+        with pytest.raises(PropertyEvaluationError, match="0.035"):
             brine.density(Quantity(-10, "psi"), Quantity(60, "degF"))
