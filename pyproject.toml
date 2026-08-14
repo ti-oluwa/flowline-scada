@@ -29,6 +29,7 @@ dev = [
     "pytest-qt>=4.4.0",
     "pytest-xvfb>=3.0.0",
     "ruff>=0.8.0",
+    "scipy>=1.14.0",
     # networkx itself doesn't ship inline type hints (no py.typed
     # marker) — this is the actively-maintained typeshed-style stub
     # package for it, checked against the pinned networkx version above.
@@ -92,4 +93,11 @@ follow_imports = "skip"
 # (not disabling checking of code that *uses* thermo) is the appropriate
 # scope here.
 module = "thermo.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# scipy is a test-only dependency here (cross-checking correlations
+# against scipy.optimize.brentq as a ground truth), not a runtime one —
+# not worth adding a full scipy-stubs dependency for test-only usage.
+module = "scipy.*"
 ignore_missing_imports = true
